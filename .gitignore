@@ -1,0 +1,94 @@
+certs/client.pfx
+certs/*-key.pem
+client-config.json
+dotnet/**/bin/
+dotnet/**/obj/
+.localbrain/
+
+# BEGIN LocalBrain GitHub exclusions
+# LocalBrain client: machine-local credentials and configuration
+/certs/
+/client-config.json
+/clientsettings.json
+/clientsettings.*.json
+!/clientsettings.template.json
+/.env*
+!/.env.example
+!/.env.template
+*.pfx
+*.p12
+*.key
+*-key.pem
+*_key.pem
+key.pem
+private.pem
+api-keys.json
+api-key.json
+secrets.json
+auth.json
+
+# Machine-local Continue settings; keep reusable Markdown rules
+/.continue/config.yaml
+/.continue/config.yml
+/.continue/config.json
+/.continue/mcpServers/*.yaml
+/.continue/mcpServers/*.yml
+!/.continue/mcpServers/*.template.yaml
+!/.continue/mcpServers/*.template.yml
+/.continue/cache/
+/.continue/logs/
+/.continue/sessions/
+
+# Build outputs and dependency caches
+**/bin/
+**/obj/
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage/
+TestResults/
+dist/
+build/
+
+# Models, native runtime distributions and private state
+*.gguf
+*.GGUF
+*.safetensors
+*.onnx
+/models/
+/runtime/
+/logs/
+/backups/
+/exports/
+/imports/
+/.localbrain/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.log
+*.bak
+*.bak.*
+*.tmp
+*.pdb
+*.dmp
+
+# Local IDE / OS files
+.vs/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+Desktop.ini
+# END LocalBrain GitHub exclusions
+
+# Local originals with personal identifiers - never publish
+private-*
+private_*

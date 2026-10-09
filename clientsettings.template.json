@@ -1,0 +1,8 @@
+{
+  "gatewayBaseUrl": "https://__SERVER_HOST__:__GATEWAY_PORT__",
+  "bridgePort": "__BRIDGE_PORT__",
+  "clientCertificateThumbprint": "__CLIENT_CERT_THUMBPRINT__",
+  "projectsFile": "%LOCALAPPDATA%\\LocalBrain\\projects.json",
+  "auditLog": "%LOCALAPPDATA%\\LocalBrain\\logs\\audit.jsonl",
+  "heartbeatSeconds": 60
+}

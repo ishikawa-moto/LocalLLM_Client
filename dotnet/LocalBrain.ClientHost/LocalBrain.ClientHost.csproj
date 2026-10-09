@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>localbrain</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../scripts/host-request.mjs" Link="scripts/host-request.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/laya_worker.py" Link="scripts/laya_worker.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/localbrain-provider.js" Link="scripts/localbrain-provider.js" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/localbrain-policy.mjs" Link="scripts/localbrain-policy.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/context-tokenizer.py" Link="scripts/context-tokenizer.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/qwen-chat-template.jinja" Link="scripts/qwen-chat-template.jinja" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../reviewer-routing.json" Link="reviewer-routing.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "status": "SERIALIZATION_VECTORS_NOT_ClientPC_ADAPTER_QUALIFICATION",
+  "schema": "localbrain.decision-proposal.v1",
+  "serializer": "UTF-8 JSON ensure_ascii=False sort_keys=True separators=(comma,colon) allow_nan=False",
+  "unicode_normalization": "none; preserve Unicode scalar sequence; no unpaired surrogates",
+  "numbers": "only integer version/time fields, no floats; immutable proposal contains no numeric fields",
+  "array_order": "preserve; object keys are exact ASCII schema keys sorted ordinally",
+  "mapping": "apply.content is exact proposal.body UTF-8, not generated Markdown. apply.references is exact ordered proposal.references.",
+  "vectors": [
+    {
+      "name": "ascii",
+      "proposal_payload": {
+        "schema": "localbrain.decision-proposal.v1",
+        "proposal_id": "golden-proposal-ascii",
+        "kind": "decision",
+        "project": "demo",
+        "title": "Decision \"quoted\"",
+        "body": "## Reason\nPreserve original bytes.\n",
+        "references": [
+          {
+            "path": "raw/evidence.md",
+            "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relevant_location": "L1-L2"
+          }
+        ]
+      },
+      "canonical_utf8_hex": "7b22626f6479223a22232320526561736f6e5c6e5072657365727665206f726967696e616c2062797465732e5c6e222c226b696e64223a226465636973696f6e222c2270726f6a656374223a2264656d6f222c2270726f706f73616c5f6964223a22676f6c64656e2d70726f706f73616c2d6173636969222c227265666572656e636573223a5b7b2265787065637465645f68617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2265787065637465645f6d657461646174615f68617368223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c2270617468223a227261772f65766964656e63652e6d64222c2272656c6576616e745f6c6f636174696f6e223a224c312d4c32227d5d2c22736368656d61223a226c6f63616c627261696e2e6465636973696f6e2d70726f706f73616c2e7631222c227469746c65223a224465636973696f6e205c2271756f7465645c22227d",
+      "canonical_utf8_base64": "eyJib2R5IjoiIyMgUmVhc29uXG5QcmVzZXJ2ZSBvcmlnaW5hbCBieXRlcy5cbiIsImtpbmQiOiJkZWNpc2lvbiIsInByb2plY3QiOiJkZW1vIiwicHJvcG9zYWxfaWQiOiJnb2xkZW4tcHJvcG9zYWwtYXNjaWkiLCJyZWZlcmVuY2VzIjpbeyJleHBlY3RlZF9oYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImV4cGVjdGVkX21ldGFkYXRhX2hhc2giOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwicGF0aCI6InJhdy9ldmlkZW5jZS5tZCIsInJlbGV2YW50X2xvY2F0aW9uIjoiTDEtTDIifV0sInNjaGVtYSI6ImxvY2FsYnJhaW4uZGVjaXNpb24tcHJvcG9zYWwudjEiLCJ0aXRsZSI6IkRlY2lzaW9uIFwicXVvdGVkXCIifQ==",
+      "proposal_hash": "936fb9bf4eaedc285863cafa54e382c003d06204bb50824cdde45cce01862592",
+      "markdown_utf8_hex": "23204465636973696f6e202271756f746564220a0a232320526561736f6e0a5072657365727665206f726967696e616c2062797465732e0a0a",
+      "markdown_sha256": "225258968d4df91fecefd8ec7500dd2b65d1ec0fe5330b93e32fff4136dea443",
+      "adoption_without_approval": {
+        "request_id": "golden-adoption-ascii",
+        "project": "demo",
+        "title": "Decision \"quoted\"",
+        "content": "## Reason\nPreserve original bytes.\n",
+        "references": [
+          {
+            "path": "raw/evidence.md",
+            "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relevant_location": "L1-L2"
+          }
+        ],
+        "origin_proposal_id": "golden-proposal-ascii",
+        "expected_proposal_hash": "936fb9bf4eaedc285863cafa54e382c003d06204bb50824cdde45cce01862592"
+      },
+      "reviewed_envelope": {
+        "schema": "localbrain.reviewed-decision.v1",
+        "operation": "decision",
+        "payload": {
+          "request_id": "golden-adoption-ascii",
+          "project": "demo",
+          "title": "Decision \"quoted\"",
+          "content": "## Reason\nPreserve original bytes.\n",
+          "references": [
+            {
+              "path": "raw/evidence.md",
+              "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "relevant_location": "L1-L2"
+            }
+          ],
+          "origin_proposal_id": "golden-proposal-ascii",
+          "expected_proposal_hash": "936fb9bf4eaedc285863cafa54e382c003d06204bb50824cdde45cce01862592"
+        }
+      },
+      "reviewed_utf8_hex": "7b226f7065726174696f6e223a226465636973696f6e222c227061796c6f6164223a7b22636f6e74656e74223a22232320526561736f6e5c6e5072657365727665206f726967696e616c2062797465732e5c6e222c2265787065637465645f70726f706f73616c5f68617368223a2239333666623962663465616564633238353836336361666135346533383263303033643036323034626235303832346364646534356363653031383632353932222c226f726967696e5f70726f706f73616c5f6964223a22676f6c64656e2d70726f706f73616c2d6173636969222c2270726f6a656374223a2264656d6f222c227265666572656e636573223a5b7b2265787065637465645f68617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2265787065637465645f6d657461646174615f68617368223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c2270617468223a227261772f65766964656e63652e6d64222c2272656c6576616e745f6c6f636174696f6e223a224c312d4c32227d5d2c22726571756573745f6964223a22676f6c64656e2d61646f7074696f6e2d6173636969222c227469746c65223a224465636973696f6e205c2271756f7465645c22227d2c22736368656d61223a226c6f63616c627261696e2e72657669657765642d6465636973696f6e2e7631227d",
+      "decision_hash": "5472916562dcb6e9d5a01ffde05373b732f1ac25b58109631c9ee76efd9cc812"
+    },
+    {
+      "name": "unicode",
+      "proposal_payload": {
+        "schema": "localbrain.decision-proposal.v1",
+        "proposal_id": "golden-proposal-unicode",
+        "kind": "decision",
+        "project": "demo",
+        "title": "決定 😀 <>&",
+        "body": "日本語 é é 😀\n\t\"quoted\" \\path\n",
+        "references": [
+          {
+            "path": "raw/evidence.md",
+            "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relevant_location": "L1-L2"
+          }
+        ]
+      },
+      "canonical_utf8_hex": "7b22626f6479223a22e697a5e69cace8aa9e2065cc8120c3a920f09f98805c6e5c745c2271756f7465645c22205c5c706174685c6e222c226b696e64223a226465636973696f6e222c2270726f6a656374223a2264656d6f222c2270726f706f73616c5f6964223a22676f6c64656e2d70726f706f73616c2d756e69636f6465222c227265666572656e636573223a5b7b2265787065637465645f68617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2265787065637465645f6d657461646174615f68617368223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c2270617468223a227261772f65766964656e63652e6d64222c2272656c6576616e745f6c6f636174696f6e223a224c312d4c32227d5d2c22736368656d61223a226c6f63616c627261696e2e6465636973696f6e2d70726f706f73616c2e7631222c227469746c65223a22e6b1bae5ae9a20f09f9880203c3e26227d",
+      "canonical_utf8_base64": "eyJib2R5Ijoi5pel5pys6KqeIGXMgSDDqSDwn5iAXG5cdFwicXVvdGVkXCIgXFxwYXRoXG4iLCJraW5kIjoiZGVjaXNpb24iLCJwcm9qZWN0IjoiZGVtbyIsInByb3Bvc2FsX2lkIjoiZ29sZGVuLXByb3Bvc2FsLXVuaWNvZGUiLCJyZWZlcmVuY2VzIjpbeyJleHBlY3RlZF9oYXNoIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImV4cGVjdGVkX21ldGFkYXRhX2hhc2giOiJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwicGF0aCI6InJhdy9ldmlkZW5jZS5tZCIsInJlbGV2YW50X2xvY2F0aW9uIjoiTDEtTDIifV0sInNjaGVtYSI6ImxvY2FsYnJhaW4uZGVjaXNpb24tcHJvcG9zYWwudjEiLCJ0aXRsZSI6IuaxuuWumiDwn5iAIDw+JiJ9",
+      "proposal_hash": "d3132bcd6a6d5e9fd6cdce6bbc692da05247e983fe6f413b5f90cad703c33d94",
+      "markdown_utf8_hex": "2320e6b1bae5ae9a20f09f9880203c3e260a0ae697a5e69cace8aa9e2065cc8120c3a920f09f98800a092271756f74656422205c706174680a0a",
+      "markdown_sha256": "6b4050646c95d03e42318c4ba394943545853ad43dcbaf398c6acf11d20c1d1c",
+      "adoption_without_approval": {
+        "request_id": "golden-adoption-unicode",
+        "project": "demo",
+        "title": "決定 😀 <>&",
+        "content": "日本語 é é 😀\n\t\"quoted\" \\path\n",
+        "references": [
+          {
+            "path": "raw/evidence.md",
+            "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relevant_location": "L1-L2"
+          }
+        ],
+        "origin_proposal_id": "golden-proposal-unicode",
+        "expected_proposal_hash": "d3132bcd6a6d5e9fd6cdce6bbc692da05247e983fe6f413b5f90cad703c33d94"
+      },
+      "reviewed_envelope": {
+        "schema": "localbrain.reviewed-decision.v1",
+        "operation": "decision",
+        "payload": {
+          "request_id": "golden-adoption-unicode",
+          "project": "demo",
+          "title": "決定 😀 <>&",
+          "content": "日本語 é é 😀\n\t\"quoted\" \\path\n",
+          "references": [
+            {
+              "path": "raw/evidence.md",
+              "expected_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "expected_metadata_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "relevant_location": "L1-L2"
+            }
+          ],
+          "origin_proposal_id": "golden-proposal-unicode",
+          "expected_proposal_hash": "d3132bcd6a6d5e9fd6cdce6bbc692da05247e983fe6f413b5f90cad703c33d94"
+        }
+      },
+      "reviewed_utf8_hex": "7b226f7065726174696f6e223a226465636973696f6e222c227061796c6f6164223a7b22636f6e74656e74223a22e697a5e69cace8aa9e2065cc8120c3a920f09f98805c6e5c745c2271756f7465645c22205c5c706174685c6e222c2265787065637465645f70726f706f73616c5f68617368223a2264333133326263643661366435653966643663646365366262633639326461303532343765393833666536663431336235663930636164373033633333643934222c226f726967696e5f70726f706f73616c5f6964223a22676f6c64656e2d70726f706f73616c2d756e69636f6465222c2270726f6a656374223a2264656d6f222c227265666572656e636573223a5b7b2265787065637465645f68617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2265787065637465645f6d657461646174615f68617368223a2262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c2270617468223a227261772f65766964656e63652e6d64222c2272656c6576616e745f6c6f636174696f6e223a224c312d4c32227d5d2c22726571756573745f6964223a22676f6c64656e2d61646f7074696f6e2d756e69636f6465222c227469746c65223a22e6b1bae5ae9a20f09f9880203c3e26227d2c22736368656d61223a226c6f63616c627261696e2e72657669657765642d6465636973696f6e2e7631227d",
+      "decision_hash": "f308a097de4bc0356aedce9244d6e3e00ae170e81656b66a66a5cc09d6ccd4fc"
+    }
+  ]
+}

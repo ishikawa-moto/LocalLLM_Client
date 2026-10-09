@@ -1,0 +1,27 @@
+name: LocalBrain Agent v2
+version: 0.1.0
+schema: v1
+models:
+  - name: LocalBrain Qwen 27B
+    provider: openai
+    model: local-qwen38
+    apiBase: http://__BRIDGE_HOST__:__BRIDGE_PORT__/v1
+    apiKey: local-loopback-only
+    useResponsesApi: false
+    capabilities:
+      - tool_use
+    roles:
+      - chat
+    defaultCompletionOptions:
+      contextLength: 32768
+      maxTokens: 2048
+rules:
+  - Use the LocalBrain Agent v2 MCP tools for scoped repository changes. Provide the registered Git root, requirement, acceptance criteria, risk, exact allowed files, and named required tests.
+  - Use localbrain_agent_v2_resume only with the identical task request after a needs_work or recoverable failed checkpoint. Check localbrain_agent_v2_status to read the host validation gate.
+  - Report completion only when eligible_for_completion is true. Never infer success from Actor prose or a process exit code alone.
+  - Keep credentials, tokens, cookies, private keys, unrelated files, and full chat history out of task requests.
+mcpServers:
+  - name: LocalBrain Agent v2
+    command: __LOCALBRAIN_EXE__
+    args:
+      - agent-v2-mcp
