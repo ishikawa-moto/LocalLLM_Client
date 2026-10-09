@@ -59,6 +59,16 @@ internal static class TaskMemoryNativeTests
         TaskMemoryQ8.ValidateOptions(options);
         void Reject(TaskMemoryQ8.Options value) {try{TaskMemoryQ8.ValidateOptions(value);}catch(InvalidDataException){return;}throw new InvalidOperationException("Invalid memory inputs accepted");}
         Reject(options with {ModelSha256=new string('0',64)});
+        const string salukiModel="Underdog-Saluki-27B-1.0-IQ2-mix.gguf";
+        const string salukiHash="4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb";
+        var saluki=options with {ModelFile=salukiModel,ModelSha256=salukiHash,Files=[new(salukiModel,100,salukiHash),..options.Files.Skip(1)]};
+        foreach(var context in new[]{65536,98304,131072})TaskMemoryQ8.ValidateOptions(saluki with {ContextLimit=context});
+        Reject(saluki with {ModelSha256=hash});
+        Reject(saluki with {ModelFile=model});
+        Reject(saluki with {Files=[new(salukiModel,100,hash),..saluki.Files.Skip(1)]});
+        Reject(saluki with {ModelFile="arbitrary.gguf"});
+        Reject(saluki with {Files=[..saluki.Files,new("bin/unapproved.exe",100,hash)]});
+        Console.WriteLine("Fixed Saluki filename/hash, context admission and crossed-manifest rejection checks passed; no native model started.");
         foreach(var context in new[]{0,32768,65537,98303,98305,262144,int.MaxValue})Reject(options with {ContextLimit=context});
         TaskMemoryQ8.ValidateOptions(options with {ContextLimit=98304});
         TaskMemoryQ8.ValidateOptions(options with {ContextLimit=131072});
