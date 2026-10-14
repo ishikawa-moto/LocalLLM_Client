@@ -33,12 +33,29 @@ internal sealed partial class CanonicalStore
             if (!rows.Read()) throw new UnauthorizedAccessException("Approval is not attached to this task");
             var value = new DecisionApprovalRow(rows.GetString(0), rows.GetString(1), rows.GetInt64(2), rows.GetInt32(3) == 1, rows.IsDBNull(4) ? null : rows.GetString(4));
             rows.Close();
-            var registered = EventIds(taskId).Select(id => ReadTaskEvent(taskId, id)).SingleOrDefault(e => e.Input.Producer == "windows_host" &&
-                e.Input.EventType == "decision_adoption_human_approved" && e.Input.Metadata.GetProperty("approval_id").GetString() == approvalId);
-            if (registered is null || registered.Input.WorkerId is not null || registered.Input.ProducerEventId is not null ||
-                registered.Input.VerificationStatus != "human_explicit" || !registered.Input.EvidenceRefs.SequenceEqual(new[] { value.IntentHash, value.RequestHash }, StringComparer.Ordinal) ||
-                registered.Input.Metadata.GetProperty("confirmation_scope").GetString() != "EXACT_SECOND_BRAIN_DECISION_ADOPTION" ||
-                string.IsNullOrWhiteSpace(registered.Input.Metadata.GetProperty("human_actor").GetString())) throw new UnauthorizedAccessException("Approval provenance missing or changed");
+            var registered=EventIds(taskId).Select(id=>ReadTaskEvent(taskId,id)).SingleOrDefault(e=>e.Input.Producer=="windows_host" &&
+                e.Input.EventType is "decision_adoption_human_approved" or "decision_adoption_policy_approved" && e.Input.Metadata.GetProperty("approval_id").GetString()==approvalId);
+            if(registered is null||registered.Input.WorkerId is not null||registered.Input.ProducerEventId is not null)throw new UnauthorizedAccessException("Approval owner provenance missing");
+            if(registered.Input.EventType=="decision_adoption_human_approved") {
+                if(registered.Input.VerificationStatus!="human_explicit"||!registered.Input.EvidenceRefs.SequenceEqual(new[]{value.IntentHash,value.RequestHash},StringComparer.Ordinal)||
+                    registered.Input.Metadata.GetProperty("confirmation_scope").GetString()!="EXACT_SECOND_BRAIN_DECISION_ADOPTION"||string.IsNullOrWhiteSpace(registered.Input.Metadata.GetProperty("human_actor").GetString()))throw new UnauthorizedAccessException("Human approval provenance missing");
+            }else{
+                if(registered.Input.Metadata.GetProperty("confirmation_scope").GetString()!="REVIEWER_OR_REAFFIRMED_SECOND_BRAIN_DECISION_ADOPTION"||registered.Input.EvidenceRefs.Length!=3||registered.Input.EvidenceRefs[0]!=value.IntentHash||registered.Input.EvidenceRefs[1]!=value.RequestHash)throw new UnauthorizedAccessException("Policy approval provenance missing");
+                var source=ReadTaskEvent(taskId,registered.Input.Metadata.GetProperty("review_event_id").GetString()!);
+                if(source.Input.Producer!="windows_host"||source.Input.EventType!="decision_review_receipt_received"||source.Input.VerificationStatus!="authenticated_server_response"||source.Input.WorkerId is not null||source.Input.ProducerEventId is not null||source.Input.EvidenceRefs.Length!=1||source.Input.EvidenceRefs[0]!=registered.Input.EvidenceRefs[2])throw new UnauthorizedAccessException("Authenticated review receipt missing");
+                var response=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(ReadEvidence(source.Input.EvidenceRefs[0])));
+                var payload=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(ReadEvidence(value.RequestHash)));var approval=payload.GetProperty("approval");
+                if(approval.GetProperty("version").GetInt32()!=3||approval.GetProperty("host_policy_hash").GetString()!=registered.Input.Metadata.GetProperty("policy_hash").GetString())throw new InvalidDataException("Approval policy bytes differ");
+                var nativeHash=approval.GetProperty("reaffirmation_receipt_hash").ValueKind==JsonValueKind.Null?null:approval.GetProperty("reaffirmation_receipt_hash").GetString();
+                DecisionReviewAuthorization.Validate(new DecisionAdoption(this,taskId).RequireIntent(value.IntentHash),taskId,registered.Input.Metadata.GetProperty("policy_hash").GetString()!,response,nativeHash);
+                if(nativeHash is not null){
+                    var native=ReadTaskEvent(taskId,registered.Input.Metadata.GetProperty("native_event_id").GetString()!);
+                    if(native.Input.Producer!="windows_host"||native.Input.EventType!="decision_native_reaffirmation_confirmed"||native.Input.VerificationStatus!="human_explicit"||native.Input.WorkerId is not null||native.Input.ProducerEventId is not null||native.Input.EvidenceRefs.Length!=1||native.Input.EvidenceRefs[0]!=nativeHash)throw new UnauthorizedAccessException("Human reaffirmation receipt missing");
+                    var confirmed=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(ReadEvidence(nativeHash)));
+                    if(!confirmed.GetProperty("confirmed").GetBoolean()||confirmed.GetProperty("source").GetString()!="windows_native_dialog"||confirmed.GetProperty("intent_hash").GetString()!=value.IntentHash||confirmed.GetProperty("review_receipt_hash").GetString()!=response.GetProperty("review_receipt_hash").GetString())throw new UnauthorizedAccessException("Reaffirmation receipt binds different content");
+                    if(registered.Input.VerificationStatus!="human_explicit")throw new UnauthorizedAccessException("Missing human authority");
+                }else if(registered.Input.VerificationStatus!="reviewer_policy")throw new UnauthorizedAccessException("Reviewer authority mislabeled as human");
+            }
             var events = EventIds(taskId).Select(id => ReadTaskEvent(taskId, id)).ToArray();
             var reservation = events.SingleOrDefault(e => e.Input.Producer == "windows_host" && e.Input.EventType == "decision_adoption_dispatch_reserved" && e.Input.Metadata.GetProperty("approval_id").GetString() == approvalId);
             if (value.Reserved != (reservation is not null) || (reservation is not null && !reservation.Input.EvidenceRefs.SequenceEqual(new[] { value.IntentHash, value.RequestHash }, StringComparer.Ordinal))) throw new InvalidDataException("Reservation ledger/event drift");

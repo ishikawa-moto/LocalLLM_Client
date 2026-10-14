@@ -1,5 +1,7 @@
 # LocalBrain v2 ClientPC implementation checkpoint
 
+Current Sol policy (2026-10-14): the user selected `openai/gpt-6.1-sol` with `high` reasoning for NORMAL final review, HIGH plan/final review, and both read-only rescue attempts. The older gpt-6-sol/medium/xhigh records below describe previous qualification. The LOW no-cloud rule, review gates, attempt limit, OAuth path, and Copilot/Astra policy remain unchanged.
+
 Updated: 2026-09-25 (JST)
 
 ## Active decision (2026-09-25)

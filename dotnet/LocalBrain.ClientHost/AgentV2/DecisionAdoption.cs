@@ -199,6 +199,31 @@ internal sealed class DecisionAdoption(CanonicalStore store, string taskId)
             id, intentHash, requestHash, issuedAt + duration);
         return id;
     }
+    internal string RecordReviewerApproved(string intentHash,string policyHash,string reviewEventId,string? nativeEventId) {
+        var intent=RequireIntent(intentHash);var source=store.ReadTaskEvent(taskId,reviewEventId);
+        if(source.Input.Producer!="windows_host"||source.Input.WorkerId is not null||source.Input.ProducerEventId is not null||source.Input.EventType!="decision_review_receipt_received"||source.Input.VerificationStatus!="authenticated_server_response"||source.Input.EvidenceRefs.Length!=1||source.Input.Metadata.GetProperty("policy_hash").GetString()!=policyHash)
+            throw new UnauthorizedAccessException("Review is not the owning Host's authenticated receipt");
+        var responseHash=source.Input.EvidenceRefs[0];var response=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(store.ReadEvidence(responseHash)));
+        string? nativeHash=null;
+        if(nativeEventId is not null){
+            var human=store.ReadTaskEvent(taskId,nativeEventId);
+            if(human.Input.Producer!="windows_host"||human.Input.WorkerId is not null||human.Input.ProducerEventId is not null||human.Input.EventType!="decision_native_reaffirmation_confirmed"||human.Input.VerificationStatus!="human_explicit"||human.Input.EvidenceRefs.Length!=1)
+                throw new UnauthorizedAccessException("Model/caller cannot mint a human reaffirmation");
+            nativeHash=human.Input.EvidenceRefs[0];var confirmation=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(store.ReadEvidence(nativeHash)));
+            if(!confirmation.GetProperty("confirmed").GetBoolean()||confirmation.GetProperty("intent_hash").GetString()!=intentHash||confirmation.GetProperty("review_receipt_hash").GetString()!=response.GetProperty("review_receipt_hash").GetString()||confirmation.GetProperty("source").GetString()!="windows_native_dialog")throw new UnauthorizedAccessException("Human reaffirmation binds different content/issues");
+        }
+        var record=DecisionReviewAuthorization.Validate(intent,taskId,policyHash,response,nativeHash);
+        var now=DateTimeOffset.UtcNow.ToUnixTimeSeconds();var id=Guid.NewGuid().ToString("N");
+        var provenance=nativeHash is not null?"human-reaffirmed-returned-decision":record.GetProperty("request_mode").GetString()=="user_request"?"reviewer-approved-requested-decision":"reviewer-approved-model-proposal";
+        var approval=JsonSerializer.SerializeToElement(new{version=3,owner=DecisionProtocol.Owner,approval_id=id,task_id=taskId,
+            request_id=intent.payload.GetProperty("request_id"),operation="decision",proposal_id=intent.payload.GetProperty("origin_proposal_id"),proposal_hash=intent.payload.GetProperty("expected_proposal_hash"),decision_hash=intent.decision_hash,
+            issued_at=now,expires_at=now+900,provenance,host_policy_hash=policyHash,review_receipt_hash=response.GetProperty("review_receipt_hash"),reaffirmation_receipt_hash=nativeHash});
+        var fields=intent.payload.EnumerateObject().ToDictionary(p=>p.Name,p=>p.Value,StringComparer.Ordinal);fields.Add("approval",approval);
+        var requestHash=store.PutEvidence(DecisionProtocol.Canonical(JsonSerializer.SerializeToElement(fields)));
+        store.RecordDecisionApproval(Event("adoption_policy_"+id,"decision_adoption_policy_approved",nativeHash is null?"reviewer_policy":"human_explicit",[intentHash,requestHash,responseHash],
+            new{approval_id=id,intent_hash=intentHash,request_hash=requestHash,review_event_id=reviewEventId,native_event_id=nativeEventId,policy_hash=policyHash,confirmation_scope="REVIEWER_OR_REAFFIRMED_SECOND_BRAIN_DECISION_ADOPTION"}),id,intentHash,requestHash,now+900);
+        return id;
+    }
     internal Reservation Reserve(string approvalId) {
         var persisted = store.DecisionApproval(taskId, DecisionProtocol.Id(approvalId));
         var intent = RequireIntent(persisted.IntentHash);

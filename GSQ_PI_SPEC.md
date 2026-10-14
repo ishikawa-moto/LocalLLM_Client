@@ -24,7 +24,7 @@
 - **SoL-Pi：** Action FusionとObservationPackはON、Online Context CompactとEvidence-Preserving ReducerはOFFのままにします。比較実験を理由に変更しません。
 - **Laya：** ClientPC CPUで動かし、Hard Rulesを上書きしません。低確信度や障害時は安全側の決定的規則に戻します。
 - **Fresh Critic：** Actorと同じGSQモデルの新しい文脈で、会話履歴・思考過程・ツール権限を渡さず、要件、許可された差分、テスト結果、必要な引用付きSecondBrain情報だけを受け取ります。編集はしません。
-- **Sol：** モデルを `gpt-6-sol` に固定します。NORMAL最終審査は `medium`、HIGH計画・最終審査は `high` です。行き詰まり時の読取専用救援は初回 `high`、無効・未解決・利用不能なら1回だけ `xhigh` で再試行します。`max` は自動選択しません。救援の提案はActorを自動再開せず、完了ゲートも開きません。ユーザーが完了したChatGPT OAuthを利用し、通常のActorにはしません。APIキー課金へ自動変更しません。
+- **Sol：** モデルを `gpt-6.1-sol` に固定します。NORMAL最終審査とHIGH計画・最終審査はすべて `high` です。行き詰まり時の読取専用救援は初回・再試行とも `high` とし、無効・未解決・利用不能なら1回だけ再試行します。`max` は自動選択しません。救援の提案はActorを自動再開せず、完了ゲートも開きません。ユーザーが完了したChatGPT OAuthを利用し、通常のActorにはしません。APIキー課金へ自動変更しません。
 
 ## 安全境界と完了条件
 

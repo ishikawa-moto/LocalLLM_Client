@@ -17,8 +17,9 @@ try
     }
     else if (command == "mcp")
     {
+        McpStdio.Configure();
         using var gateway = new GatewayClient(config);
-        await new McpServer(gateway).RunAsync();
+        await new McpServer(gateway,config).RunAsync();
     }
     else if (command == "review")
     {

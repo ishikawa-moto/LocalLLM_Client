@@ -1,6 +1,11 @@
 using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
+if(args.Length==3 && args[0]=="--git-open-stdin-fixture") {await GitReadStdioTests.ChildAsync(args[1],args[2]);return;}
+if(args.Length==1 && args[0]=="--git-read-stdio-proof") {await GitReadStdioTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--decision-automation-proof") {await DecisionAutomationTests.RunAsync();await DecisionAutomationWorkerTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--adoption-workspace-proof") {DecisionAdoptionWorkspaceTests.Run();return;}
+if(args.Length==1 && args[0]=="--mcp-stdio-fixture") {await McpStdioTests.FixtureAsync();return;}
 if(args.Length==3&&args[0]=="--external-learning-proof"){await ExternalReferenceLearningTests.RunAsync(args[1],args[2]);return;}
 if(args.Length==3&&args[0]=="--external-claim-proof"){await ExternalClaimVerificationTests.RunAsync(args[1],args[2]);return;}
 if(args.Length==3&&args[0]=="--external-reference-proof"){ExternalReferenceCorpusTests.Run(args[1],args[2]);return;}
@@ -284,6 +289,12 @@ Check(!ExternalReviewCoordinator.Evaluate("HIGH", solPass, copilotIssues).Passed
     "Copilot finding blocks even when Sol passes");
 
 Console.WriteLine("Reviewer routing and validation checks passed.");
+await McpServerTests.RunAsync();
+await GitReadStdioTests.RunAsync();
+await McpStdioTests.RunAsync();
+await DecisionProposalMcpTests.RunAsync();
+DecisionAdoptionWorkspaceTests.Run();
+await DecisionAutomationTests.RunAsync();await DecisionAutomationWorkerTests.RunAsync();
 HostEgressTests.Run();
 await HostRescueTests.RunAsync();
 await DifferentialLearningTests.RunAsync();

@@ -8,6 +8,7 @@
     <AssemblyName>localbrain</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <None Update="Confirm-DecisionReaffirmation.ps1" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-request.mjs" Link="scripts/host-request.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/laya_worker.py" Link="scripts/laya_worker.py" CopyToOutputDirectory="PreserveNewest" />

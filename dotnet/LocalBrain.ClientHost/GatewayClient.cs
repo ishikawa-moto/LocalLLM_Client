@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using LocalBrain.ClientHost.AgentV2;
 
 namespace LocalBrain.ClientHost;
@@ -60,9 +61,42 @@ internal sealed class GatewayClient : IDisposable
         using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
         await using var input=await response.Content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];
         int count;while((count=await input.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>250000)throw new InvalidDataException("Adoption response exceeds protocol budget");output.Write(buffer,0,count);}
-        return ((int)response.StatusCode,DecisionProtocol.Utf8.GetString(output.ToArray()));
+        var responseBytes=output.ToArray();var responseJson=DecisionProtocol.Utf8.GetString(responseBytes);
+        if((int)response.StatusCode is >=400 and <500 && (int)response.StatusCode is not (408 or 429) && !BoundBusinessRejection(responseJson,payload.GetProperty("request_id").GetString()!)){
+            var responseHash=journal.Canonical.PutEvidence(responseBytes);
+            journal.Record("decision_adoption_transport_denied",new{approval_id=reservation.ApprovalId,request_hash=reservation.RequestHash,response_hash=responseHash,http_status=(int)response.StatusCode,route,automatic_retry=false},"authenticated_server_response");
+            throw new HttpRequestException("Owned adoption transport was denied without a bound adoption receipt",null,response.StatusCode);
+        }
+        return ((int)response.StatusCode,responseJson);
     }
 
+    private static bool BoundBusinessRejection(string json,string requestId)
+    {
+        try{
+            var value=DecisionProtocol.Parse(json);
+            DecisionProtocol.Keys(value,value.TryGetProperty("audit_id",out _)?["status","reason_code","reason","request_id","audit_id"]:["status","reason_code","reason","request_id"]);
+            return DecisionProtocol.Text(value,"status",32)=="rejected"&&DecisionProtocol.Text(value,"request_id",80)==requestId&&
+                DecisionProtocol.Text(value,"reason_code",80).Length>0&&DecisionProtocol.Text(value,"reason",2000).Length>0&&
+                (!value.TryGetProperty("audit_id",out var audit)||Guid.TryParseExact(audit.GetString(),"D",out _));
+        }catch(Exception e) when(e is JsonException or InvalidDataException or ArgumentException or InvalidOperationException){return false;}
+    }
+
+    internal async Task<string> SendOwnedDecisionReviewAsync(HostTaskJournal journal,string path,string json,CancellationToken token)
+    {
+        if(path!="/v1/brain/decision-review-register"||!OperatingSystem.IsWindows()||HostTaskJournal.Current!=journal)throw new UnauthorizedAccessException("Decision review registration requires the current Windows Host owner");
+        var payload=DecisionProtocol.Parse(json);
+        DecisionProtocol.Keys(payload,"proposal_id","request_mode","host_policy_hash","task_id","workspace_id");
+        if(payload.GetProperty("task_id").GetString()!=journal.TaskId||payload.GetProperty("workspace_id").GetString()!=journal.Canonical.GetTask(journal.TaskId)!.WorkspaceId)throw new UnauthorizedAccessException("Review registration belongs to another owner");
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var bytes=DecisionProtocol.Utf8.GetBytes(json);using var request=new HttpRequestMessage(HttpMethod.Post,path);
+        request.Headers.TryAddWithoutValidation("X-LocalBrain-Request-Id",Guid.NewGuid().ToString());request.Headers.TryAddWithoutValidation("X-LocalBrain-Approval-Owner",DecisionProtocol.Owner);
+        request.Content=new ByteArrayContent(bytes);request.Content.Headers.ContentType=new("application/json");request.Content.Headers.ContentLength=bytes.LongLength;
+        journal.Record("decision_review_registration_transport",new{request_hash=CanonicalStore.Hash(bytes),route=path,execution_owner=DecisionProtocol.Owner},"host_verified");
+        using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
+        await using var stream=await response.Content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];int count;
+        while((count=await stream.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>250000)throw new InvalidDataException("Review response exceeds budget");output.Write(buffer,0,count);}
+        var result=DecisionProtocol.Utf8.GetString(output.ToArray());if(!response.IsSuccessStatusCode)throw new HttpRequestException(result,null,response.StatusCode);return result;
+    }
     public async Task<string> JsonAsync(HttpMethod method, string path, string json, CancellationToken cancellationToken = default)
     {
         await using var body = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json));

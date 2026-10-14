@@ -55,6 +55,27 @@ internal static class AgentV2Commands
             using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
             Console.WriteLine(JsonSerializer.Serialize(await HostValidationRegistration.RegisterAsync(store,root,policy),ClientConfig.JsonOptions));return;
         }
+        if(command=="adoption-review") {
+            if(args.Length!=4)throw new ArgumentException("adoption-review requires registered workspace, bound proposal receipt JSON path and exact adoption request ID");
+            if(Console.IsInputRedirected || Console.IsOutputRedirected)throw new UnauthorizedAccessException("Knowledge adoption approval requires an interactive human Windows terminal");
+            var root=allowlist.Resolve(args[1]);var path=Path.GetFullPath(args[2]);CanonicalStore.GuardPath(path);
+            using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
+            if(input.Length is 0 or >250_000)throw new InvalidDataException("Bound proposal receipt exceeds Host budget");
+            var bytes=new byte[(int)input.Length];input.ReadExactly(bytes);
+            var receipt=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(bytes));
+            if(receipt.TryGetProperty("proposal_receipt",out var wrapped)){
+                if(receipt.GetProperty("status").GetString()!="pending_host_approval" || receipt.GetProperty("applied").GetBoolean() || receipt.GetProperty("request_id").GetString()!=args[3])throw new InvalidDataException("Preparation response identity/status mismatch");
+                receipt=wrapped.Clone();
+            }
+            _=DecisionProtocol.Proposal(receipt);
+            using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
+            var owner=DecisionAdoptionWorkspace.Open(store,root,args[3],receipt.GetProperty("proposal_hash").GetString()!,ProjectAllowlist.CurrentHead(root));
+            using var journal=owner.Journal;
+            if(config.PersonalValidation)journal.EnablePersonalValidation();
+            var adapter=new DecisionAdoption(store,owner.TaskId);var intent=adapter.PrepareProposal(receipt.GetRawText(),args[3]);
+            var approval=adapter.ApproveInteractive(intent);
+            Console.WriteLine(await HostDecisionTransport.DispatchAsync(journal,approval,config));return;
+        }
         if (command == "learning-human") {
             if (args.Length != 3) throw new ArgumentException("learning-human requires registered workspace and decision JSON path");
             var root = allowlist.Resolve(args[1]);

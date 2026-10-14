@@ -11,7 +11,7 @@ This source implementation extends Agent v2 after the existing named tests and f
 
 ## Provider boundaries
 
-- Sol keeps `openai/gpt-6-sol` through the current ChatGPT OAuth-backed OpenCode path. NORMAL final review uses medium; HIGH plan and final review use high. Rescue remains high then xhigh.
+- Sol keeps `openai/gpt-6.1-sol` through the current ChatGPT OAuth-backed OpenCode path. NORMAL final review, HIGH plan/final review, and both rescue attempts use high.
 - Copilot CLI uses a temporary directory holding only a bounded review packet. The command uses `--available-tools=view`, denies write/shell/memory, disables built-in MCPs and remote sessions, suppresses custom instructions, and does not ask the user for tool permission. It cannot see the original Git workspace through its working directory. Its response must parse as a bounded PASS/ISSUES object. A provider failure yields UNAVAILABLE.
 - A shared evidence builder rejects oversized packets and recognizable credentials before a Copilot or Astra call. No reviewer receives the Implementer conversation. Provider stderr is discarded without logging.
 - Astra is a meta evaluator only. On at most six naturally occurring valid dual reviews, it compares the *existing* Sol and Copilot findings and may move a bounded local weight by 0.05. It cannot add code findings, approve a task, or open a gate. Its result is recorded at `%LOCALAPPDATA%\LocalBrain\reviewer-calibration.json` as counts and weights, without the review packet. It uses the official Codex CLI with `gpt-6-astra`, a read-only ephemeral session, and the existing ChatGPT authentication. No API key fallback exists.

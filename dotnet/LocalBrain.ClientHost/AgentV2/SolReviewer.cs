@@ -11,7 +11,7 @@ internal static class SolReviewer
     internal sealed record Review(string Verdict, string[] Issues);
     internal sealed record Rescue(string Verdict, string[] Steps, int Attempts);
 
-    private const string Model = "openai/gpt-6-sol";
+    private const string Model = "openai/gpt-6.1-sol";
     private const string OpenCode = "/home/worker/localbrain-v2/opencode/node_modules/.bin/opencode";
     private const string SafeDirectory = "/home/worker/localbrain-v2/opencode";
     private const string DenyAllTools = "{\"permission\":{\"*\":\"deny\"}}";
@@ -28,7 +28,7 @@ internal static class SolReviewer
 
     internal static string ReviewVariant(string risk) => risk switch
     {
-        "NORMAL" => "medium",
+        "NORMAL" => "high",
         "HIGH" => "high",
         _ => throw new InvalidDataException("Sol review is only available for NORMAL or HIGH risk")
     };
@@ -36,7 +36,7 @@ internal static class SolReviewer
     internal static string RescueVariant(int attempt) => attempt switch
     {
         0 => "high",
-        1 => "xhigh",
+        1 => "high",
         _ => throw new InvalidDataException("Automatic Sol rescue is limited to two attempts")
     };
 

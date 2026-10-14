@@ -24,14 +24,22 @@ internal sealed class ProjectAllowlist(ClientConfig config)
         File.WriteAllText(config.ProjectsFile, JsonSerializer.Serialize(projects.Order(StringComparer.OrdinalIgnoreCase), ClientConfig.JsonOptions));
         return root;
     }
+    internal static string CurrentHead(string root) => Git(root, "--no-optional-locks", "rev-parse", "HEAD").Trim();
     private static string Git(string cwd, params string[] args)
     {
-        var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         start.ArgumentList.Add("-c");
         start.ArgumentList.Add($"safe.directory={cwd}");
         foreach (var arg in args) start.ArgumentList.Add(arg);
+        start.Environment["GIT_TERMINAL_PROMPT"]="0";start.Environment["GIT_OPTIONAL_LOCKS"]="0";
         using var process = Process.Start(start) ?? throw new InvalidOperationException("git failed to start");
-        var output = process.StandardOutput.ReadToEnd(); var error = process.StandardError.ReadToEnd(); process.WaitForExit();
-        if (process.ExitCode != 0) throw new InvalidOperationException(error); return output;
+        process.StandardInput.Close(); // MCP owns stdin; Git must never inherit its open protocol stream.
+        var output=process.StandardOutput.ReadToEndAsync();var error=process.StandardError.ReadToEndAsync();
+        var completed=Task.WhenAll(output,error,process.WaitForExitAsync());
+        if(!completed.Wait(TimeSpan.FromSeconds(10))){
+            if(!process.HasExited){process.Kill(entireProcessTree:true);process.WaitForExit(3000);}
+            throw new TimeoutException("Git workspace read exceeded10seconds; preserve the request for recovery");
+        }
+        if (process.ExitCode != 0) throw new InvalidOperationException(error.Result); return output.Result;
     }
 }
