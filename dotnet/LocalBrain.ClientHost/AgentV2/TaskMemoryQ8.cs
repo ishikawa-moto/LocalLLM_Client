@@ -37,9 +37,11 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
     public static void ValidateOptions(Options value) {
         if(value.ContextLimit is not (65536 or 98304 or 131072))throw new InvalidDataException("Host memory context must be64K or a qualified96K/128K candidate");
         if(!Path.IsPathFullyQualified(value.InputDirectory))throw new InvalidDataException("Memory inputs must have an absolute Host-owned path");
-        if(value.ModelSha256.ToUpperInvariant()!="FDFCB6A29B11188956DFBFD904223588A6C1B77EB250C3E8A36E1BD269DF91F7" ||
-            value.ModelFile!="Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf" || value.Files.Length is <3 or >64)
-            throw new InvalidDataException("TaskMemory model/input identity differs from verified ServerPC inputs");
+        var modelIdentityMatches=
+            value.ModelFile=="Qwen3.8-27B-GSQ-RCO-IQ3_XXS.gguf" && value.ModelSha256.Equals("FDFCB6A29B11188956DFBFD904223588A6C1B77EB250C3E8A36E1BD269DF91F7",StringComparison.OrdinalIgnoreCase) ||
+            value.ModelFile=="Underdog-Saluki-27B-1.0-IQ2-mix.gguf" && value.ModelSha256.Equals("4A673518B11B1C4445F9B9A9D3C40356F5BA39F6A6260DCB25F3FBFD475D9EFB",StringComparison.OrdinalIgnoreCase);
+        if(!modelIdentityMatches || value.Files.Length is <3 or >64)
+            throw new InvalidDataException("TaskMemory model/input identity differs from a fixed verified model");
         var paths=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var file in value.Files) {
             if(!paths.Add(file.Path) || file.Path.Contains("..") || file.Path.Contains('\\') ||
