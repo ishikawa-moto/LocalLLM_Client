@@ -26,6 +26,13 @@ function actualPath(candidate) {
 }
 
 export function checkToolCall(event, cwd) {
+  if(["host_command_start","host_command_status","host_command_cancel"].includes(event.toolName)){
+    const input=event.input??{};
+    if(typeof input.operationId!=="string"||!/^[A-Za-z0-9_-]{1,80}$/.test(input.operationId))return {block:true,reason:"Invalid owned command operation ID"};
+    // The private Windows Host capability and native task grant are checked by the Host.
+    // These are not Pi's native shell tools and cannot issue their own approval.
+    return undefined;
+  }
   if(event.toolName === "host_recall") {
     const input=event.input ?? {};
     return typeof input.evidenceHash === "string" && /^[a-f0-9]{64}$/.test(input.evidenceHash) &&
@@ -66,7 +73,7 @@ export function checkToolCall(event, cwd) {
     if (!Array.isArray(allowed) || !allowed.every(item => typeof item === "string"))
       return { block: true, reason: "Mutation allowlist is invalid" };
     const relativeFile = relative.split(path.sep).join("/").toLowerCase();
-    if (!allowed.some(item => item.replaceAll("\\", "/").toLowerCase() === relativeFile))
+    if (!allowed.some(item => { const scope=item.replaceAll("\\", "/").toLowerCase(); return scope===relativeFile || scope==="**" || scope.endsWith("/**") && relativeFile.startsWith(scope.slice(0,-2)); }))
       return { block: true, reason: "File is outside the task mutation allowlist" };
   }
   return undefined;

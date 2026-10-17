@@ -57,6 +57,10 @@ internal static class PiRpcRunner
             start.Environment["WSLENV"] = (string.IsNullOrEmpty(inherited) ? "" : inherited + ":")
                 + "LOCALBRAIN_SIDEFX_PIPE:LOCALBRAIN_SIDEFX_NONCE";
         }
+        if(start.Environment.ContainsKey("LOCALBRAIN_CLIENT_CONFIG")){
+            start.Environment.TryGetValue("WSLENV",out var inheritedConfig);
+            start.Environment["WSLENV"]=(string.IsNullOrEmpty(inheritedConfig)?"":inheritedConfig+":")+"LOCALBRAIN_CLIENT_CONFIG";
+        }
         if (freshCritic)
         {
             start.ArgumentList.Add("--no-extensions");
@@ -83,14 +87,14 @@ internal static class PiRpcRunner
             }
             start.ArgumentList.Add("--tools");
             start.ArgumentList.Add(allowMutations
-                ? "read,ls,host_edit,host_write,host_recall,obs_recall"
+                ? "read,ls,host_edit,host_write,host_recall,obs_recall"+(HostTaskJournal.Current?.Commands is not null?",host_command_start,host_command_status,host_command_cancel":"")
                 : "read,ls,host_recall,obs_recall");
         }
 
         var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var noProgressSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var output = new StringBuilder();
-        var progress = new ProgressTracker();
+        var progress = new ProgressTracker((id,hash)=>HostTaskJournal.Current?.Commands?.VerifyToolProgress(id,hash)==true);
         var milestones = Channel.CreateBounded<PiProgressSnapshot>(new BoundedChannelOptions(4)
         {
             FullMode = BoundedChannelFullMode.DropOldest,

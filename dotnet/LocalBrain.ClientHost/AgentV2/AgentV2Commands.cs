@@ -8,6 +8,11 @@ internal static class AgentV2Commands
     public static async Task RunAsync(string[] args, ProjectAllowlist allowlist, ClientConfig config)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "health";
+        if(command is "managed-status" or "managed-cancel"){
+            var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
+            Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root):
+                await TaskAgentCoordinator.CancelAsync(root,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact task ID required")),ClientConfig.JsonOptions));return;
+        }
         if(command=="reference-learning-export"){
             if(args.Length!=3)throw new ArgumentException("reference-learning-export requires registered workspace and existing local candidate hash");
             var root=allowlist.Resolve(args[1]);using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
@@ -260,6 +265,10 @@ internal static class AgentV2Commands
         {
             var request = AgentTaskRequest.Parse(prompt!);
             var root = allowlist.Resolve(args.ElementAtOrDefault(1) ?? Environment.CurrentDirectory);
+            if(request.CommandExecution is not null){
+                if(command=="recover")throw new InvalidOperationException("Managed command tasks use their existing Host owner and durable task identity");
+                Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume"),ClientConfig.JsonOptions));return;
+            }
             var result = await AgentTaskRunner.RunAsync(root, workspace, request, config,
                 resume: command != "run", recover: command == "recover");
             Console.WriteLine(JsonSerializer.Serialize(result, ClientConfig.JsonOptions));

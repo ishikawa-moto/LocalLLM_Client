@@ -1,6 +1,14 @@
 using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
+if(args.Length==3&&args[0]=="--task-command-child"){await TaskCommandGateTests.ChildAsync(args[1],args[2]);return;}
+if(args.Length==1&&args[0] is "--task-command-proof" or "--task-command-wsl-proof"){await TaskCommandGateTests.RunAsync(args[0]=="--task-command-wsl-proof");return;}
+if(args.Length==1&&args[0]=="--managed-agent-proof"){await ManagedAgentTests.RunAsync();return;}
+if(args.Length==2&&args[0]=="--managed-agent-native-prepare"){await ManagedAgentTests.NativePrepareAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--work-loop-proof"){await WorkLoopSupervisorTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--work-loop-native-proof"){await WorkLoopSupervisorTests.NativeAsync();return;}
+if(args.Length==2 && args[0]=="--continue-memory-native-proof") {await ContinueContextMemoryTests.NativeAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--continue-memory-proof") {await ContinueContextMemoryTests.RunAsync();return;}
 if(args.Length==3 && args[0]=="--git-open-stdin-fixture") {await GitReadStdioTests.ChildAsync(args[1],args[2]);return;}
 if(args.Length==1 && args[0]=="--git-read-stdio-proof") {await GitReadStdioTests.RunAsync();return;}
 if(args.Length==1 && args[0]=="--decision-automation-proof") {await DecisionAutomationTests.RunAsync();await DecisionAutomationWorkerTests.RunAsync();return;}
@@ -289,6 +297,9 @@ Check(!ExternalReviewCoordinator.Evaluate("HIGH", solPass, copilotIssues).Passed
     "Copilot finding blocks even when Sol passes");
 
 Console.WriteLine("Reviewer routing and validation checks passed.");
+await ManagedAgentTests.RunAsync();await TaskCommandGateTests.RunAsync();
+await ContinueContextMemoryTests.RunAsync();
+await WorkLoopSupervisorTests.RunAsync();
 await McpServerTests.RunAsync();
 await GitReadStdioTests.RunAsync();
 await McpStdioTests.RunAsync();

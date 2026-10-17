@@ -11,9 +11,9 @@ internal sealed class SideEffectGate : IAsyncDisposable
     internal sealed record Request(string Pipe, string Nonce, string Operation, string? Path = null,
         string? Content = null, string? OldText = null, string? NewText = null,
         int PayloadTokens = 0, int ContextLimit = 32768, string? PayloadJson = null,
-        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null);
+        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null,TaskCommandRequest? Command=null,string? OperationId=null);
     internal sealed record Reply(bool Ok, string Status, string? ContentHash = null, bool Handoff = false,
-        int Headroom = 0,string? Text=null);
+        int Headroom = 0,string? Text=null,object? CommandState=null);
     internal sealed record Budget(bool Handoff, int Headroom);
     internal static Budget EvaluateBudget(int payloadTokens, int contextLimit = 32768,
         int outputReserve = 2048, int safetyReserve = 2048, int nextTurn = 1024,
@@ -38,6 +38,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
     private readonly Task server;
     private readonly SemaphoreSlim operationLock = new(1,1);
     private string diagnosticStage="request";
+    private string? admittedPayloadHash;
 
     public SideEffectGate(string root, string[] writeScope, string expectedHead, bool canHandoff,
         HostTaskJournal? journal = null,Action<string>? fault=null)
@@ -57,6 +58,16 @@ internal sealed class SideEffectGate : IAsyncDisposable
         await operationLock.WaitAsync(token);
         try {
             if(HandoffRequested) throw new InvalidOperationException("Frozen Pi session cannot continue");
+            if(request.Operation is "command_start" or "command_status" or "command_cancel"){
+                if(!canHandoff || journal?.Commands is null)throw new UnauthorizedAccessException("This Actor has no native task command grant");
+                var result=request.Operation=="command_start"?await journal.Commands.StartAsync(request.Command??throw new InvalidDataException("Command required"),token):
+                    await journal.Commands.StatusAsync(request.OperationId??throw new InvalidDataException("Operation ID required"),request.Operation=="command_cancel",token);
+                return new(true,"host_command_observed",CommandState:result);
+            }
+            if(request.Operation=="managed_relay_permit"){
+                if(journal is null||request.EvidenceHash is null||request.EvidenceHash!=admittedPayloadHash)throw new UnauthorizedAccessException("Relay needs this Host's accepted provider preflight");
+                return new(true,"host_managed_relay",Text:ManagedRelayPermit.Issue(request.EvidenceHash,journal.TaskId));
+            }
             if(request.Operation=="preflight") {
                 diagnosticStage="budget";
                 var budget=EvaluateBudget(request.PayloadTokens,request.ContextLimit);
@@ -88,6 +99,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
                     journal?.CheckpointRuntime(frozen,"handoff_pending");
                     HandoffRequested=true; return new(false,"context_handoff_required",Handoff:true,Headroom:budget.Headroom);
                 }
+                if(!budget.Handoff)admittedPayloadHash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(request.PayloadJson));
                 return budget.Handoff ? new(false,"fresh_context_exhausted",Headroom:budget.Headroom):
                     new(true,"context_budget_accepted",Headroom:budget.Headroom);
             }
@@ -150,7 +162,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
             Regex.IsMatch(p,@"^(?:\.env(?:\..*)?|id_(?:rsa|ed25519)|.*\.(?:pfx|p12|key|pem))$",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant)))
             throw new UnauthorizedAccessException("Mutation path contains a protected or ambiguous segment");
         var normalized=string.Join('/',parts);
-        if(!writeScope.Any(p=>string.Equals(p.Replace('\\','/'),normalized,StringComparison.OrdinalIgnoreCase)))
+        if(!TaskWriteScope.Contains(writeScope,normalized))
             throw new UnauthorizedAccessException("Mutation file is outside write_scope");
         var full=System.IO.Path.GetFullPath(System.IO.Path.Combine(root,relative));
         if(!CanonicalStore.Within(root,full))throw new UnauthorizedAccessException("Mutation escaped repository identity");

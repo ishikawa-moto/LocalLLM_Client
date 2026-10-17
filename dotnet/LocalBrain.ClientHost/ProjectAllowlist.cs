@@ -27,7 +27,8 @@ internal sealed class ProjectAllowlist(ClientConfig config)
     internal static string CurrentHead(string root) => Git(root, "--no-optional-locks", "rev-parse", "HEAD").Trim();
     private static string Git(string cwd, params string[] args)
     {
-        var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
+            StandardOutputEncoding=System.Text.Encoding.UTF8,StandardErrorEncoding=System.Text.Encoding.UTF8 };
         start.ArgumentList.Add("-c");
         start.ArgumentList.Add($"safe.directory={cwd}");
         foreach (var arg in args) start.ArgumentList.Add(arg);

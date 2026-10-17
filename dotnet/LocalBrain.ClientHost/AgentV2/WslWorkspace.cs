@@ -4,6 +4,11 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal static class WslWorkspace
 {
+    internal static async Task<string> MapPathAsync(string windowsPath,CancellationToken token)
+    {
+        var mapped=(await RunAsync(["-d","Ubuntu","--exec","wslpath","-a","-u",Path.GetFullPath(windowsPath)],token)).Trim();
+        if(!mapped.StartsWith('/')||mapped=="/"||mapped.Contains('\n'))throw new InvalidDataException("Invalid Host path mapping");return mapped;
+    }
     public static async Task<string> MapFileAsync(string windowsPath, CancellationToken cancellationToken = default)
     {
         var fullPath = Path.GetFullPath(windowsPath);
@@ -82,7 +87,8 @@ internal static class WslWorkspace
         var start = new ProcessStartInfo("wsl.exe")
         {
             UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding=System.Text.Encoding.UTF8,StandardErrorEncoding=System.Text.Encoding.UTF8
         };
         foreach (var arg in arguments) start.ArgumentList.Add(arg);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("WSL failed to start");

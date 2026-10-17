@@ -9,8 +9,9 @@ internal sealed record PiProgressSnapshot(int ToolCalls, int ToolErrors, int Fil
     int ToolCallsSinceProgress, bool NoProgress);
 
 /// <summary>Counts repeated work without storing tool arguments or output text.</summary>
-internal sealed class ProgressTracker
+internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=null)
 {
+    private readonly HashSet<string> observedCommandReceipts=new();
     private readonly Dictionary<string, string> active = new();
     private string? lastRead;
     private string? lastCommand;
@@ -66,6 +67,14 @@ internal sealed class ProgressTracker
             var name = id is not null && active.Remove(id, out var value) ? value : "unknown";
             var failed = message.TryGetProperty("isError", out var error) &&
                 error.ValueKind == JsonValueKind.True;
+            if(!failed && name is ("host_command_start" or "host_command_status") && message.TryGetProperty("result",out var commandResult) && commandResult.ValueKind==JsonValueKind.Object &&
+                commandResult.TryGetProperty("details",out var details) && details.ValueKind==JsonValueKind.Object && details.TryGetProperty("operation_id",out var operationId) && operationId.ValueKind==JsonValueKind.String &&
+                details.TryGetProperty("receipt_hash",out var receiptHash) && receiptHash.ValueKind==JsonValueKind.String){
+                var hash=receiptHash.GetString();var commandId=operationId.GetString();
+                if(hash is not null && commandId is not null && !observedCommandReceipts.Contains(hash) && commandVerifier?.Invoke(commandId,hash)==true){
+                    observedCommandReceipts.Add(hash);ToolCallsSinceProgress=0;SameErrorCount=SameCommandCount=SameFileReadCount=0;lastError=lastCommand=lastRead=null;
+                }
+            }
             if (failed)
             {
                 ToolErrors++;

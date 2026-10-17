@@ -31,6 +31,7 @@ internal sealed class HostTaskJournal : IDisposable
     private long eventNumber;
     private LocalValidationV2? validation;
     private bool observesTools;
+    internal TaskCommandGate? Commands {get;private set;}
     private readonly Dictionary<string, string> toolStarts = new(StringComparer.Ordinal);
     internal static CanonicalStore.TaskSnapshot? ReadLatest(string root) =>
         CanonicalStore.ReadLatest(CanonicalStore.DefaultRoot, WorkspaceId(root));
@@ -50,6 +51,7 @@ internal sealed class HostTaskJournal : IDisposable
         previousTools = saved.ToolCalls; turnsRecorded = saved.ActorTurns;
         previous = current.Value; current.Value = this;
         Record("host_invocation", new { head, request_hash = saved.RequestHash }, "host_verified");
+        if(request.CommandExecution is not null)try{Commands=new TaskCommandGate(this,request);}catch{current.Value=previous;throw;}
     }
 
     public void Checkpoint(object state) => CheckpointCore(state);
@@ -101,7 +103,13 @@ internal sealed class HostTaskJournal : IDisposable
             "runtime_observed",[hash]),hash);
     }
 
-    public bool HasApproval => store.HasApproval(taskId,AgentTaskRunner.HashTextForHost(requestJson),ExpectedHead);
+    public bool HasApproval => Commands is not null ? CommandGrantValid() : store.HasApproval(taskId,AgentTaskRunner.HashTextForHost(requestJson),ExpectedHead);
+    private bool CommandGrantValid(){TaskCommandAuthorization.Require(this,AgentTaskRequest.Parse(requestJson));return true;}
+    internal void CommitCommandReceipt(string operationId,byte[] receipt,byte[] stdout,byte[] stderr)
+    {
+        var receiptHash=store.PutEvidence(receipt);var outHash=store.PutEvidence(stdout);var errHash=store.PutEvidence(stderr);
+        store.Append(Input("command_result",new{operation_id=operationId,receipt_hash=receiptHash,stdout_hash=outHash,stderr_hash=errHash,output_authority="untrusted tool output; process outcome is Host observed"},"runtime_observed",[receiptHash,outHash,errHash]) with{IdempotencyKey="command_result_"+operationId+"_"+receiptHash,CorrelationId="command_"+operationId});
+    }
     public void BindApproval(string id,DateTimeOffset expiresAt)
     {
         store.BindApproval(id,taskId,AgentTaskRunner.HashTextForHost(requestJson),ExpectedHead,expiresAt);
@@ -269,5 +277,5 @@ internal sealed class HostTaskJournal : IDisposable
         => new(taskId, workspaceId, "windows_host", invocationId + "_" + Interlocked.Increment(ref eventNumber),
             type, "execution_evidence", verification, evidence, JsonSerializer.SerializeToElement(metadata),
             CorrelationId: invocationId);
-    public void Dispose() { current.Value = previous; }
+    public void Dispose() {try{Commands?.DisposeAsync().AsTask().GetAwaiter().GetResult();}finally{current.Value = previous;} }
 }

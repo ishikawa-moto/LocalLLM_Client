@@ -33,6 +33,10 @@ try
     {
         await new AgentV2McpServer(new ProjectAllowlist(config), config).RunAsync();
     }
+    else if (command == "agent-task-worker")
+    {
+        await TaskAgentCoordinator.RunWorkerAsync(args.ElementAtOrDefault(1)??throw new ArgumentException("Managed task directory is required"),config);
+    }
     else if (command == "model-relay")
     {
         await ModelRelay.RunAsync(config.BridgePort);

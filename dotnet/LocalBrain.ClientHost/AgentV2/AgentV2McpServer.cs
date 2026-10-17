@@ -1,15 +1,13 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
 /// <summary>A separate Continue-facing entry point for the scoped Agent v2 pilot.</summary>
-internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig config)
+internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig config,string? isolatedControlRoot=null,bool launchManaged=true)
 {
     private static readonly object[] Tools =
     [
-        Tool("localbrain_agent_v2_run", "Start a scoped LocalBrain Agent v2 task in a registered Git root. The host validates edits, tests, and independent review before completion.", false),
+        Tool("localbrain_agent_v2_run", "Submit coding and command work to the managed Agent v2 Host. It runs in the background until tests/review pass or a real stop condition. One native task grant covers its recorded commands; queued is not completion.", false),
         Tool("localbrain_agent_v2_resume", "Resume an incomplete LocalBrain Agent v2 task with the identical request and unchanged checkpoint evidence.", false),
         new { name = "localbrain_agent_v2_status",
             description = "Read only the bounded task phase and validation gate from a registered Git root.",
@@ -17,7 +15,10 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                 workspace = new { type = "string", description = "Registered absolute Git root" } },
                 required = new[] { "workspace" }, additionalProperties = false },
             annotations = new { readOnlyHint = true, destructiveHint = false,
-                idempotentHint = true, openWorldHint = false } }
+                idempotentHint = true, openWorldHint = false } },
+        new{name="localbrain_agent_v2_cancel",description="Cancel the exact managed task and its owned commands; retain all evidence. Never reports a running task as completed.",
+            inputSchema=new{type="object",properties=new{workspace=new{type="string"},task_id=new{type="string"}},required=new[]{"workspace","task_id"},additionalProperties=false},
+            annotations=new{readOnlyHint=false,destructiveHint=false,idempotentHint=true,openWorldHint=false}}
     ];
 
     private static object Tool(string name, string description, bool readOnly) => new
@@ -32,14 +33,24 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                 acceptance_criteria = new { type = "array", items = new { type = "string" } },
                 risk = new { type = "string", @enum = new[] { "LOW", "NORMAL", "HIGH" } },
                 approved_high_risk = new { type = "boolean" },
-                allowed_files = new { type = "array", description = "Git-root-relative file paths; a named file may be created by the Agent", items = new { type = "string" } },
+                allowed_files = new { type = "array", description = "Git-root-relative files. With command_execution, ** grants the whole trusted project or folder/** a subtree; protected metadata/secrets remain excluded from file tools.", items = new { type = "string" } },
                 required_tests = new { type = "array", items = new { type = "object",
                     properties = new { kind = new { type = "string", @enum = new[] {
-                        "git_diff_check", "dotnet_build", "dotnet_test", "npm_test" } },
-                        target = new { type = "string", description = "Omit for npm_test and git_diff_check; use a Git-root-relative .csproj only for dotnet_build or dotnet_test" } }, required = new[] { "kind" },
-                    additionalProperties = false } }
+                        "git_diff_check", "dotnet_build", "dotnet_test", "npm_test", "command_exit" } },
+                        target = new { type = "string", description = "Omit for npm_test and git_diff_check; use a stable command operationId for command_exit; use a Git-root-relative .csproj only for dotnet_build or dotnet_test" } }, required = new[] { "kind" },
+                    additionalProperties = false } },
+                command_execution = new { type="object", description="Required for managed autonomous work. Native human approval binds this exact scope; cwd is not a hostile-code sandbox.", properties=new {
+                    environments=new{type="array",items=new{type="string", @enum=new[]{"windows","wsl"}}},
+                    working_directories=new{type="array",items=new{type="string"}},
+                    output_directories=new{type="array",items=new{type="string"}},
+                    max_command_seconds=new{type="integer",minimum=1,maximum=86400},
+                    max_task_minutes=new{type="integer",minimum=1,maximum=1440},
+                    max_actor_turns=new{type="integer",minimum=3,maximum=300},
+                    max_commands=new{type="integer",minimum=1,maximum=1024},
+                    max_output_bytes=new{type="integer",minimum=4096,maximum=8388608}
+                }, required=new[]{"environments","working_directories","output_directories"},additionalProperties=false }
             }, required = new[] { "requirement", "acceptance_criteria", "risk",
-                "approved_high_risk", "allowed_files", "required_tests" },
+                "approved_high_risk", "allowed_files", "required_tests", "command_execution" },
                 additionalProperties = false }
         }, required = new[] { "workspace", "task" }, additionalProperties = false },
         annotations = new { readOnlyHint = readOnly, destructiveHint = false,
@@ -70,7 +81,7 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                     "initialize" => new { protocolVersion = request.TryGetProperty("params", out var p) &&
                         p.TryGetProperty("protocolVersion", out var v) ? v.GetString() : "2025-06-18",
                         capabilities = new { tools = new { } },
-                        serverInfo = new { name = "LocalBrain Agent v2", version = "0.1.0" } },
+                        serverInfo = new { name = "LocalBrain Agent v2", version = "0.2.0" } },
                     "tools/list" => new { tools = Tools },
                     "tools/call" => await CallAsync(request.GetProperty("params")),
                     _ => throw new InvalidDataException("Unknown MCP method")
@@ -96,74 +107,12 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
             ?? throw new InvalidDataException("Workspace is required");
         var root = allowlist.Resolve(selected);
         if (name == "localbrain_agent_v2_status")
-            return Content(ReadStatus(root));
+            return Content(TaskAgentCoordinator.CurrentDirectory(root,isolatedControlRoot) is null?ReadStatus(root):await TaskAgentCoordinator.StatusAsync(root,isolatedControlRoot));
+        if(name=="localbrain_agent_v2_cancel")return Content(await TaskAgentCoordinator.CancelAsync(root,arguments.GetProperty("task_id").GetString()??"",isolatedControlRoot));
         if (name is not ("localbrain_agent_v2_run" or "localbrain_agent_v2_resume"))
             throw new InvalidDataException("Unknown Agent v2 tool");
         var task = AgentTaskRequest.Parse(arguments.GetProperty("task").GetRawText());
-        if (name == "localbrain_agent_v2_run" &&
-            await TryReadCompletedRunAsync(root, task) is { } completed)
-            return Content(completed);
-        var wslRoot = await WslWorkspace.ResolveAsync(allowlist, root);
-        var result = await AgentTaskRunner.RunAsync(root, wslRoot, task, config,
-            resume: name == "localbrain_agent_v2_resume");
-        return Content(new { task_id = result.TaskId, phase = result.Phase,
-            eligible_for_completion = result.EligibleForCompletion, risk = result.Risk,
-            changed_file_count = result.ChangedFiles.Length,
-            required_tests_run = result.Tests.Length,
-            required_tests_passed = result.Tests.Count(test => test.Passed),
-            critic_verdict = result.CriticVerdict, sol_verdict = result.SolVerdict,
-            review_route = result.ReviewRoute,
-            copilot_verdict = result.CopilotVerdict,
-            external_review_passed = result.ExternalReviewPassed,
-            astra_status = result.AstraStatus,
-            sol_review_count = result.SolReviewCount,
-            sol_issue_count = result.SolIssues.Length,
-            sol_rescue_count = result.SolRescueCount,
-            sol_rescue_verdict = result.SolRescueVerdict,
-            sol_rescue_steps = result.SolRescueSteps,
-            actor_turns = result.ActorTurns,
-            no_progress = result.NoProgress, false_verified = result.FalseVerified });
-    }
-
-    private static async Task<object?> TryReadCompletedRunAsync(string root, AgentTaskRequest task)
-    {
-        var canonical = HostTaskJournal.ReadLatest(root);
-        if (canonical is null) return null;
-        using var document = JsonDocument.Parse(canonical.StateJson);
-        var state = document.RootElement;
-        static string? StringField(JsonElement value, string name) =>
-            value.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String
-                ? field.GetString() : null;
-        if (StringField(state, "phase") != "complete" ||
-            StringField(state, "request_hash") != AgentTaskRunner.RequestHash(task) ||
-            StringField(state, "task_id") is not { } taskId || !Guid.TryParse(taskId, out _) ||
-            !state.TryGetProperty("changed_files", out var files) ||
-            files.ValueKind != JsonValueKind.Array ||
-            files.EnumerateArray().Any(file => file.ValueKind != JsonValueKind.String) ||
-            !state.TryGetProperty("actor_turns", out var turns) ||
-            !turns.TryGetInt32(out var actorTurns) || actorTurns < 1)
-            return null;
-        var snapshot = await GitEvidence.CaptureAsync(root, task.AllowedFiles);
-        var savedFiles = files.EnumerateArray().Select(file => file.GetString()!).ToArray();
-        var diffHash = Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes(snapshot.ReviewDiff))).ToLowerInvariant();
-        if (snapshot.ChangedFiles.Length == 0 || snapshot.UnexpectedFiles.Length != 0 ||
-            StringField(state, "git_head") != snapshot.Head ||
-            StringField(state, "review_diff_sha256") != diffHash ||
-            !savedFiles.SequenceEqual(snapshot.ChangedFiles, StringComparer.OrdinalIgnoreCase))
-            return null;
-        var validation = LocalValidationV2.FromCanonical(state) ?? new(false,false,false,true,false,[],false,true,false);
-        if (!validation.IsComplete) return null;
-        return new { task_id = taskId, phase = "complete", eligible_for_completion = true,
-            already_complete = true, risk = task.EffectiveRisk,
-            changed_file_count = snapshot.ChangedFiles.Length,
-            required_tests_run = task.RequiredTests.Length,
-            required_tests_passed = task.RequiredTests.Length,
-            critic_verdict = "PASS",
-            sol_verdict = validation.SolReviewRequired ? "PASS" : "NOT_REQUIRED",
-            review_route = validation.ReviewRoute,
-            external_review_passed = validation.ExternalReviewPassed,
-            actor_turns = actorTurns };
+        return Content(await TaskAgentCoordinator.SubmitAsync(root,task,config,resume:name=="localbrain_agent_v2_resume",control:isolatedControlRoot,launch:launchManaged));
     }
 
     private static object ReadStatus(string root)

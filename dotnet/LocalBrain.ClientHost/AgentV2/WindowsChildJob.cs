@@ -49,6 +49,7 @@ internal sealed class WindowsChildJob : IDisposable
         }
     }
     private static string Quote(string value) {
+        if(value.Length>0&&!value.Any(c=>char.IsWhiteSpace(c)||c=='"'))return value;
         var result=new StringBuilder("\"");var slashes=0;
         foreach(var c in value) {
             if(c=='\\'){slashes++;continue;}
@@ -56,8 +57,8 @@ internal sealed class WindowsChildJob : IDisposable
         }
         return result.Append('\\',slashes*2).Append('"').ToString();
     }
-    internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null) {
-        if(start.UseShellExecute || start.ArgumentList.Count==0 || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
+    internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false) {
+        if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
         var job=new WindowsChildJob();SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null;
         IntPtr attributes=IntPtr.Zero,jobValue=IntPtr.Zero,handlesValue=IntPtr.Zero,environment=IntPtr.Zero;
         var initialized=false;ProcessInformation child=default;
@@ -81,7 +82,10 @@ internal sealed class WindowsChildJob : IDisposable
             environment=Marshal.StringToHGlobalUni(block);
             var info=new StartupInfoEx {Attributes=attributes,Info=new StartupInfo {
                 Size=Marshal.SizeOf<StartupInfoEx>(),Flags=0x100,Input=input.DangerousGetHandle(),Output=writeOut.DangerousGetHandle(),Error=writeError.DangerousGetHandle()}};
-            var command=new StringBuilder(string.Join(' ',new[]{start.FileName}.Concat(start.ArgumentList).Select(Quote)));
+            // WSL uses the Windows executable-name convention (not CRT escaping) for argv[0].
+            // Its path is quoted only when needed; arguments still use exact CRT escaping.
+            var executable=start.FileName.Contains(' ')?"\""+start.FileName+"\"":start.FileName;
+            var command=new StringBuilder(executable+string.Concat(start.ArgumentList.Select(a=>" "+Quote(a))));
             Check(CreateProcessW(Path.IsPathFullyQualified(start.FileName)?start.FileName:null,command,IntPtr.Zero,IntPtr.Zero,true,
                 0x80000|0x08000000|0x400,environment,string.IsNullOrEmpty(start.WorkingDirectory)?null:start.WorkingDirectory,ref info,out child));
             createdFixture?.Invoke(checked((int)child.ProcessId));

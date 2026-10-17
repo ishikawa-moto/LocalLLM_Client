@@ -92,6 +92,10 @@ internal static class HostValidationPolicy
     internal static Task<ToolRouter.TestResult> RunAsync(HostTaskJournal journal,string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default)=>RunCoreAsync(journal,windowsRoot,wslRoot,test,null,token);
     internal static Task<ToolRouter.TestResult> RunRescueAsync(HostTaskJournal journal,string ticketHash,string candidateHash,string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default)=>RunCoreAsync(journal,windowsRoot,wslRoot,test,new(ticketHash,candidateHash),token);
     private static async Task<ToolRouter.TestResult> RunCoreAsync(HostTaskJournal journal,string windowsRoot,string wslRoot,RequiredTest test,HostValidationIsolation.RescueBinding? rescue,CancellationToken token){
+        if(test.Kind=="command_exit"){
+            if(rescue is not null || journal.Commands is null || !AgentTaskRequest.Parse(journal.Canonical.TaskRequest(journal.TaskId)).RequiredTests.Contains(test))throw new UnauthorizedAccessException("Unrequested task command validation");
+            var result=journal.Commands.Test(test.Target!);journal.Record("command_validation_result",result,"host_verified");return result;
+        }
         await HostValidationIsolation.RequireWorkspaceAsync(journal,Path.GetFullPath(windowsRoot),rescue,token);
         if(journal.PersonalValidationEnabled && test.Kind is ("git_diff_check" or "npm_test"))
             return await HostPersonalValidation.RunAsync(journal,windowsRoot,wslRoot,test,rescue,token);

@@ -37,6 +37,16 @@ internal static class ModelRelay
             };
             if (MediaTypeHeaderValue.TryParse(request.ContentType, out var type))
                 message.Content.Headers.ContentType = type;
+            var pipe=Environment.GetEnvironmentVariable("LOCALBRAIN_SIDEFX_PIPE");var nonce=Environment.GetEnvironmentVariable("LOCALBRAIN_SIDEFX_NONCE");
+            if(pipe is not null&&nonce is not null){
+                using var clientPipe=new System.IO.Pipes.NamedPipeClientStream(".",pipe,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous);
+                await clientPipe.ConnectAsync(5000,cancellation.Token);
+                using var writer=new StreamWriter(clientPipe,new System.Text.UTF8Encoding(false),leaveOpen:true){AutoFlush=true};using var reader=new StreamReader(clientPipe,leaveOpen:true);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new SideEffectGate.Request(pipe,nonce,"managed_relay_permit",EvidenceHash:CanonicalStore.Hash(body))));
+                var reply=JsonSerializer.Deserialize<SideEffectGate.Reply>(await reader.ReadLineAsync(cancellation.Token)??"",ClientConfig.JsonOptions);
+                if(reply?.Ok!=true||reply.Text is null)throw new UnauthorizedAccessException("Managed provider preflight capability unavailable");
+                message.Headers.Add("X-LocalBrain-Managed-Permit",reply.Text);
+            }
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead,cancellation.Token);
             await using var stream = await response.Content.ReadAsStreamAsync(cancellation.Token);
             await using var buffer = new MemoryStream();

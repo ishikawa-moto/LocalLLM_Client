@@ -9,6 +9,8 @@
   </PropertyGroup>
   <ItemGroup>
     <None Update="Confirm-DecisionReaffirmation.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Confirm-TaskCommands.ps1" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../scripts/host-command-worker.py" Link="scripts/host-command-worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-request.mjs" Link="scripts/host-request.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/laya_worker.py" Link="scripts/laya_worker.py" CopyToOutputDirectory="PreserveNewest" />

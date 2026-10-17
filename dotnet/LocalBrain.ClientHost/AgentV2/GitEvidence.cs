@@ -18,15 +18,15 @@ internal static class GitEvidence
         var changed = SplitNull(tracked).Concat(SplitNull(untracked)).Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase).ToArray();
         var allowed = allowedFiles.Select(file => file.Replace('\\', '/')).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var unexpected = changed.Where(file => !allowed.Contains(file)).ToArray();
+        var unexpected = changed.Where(file => !TaskWriteScope.Contains(allowedFiles,file)).ToArray();
         var diffArgs = new[] { "diff", "HEAD", "--no-ext-diff", "--no-color", "--unified=2", "--" }
-            .Concat(allowedFiles).ToArray();
+            .Concat(changed.Where(f=>TaskWriteScope.Contains(allowedFiles,f))).ToArray();
         var diff = await GitAsync(root, diffArgs, token);
         if (diff.Length > 24_000) throw new InvalidDataException("Review diff exceeds 24,000 characters");
         var review = new StringBuilder(diff);
         foreach (var file in SplitNull(untracked))
         {
-            if (!allowed.Contains(file)) continue;
+            if (!TaskWriteScope.Contains(allowedFiles,file)) continue;
             var full = Path.GetFullPath(Path.Combine(root, file.Replace('/', Path.DirectorySeparatorChar)));
             CanonicalStore.GuardPath(full);
             if (!CanonicalStore.Within(root,full) || !File.Exists(full) ||
@@ -59,10 +59,11 @@ internal static class GitEvidence
     {
         var start = new ProcessStartInfo("git") { WorkingDirectory = root, UseShellExecute = false,
             CreateNoWindow = true, RedirectStandardInput = true,
-            RedirectStandardOutput = true, RedirectStandardError = true };
+            RedirectStandardOutput = true, RedirectStandardError = true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8 };
         start.ArgumentList.Add("-c"); start.ArgumentList.Add($"safe.directory={root}");
         start.ArgumentList.Add("-C"); start.ArgumentList.Add(root);
         foreach (var arg in args) start.ArgumentList.Add(arg);
+        start.Environment["GIT_OPTIONAL_LOCKS"]="0";start.Environment["GIT_TERMINAL_PROMPT"]="0";
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Git did not start");
         process.StandardInput.Close();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
