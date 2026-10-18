@@ -36,7 +36,7 @@ internal static class CopilotReviewer
                     "{\"verdict\":\"PASS\",\"issues\":[]} or " +
                     "{\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. " +
                     "PASS requires all acceptance criteria to be supported by the diff and tests.",
-                "--model", "auto", "--silent", "--no-ask-user", "--no-custom-instructions",
+                "--model", "claude-opus-5.5", "--reasoning-effort", "high", "--silent", "--no-ask-user", "--no-custom-instructions",
                 "--no-remote", "--no-remote-export", "--disable-builtin-mcps",
                 "--available-tools=view", "--deny-tool=write", "--deny-tool=shell",
                 "--deny-tool=memory", "--output-format=text"
