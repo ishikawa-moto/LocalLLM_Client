@@ -34,6 +34,7 @@ internal static class AgentTaskRunner
         bool recover = false,
         CancellationToken token = default, string? controlPlaneRoot = null)
     {
+        using var ocrPriority = Ocr.OcrPriority.Enter("agent");
         if (recover && !resume)
             throw new InvalidOperationException("Recovery requires a matching checkpoint");
         var stateDirectory = Path.Combine(windowsRoot, ".localbrain");

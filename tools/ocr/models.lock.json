@@ -1,0 +1,36 @@
+{
+  "source": "RapidAI/RapidOCR v3.9.2 upstream default_models registry",
+  "license": "PaddleOCR Apache-2.0; distribution notices required",
+  "files": {
+    "ch_PP-OCRv5_det_mobile.onnx": {
+      "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
+      "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+      "bytes": 4819576,
+      "acquired_at": "2026-10-18T03:27:49.914581+00:00"
+    },
+    "ch_PP-OCRv5_rec_mobile.onnx": {
+      "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+      "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5",
+      "bytes": 16631306,
+      "acquired_at": "2026-10-18T03:27:53.291744+00:00"
+    },
+    "japan_PP-OCRv4_rec_mobile.onnx": {
+      "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
+      "sha256": "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a",
+      "bytes": 9753335,
+      "acquired_at": "2026-10-18T03:27:55.921640+00:00"
+    },
+    "ch_PP-OCRv4_det_mobile.onnx": {
+      "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
+      "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+      "bytes": 4745517,
+      "acquired_at": "2026-10-18T03:27:57.759060+00:00"
+    },
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx": {
+      "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+      "bytes": 585532,
+      "acquired_at": "2026-10-18T03:27:59.677763+00:00"
+    }
+  }
+}

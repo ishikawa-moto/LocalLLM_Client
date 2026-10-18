@@ -62,6 +62,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
         }
     }
     public async Task<JsonElement> StartAsync(CancellationToken token=default) {
+        using var ocrPriority=Ocr.OcrPriority.Enter("taskmemory");
         if(process is not null && !process.HasExited)return await GetAsync("props",token);
         if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException("TaskMemory owner must be Windows");
         CanonicalStore.GuardPath(configPath);
@@ -155,6 +156,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
     }
     internal static TimeSpan CompletionTimeout(int promptTokens) => TimeSpan.FromSeconds(Math.Clamp(200+promptTokens/15.0,180,900));
     public async Task<Prediction> PredictAsync(string instruction,string[] eventIds,Action<object,int>? capture=null,CancellationToken token=default) {
+        using var ocrPriority=Ocr.OcrPriority.Enter("taskmemory");
         await StartAsync(token);
         var template=await PostAsync("apply-template",new {messages=new[]{new {role="user",content=instruction}}},token);
         var prompt=template.GetProperty("prompt").GetString()??throw new InvalidDataException("Missing rendered model prompt");

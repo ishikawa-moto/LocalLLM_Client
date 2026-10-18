@@ -3,6 +3,9 @@ using LocalBrain.ClientHost.AgentV2;
 
 try
 {
+    if(args.FirstOrDefault()=="ocr"){
+        await LocalBrain.ClientHost.Ocr.OcrCommands.RunAsync(args.Skip(1).ToArray());return;
+    }
     if (args.FirstOrDefault() == "host-action")
     {
         await SideEffectGate.RunRelayAsync();

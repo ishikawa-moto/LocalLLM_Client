@@ -15,8 +15,10 @@ internal static class ToolRouter
         long StdoutBytes, long StderrBytes, string StdoutSha256, string StderrSha256,
         long ElapsedMs, int? ExecutedTests, string[] FailureCodes);
 
-    public static Task<TestResult> RunAsync(string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default) =>
-        HostValidationIsolation.RunAsync(windowsRoot,wslRoot,test,token);
+    public static async Task<TestResult> RunAsync(string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default) {
+        using var ocrPriority=Ocr.OcrPriority.Enter("build_test");
+        return await HostValidationIsolation.RunAsync(windowsRoot,wslRoot,test,token);
+    }
 
     internal static TestResult IsolationResult(RequiredTest test,string route,string reason,int exit,byte[] stdout,byte[] stderr,long elapsed,byte[] validationStdout) {
         // Restore output is evidence, but cannot establish that validation executed tests.

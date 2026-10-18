@@ -15,6 +15,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
         listener.Prefixes.Add($"http://{IPAddress.Loopback}:{config.BridgePort}/"); listener.Start();
         audit.Write("bridge_started", new { address = $"{IPAddress.Loopback}:{config.BridgePort}" });
         var heartbeat = HeartbeatAsync(cancellationToken);
+        var ocr=Task.Run(()=>LocalBrain.ClientHost.Ocr.OcrScheduler.RunConfiguredAsync(cancellationToken),cancellationToken);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -24,7 +25,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
             }
         }
         catch (OperationCanceledException) { }
-        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
+        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await ocr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
     }
 
     private async Task ForwardAsync(HttpListenerContext context, CancellationToken cancellationToken)
@@ -35,6 +36,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
             finally{context.Response.Close();}return;
         }
         supervisor!.RequestStarted();
+        using var ocrPriority=LocalBrain.ClientHost.Ocr.OcrPriority.Enter("bridge");
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lifetime.CancelAfter(supervisor.RequestLimit);cancellationToken=lifetime.Token;
         var requestId = context.Request.Headers["X-LocalBrain-Request-Id"];

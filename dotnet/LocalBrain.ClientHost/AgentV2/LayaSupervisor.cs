@@ -32,6 +32,7 @@ internal sealed class LayaSupervisor : IAsyncDisposable
 
     private async Task<JsonElement> SendAsync(string kind, object compactState, CancellationToken token)
     {
+        using var ocrPriority=Ocr.OcrPriority.Enter("laya");
         await gate.WaitAsync(token);
         try
         {
