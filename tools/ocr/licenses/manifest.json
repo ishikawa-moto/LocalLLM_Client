@@ -1,0 +1,17 @@
+{
+  "files": {
+    "RapidOCR-LICENSE.txt": {
+      "sha256": "3e0af25fdd06aa9586ae97adb00ea927ebe5a3805ac77d2d3a81ce5f55693333",
+      "source": "https://raw.githubusercontent.com/RapidAI/RapidOCR/main/LICENSE",
+      "license": "Apache-2.0",
+      "note": "Snapshot retained by content identity; upstream main may change."
+    },
+    "PaddleOCR-LICENSE.txt": {
+      "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e",
+      "source": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/LICENSE",
+      "license": "Apache-2.0",
+      "note": "Snapshot retained by content identity; upstream main may change."
+    }
+  },
+  "dependency_notices": "All runtime package dist-info license/notice files and Python LICENSE are retained in dedicated runtime."
+}

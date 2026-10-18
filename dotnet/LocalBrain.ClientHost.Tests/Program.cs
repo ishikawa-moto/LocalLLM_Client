@@ -1,6 +1,16 @@
 using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
+if(args.Length==1&&args[0]=="--ocr-store-proof"){OcrStoreTests.Run();return;}
+if(args.Length==3&&args[0]=="--ocr-crash-proof"){await OcrRecoveryTests.RunAsync(args[1],args[2]);return;}
+if(args.Length==3&&args[0]=="--ocr-process-control-proof"){await OcrProcessControlTests.RunAsync(args[1],args[2]);return;}
+if(args.Length==5&&args[0]=="--ocr-native-performance"){await OcrPerformanceTests.RunAsync(args[1],args[2],args[3],args[4]);return;}
+if(args.Length==2&&args[0]=="--ocr-host-fixture"){
+    Environment.SetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG",args[1]);
+    await LocalBrain.ClientHost.Ocr.OcrScheduler.RunConfiguredAsync(CancellationToken.None);return;
+}
+if(args.Length==2&&args[0]=="--ocr-sandbox-public"){await OcrSandboxTests.PublicAsync(args[1]);return;}
+if(args.Length==3&&args[0]=="--ocr-public-integration"){await OcrIntegrationTests.PublicAsync(args[1],args[2]);return;}
 if(args.Length==3&&args[0]=="--task-command-child"){await TaskCommandGateTests.ChildAsync(args[1],args[2]);return;}
 if(args.Length==1&&args[0] is "--task-command-proof" or "--task-command-wsl-proof"){await TaskCommandGateTests.RunAsync(args[0]=="--task-command-wsl-proof");return;}
 if(args.Length==1&&args[0]=="--managed-agent-proof"){await ManagedAgentTests.RunAsync();return;}
@@ -297,6 +307,7 @@ Check(!ExternalReviewCoordinator.Evaluate("HIGH", solPass, copilotIssues).Passed
     "Copilot finding blocks even when Sol passes");
 
 Console.WriteLine("Reviewer routing and validation checks passed.");
+OcrStoreTests.Run();
 await ManagedAgentTests.RunAsync();await TaskCommandGateTests.RunAsync();
 await ContinueContextMemoryTests.RunAsync();
 await WorkLoopSupervisorTests.RunAsync();
