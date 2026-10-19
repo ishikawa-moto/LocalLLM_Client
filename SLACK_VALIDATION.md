@@ -1,66 +1,55 @@
-# Slack candidate validation and release gates
+# Slack validation and remaining release gates
 
-## Connection preparation update
+The public implementation remains an unmerged Draft PR with disabled templates. A separately approved local installation has now completed the text-only Slack connection and reply qualification below. This does not qualify every Slack/OCR/approval/recovery operation or enable any other installation.
 
-The operator has installed the App, invited the Bot and entered credentials in a
-local protected directory. The actual disabled Client identity preflight passes;
-no message history, message posts, Socket Mode events or inference are included
-in that check. A live metadata-only comparison reproduced `invalid_arguments`
-for JSON POST channel lookup and a successful GET lookup. Channel/file metadata
-now use the documented GET routes. Required channel safety fields fail closed.
+## Confirmed implementation checks
 
-After this correction, Client core 60, priority/OCR 17, HTTPS 18 and
-adoption/retirement 63 public checks pass (158 total), and the complete ordinary
-regression exits 0. The published DLL is the same one used by those checks and
-the actual disabled identity preflight. Earlier lack-of-App statements below are
-historical. Production activation, real event/model qualification, independent
-review and physical phone/LAN trust are still separate gates.
-
-This branch is for review. It is not deployed, enabled, or qualified for real Slack traffic. The user requested implementation and PRs first, with Slack App installation and real connectivity later. No production services, model settings, certificates or firewall rules were changed.
-
-## Public checks
-
-| Area | Result | Actual scope |
+| Area | Result | Scope |
 | --- | --- | --- |
-| Client build | PASS, 0 errors / 9 existing platform-nullability warnings | .NET 10 candidate build |
-| Client normal regression | PASS, process exit 0 | Existing canonical state, policy, Agent, decision, TaskMemory and crash recovery tests; synthetic fixtures |
-| Slack core | 53 checks PASS | ID mention/owner/channel, receipt before work, dedup, offline boundary, restart, retention, safe replies, rate-limit handling, external-AI denial |
-| Protocol / priority / OCR integration | 17 checks PASS | Actual local ACK 23.0084 ms and Laya-lease cancellation 64.3422 ms; durable OCR registration and restricted origin, without model inference |
-| HTTPS approval | 18 checks PASS | Actual loopback TLS with public temporary certificates, administrator pinning, untrusted/absent certificates, CSRF, exact hash/replay, safe JSON rendering |
-| Adoption / retirement contract | 63 checks PASS | Exact Server Python canonical proposal/review/apply vectors, administrator-bound reservation, expired/replayed approval denial, lost response/restart status reconciliation, unknown HOLD, immutable inference requests, targeted cancellation and durable cleanup outbox |
-| Server public regression | Prior 109 PASS + additional 16 retirement checks PASS | Public fixtures; original 109 were not rerun after the retirement addition. Server HEAD `9733d1c30a5f4f0bf65afd8e8fd1d662f6746b2b`; no real model, Slack or deployment |
-| Whitespace / patch check | PASS | Changed source and public fixtures only |
+| Client build | PASS, 0 errors | Existing platform/nullability warnings retained |
+| Client normal regression | PASS, exit 0 | Existing canonical state, Agent, decision, TaskMemory and crash-recovery public fixtures |
+| Slack core | 60 checks PASS | Identity, channel/mention/owner, receipt-before-work, dedup, offline boundary, restart, retention, replies, rate limits and external-AI denial |
+| Protocol / priority / OCR registration | 17 checks PASS | Durable OCR registration and restricted origin; local control-path admission/preemption |
+| HTTPS approval | 18 checks PASS | Public loopback certificates, administrator pinning, absent/untrusted rejection, CSRF, exact hashes, replay and safe rendering |
+| Adoption / retirement contract | 63 checks PASS | Canonical cross-language vectors, reservations, lost-response/restart reconciliation, unknown HOLD, cancellation and cleanup outbox |
+| Server complete public regression | 133 tests PASS, 0 failures/errors/skips | After the SSE parser correction; test-bound loopback listeners, no production model/config |
+| Independent SSE review | No findings | Limited read-only review of the fixed parser and one-source deployment boundary; not a general security guarantee |
 
-Run the Client test executable with `--slack-proof`, `--slack-process-proof`, `--slack-https-proof`, and `--slack-adoption-proof`. Run it without arguments for the existing normal suite. Test inputs are public synthetic data; the HTTPS fixture does not enroll certificates in the system trust store. Process-local Windows error-dialog suppression is limited to the test executable and its children. No OS-wide policy was changed.
+The four Client public groups total 158 checks. Run the Client test executable with `--slack-proof`, `--slack-process-proof`, `--slack-https-proof` and `--slack-adoption-proof`; run without arguments for the normal suite. Server tests are in the paired Server repository. Test certificates do not enroll production trust.
 
-The initial restricted execution environment denied a fixture file rename; the normal-user rerun passed. A Windows crash dialog delayed an earlier crash test; the process-local test policy corrected this and both focused and complete regression passed. These earlier failures are retained in the private audit record, not treated as successful runs.
+The initial restricted environment denied a fixture rename; the normal-user run passed. An earlier crash-test Windows dialog was resolved with test-process-local dialog suppression. These failures remain in the local audit history, rather than being counted as successful runs. The SSE follow-up reused unchanged qualifying tests instead of rerunning unrelated suites.
 
-## Bounded performance comparison
+## Approved installation checks
 
-Baseline: Client default `main` at `c7e8505434a2772a37cb7198024dbdcd276dbf36`.
+- The App was installed, invited and configured through concealed local credential entry. Disabled identity/channel preflight passed without reading history, posting messages or opening Socket Mode. Channel/file metadata uses Slack's documented GET routes; required safety fields fail closed.
+- The tested Client runtime and compatible existing Host were placed through explicit operator approval. The original coding, model, authentication and OCR configuration were retained. The compiled runtime used the tested DLL. The optional single Slack receiver is online; its independent ownership does not replace the existing Host.
+- LAN HTTPS passed normal certificate chain/name validation, enrolled administrator acceptance and absent/unenrolled certificate rejection on the local PC. A narrowly scoped application/address/subnet firewall rule was separately approved. These are local-PC checks, not physical phone qualification.
+- The Server was placed and enabled through separately approved, fixed deployment operations. Actual source, unchanged configuration, owned Gateway identity and other-service boundaries were checked. A public priority probe confirmed foreground completion and interruption of owned background work. No model context/KV change or cloud fallback was made.
+- The original human-posted public message received acknowledgement but failed because the Server rejected a valid `content: null` role frame. That failed event is retained, without replay. The parser correction also handles finish metadata and empty-choices usage frames while malformed content, missing completion, oversize and cancellation remain rejected.
+- After the correction, one bounded public direct completion suite passed: two model submissions, nine HTTP calls, 10.669 seconds, normal and restricted markers matched, restricted state `complete`, owned session retired and final idle confirmed. No inference retry was made. This is a fixed-fixture smoke test, not general model quality or speed qualification.
+- A new human-posted public Slack message then completed end to end: one durable job, one acknowledgement, one completion reply, expected public marker matched and zero uncertain replies. One Socket connection remained online. This qualifies that text-only mention/reply path; it does not qualify attachments, reconnect or reboot recovery.
+- A separate public one-page local-file OCR check completed with expected text recognized. It was not a Slack upload/file-event check and does not extend existing handwriting, vertical-text or complex-form limits.
 
-The existing `ocr capabilities` command was run four times for each fixed binary. Warm median was **103.838 ms baseline / 104.049 ms candidate** (about +0.2%, a startup smoke measurement). Maximum sampled peak working set was **32,374,784 / 32,776,192 bytes**. All eight output SHA256 values were identical. No OCR or language model was started.
+No real IDs, local addresses, tokens, certificate contents, Slack originals, OCR text, generated answers, private databases or per-site deployment receipts are part of this public status update. Slack-derived data remains restricted and denied external AI; ordinary non-Slack work retains its existing review routing.
 
-This does not qualify coding speed, model throughput, model cold-start/unload, full OCR performance, RAM/commit peaks during inference, Saluki summary quality/latency, or simultaneous build/test workloads. Public lease tests show foreground admission/preemption behavior only. Those real resource measurements remain release gates; the feature stays disabled.
+## Performance evidence and limits
 
-## Local boundary review
+The earlier local public ACK control path measured 23.0084 ms and the Laya-lease cancellation path 64.3422 ms. These are synthetic local timings, not actual Slack/network latency.
 
-The source was manually reviewed for the following paths: authenticated Socket Mode IDs and online epochs; durable receipt/application/retirement outboxes; exact proposal/review hashes; existing Host mTLS identity; no redirects/proxy/public-IP local inference; derived AsyncLocal restriction; Host Egress and immediate Sol/Copilot/Astra/Rescue/tool-entry denial; separate restricted SQLite and OCR provenance; expired-session cleanup; foreground leases and owned-process disposal; bounded input/output and cancellation; HTTPS administrator pinning, CSRF and safe rendering.
+The existing `ocr capabilities` warm-start median was 103.838 ms for baseline versus 104.049 ms for the candidate (about +0.2%); maximum sampled working sets were 32,374,784 and 32,776,192 bytes. All eight outputs matched. No inference was started by that comparison. It does not establish concurrent coding speed, model throughput, OCR peak memory or near-limit context performance.
 
-This is a self-review, not an independent reviewer sign-off or a general attack-resistance guarantee. Runtime restrictions cannot stop a machine administrator deliberately copying private data outside the system.
+## Remaining qualifications and deliberately inactive behavior
 
-## Unqualified / deliberately inactive
+- Real Slack image/PDF uploads, authenticated file retrieval and OCR-result handling; shutdown/reconnect, logon/reboot and ambiguous-send recovery on the deployed system.
+- Restricted-history Saluki compression quality, latency, preemption and actual RAM/commit use, plus broader foreground/OCR/model resource contention.
+- Live human-bound restricted knowledge and enumerated Rule application, retention and paired retirement/purge. Human application remains disabled. Accepted restricted knowledge is separate from ordinary SecondBrain and TaskMemory adoption.
+- Other PC/iPhone/Android private-CA trust, administrator identity enrollment/selection, LAN reachability, responsive rendering and actual approval clicks. Never bypass certificate warnings.
+- Arbitrary handwriting, vertical text, complex forms and general model quality remain unqualified. Large-document hierarchical analysis and general restricted-corpus retrieval are not implemented.
 
-- Slack App is not created; real workspace/team/channel/bot identities and local tokens are not installed. The named channel is not connected. Live `app_mention` attachment payloads, upload/private-file behavior, retries, and exact receipt latency remain unverified.
-- No live Slack shutdown/reconnect test, Qwen inference, Saluki compression, native OCR rerun, or production knowledge adoption occurred in this task. Existing model/profile qualifications remain unchanged; handwriting, vertical text and complex forms keep their existing limits.
-- The paired Server's stopped-model auto-start is deliberately disabled. Real model admission/preemption and throughput must be qualified before activation.
-- Physical PC/phone LAN reachability, private-CA trust/name validation, administrator certificate installation/selection, mobile rendering and click behavior remain unverified. No certificate warning bypass is allowed.
-- Restricted human acceptance stores a restricted knowledge item / enumerated Slack response Rule. It does not promote data into ordinary SecondBrain or ordinary TaskMemory. General restricted-corpus retrieval is not implemented.
-- Inputs must fit the paired Server's conservative 16,000 UTF-8 byte budget. Large-document hierarchical analysis is not implemented; oversized content fails without silent truncation or cloud fallback.
-- Independent review, paired end-to-end retention and production activation/rollback verification remain required before enabling the candidates.
+Slack model cold-start remains disabled. If Qwen is stopped, Slack waits for the ordinary model lifecycle. The paired rendered-input budget is conservatively 16,000 UTF-8 bytes; oversize fails without silent truncation or cloud fallback. An attachment staging bound is not permission to exceed that paired input limit.
 
-## Later operator steps
+## Deployment and publication boundary
 
-Create the Slack App from the checked-in manifest, invite it to the allowed public non-shared channel, and enter real IDs/tokens only in the local private settings. Provision trusted LAN HTTPS server and administrator client certificates through the approved device process. Review both Draft PRs and the fixed deployment/rollback plan, then qualify the real traffic/phone/resource cases above before explicitly enabling the feature. Keep both Client `enabled` and Server `enabled` / `human_apply_enabled` false until then.
+New installations must use the disabled public templates and complete their own exact approval, rollback, trust and live qualification steps. PR merge does not install tasks, enroll certificates, open firewall rules or activate intake/application. Site-specific changes and receipts remain in protected local storage.
 
-See `SLACK_CONNECT.md` and the paired Server `SLACK-SERVER.md` for exact launch, configuration, privacy and rollback instructions. PRs are not automatically merged or deployed.
+Review `SLACK_CONNECT.md` and the paired Server `SLACK-SERVER.md` for the contracts and setup. Do not restore the ordinary canonical DB, replay unknown sends/applies or force-stop unrelated models/services. Keep both PRs as drafts until the intended remaining release scope is qualified; there is no automatic merge or deployment.
