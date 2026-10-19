@@ -82,6 +82,14 @@ Do not change model/auth settings. Disable the Slack feature and stop only its o
 
 ## Candidate launch after qualification
 
+`localbrain slack verify --config <private-slack-config.json>` checks the current
+Bot identity and allowed channel without enabling intake, opening Socket Mode,
+posting messages, starting OCR or requesting inference. It also works while
+`enabled` is false and prints only a fixed status and zero activity counters.
+Channel and file metadata use Slack's documented GET transport; credentials
+remain in the Authorization header. Missing required channel safety flags fail
+closed.
+
 The Client executable now requires both the .NET 10 runtime and ASP.NET Core 10 shared runtime (or a matching self-contained publish); verify them before deployment. Both are present on the development PC. The public templates contain no credentials. Keep both `enabled` and the Server's `human_apply_enabled` false until the deployment gates are satisfied. In a private, non-Git configuration directory, use the existing Host executable with:
 
 ```powershell

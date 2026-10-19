@@ -12,7 +12,13 @@ internal static class SlackCommands
         if(operation=="capabilities"){
             Console.WriteLine(JsonSerializer.Serialize(new{feature="slack",enabled=false,configuration_required=true,external_ai="deny",arbitrary_commands=false,automatic_adoption=false}));return;
         }
-        var options=SlackOptions.Load(Option("--config"));if(!options.Enabled)throw new InvalidOperationException("SLACK_DISABLED");
+        var options=SlackOptions.Load(Option("--config"));
+        if(operation=="verify"){
+            using var identityApi=new SlackApi(options);using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            await identityApi.ValidateIdentity(options,deadline.Token);
+            Console.WriteLine(JsonSerializer.Serialize(new{status="identity_verified",enabled=options.Enabled,messages_read=0,posts_sent=0,models_started=0}));return;
+        }
+        if(!options.Enabled)throw new InvalidOperationException("SLACK_DISABLED");
         using var stop=new CancellationTokenSource();Console.CancelKeyPress+=(_,e)=>{e.Cancel=true;stop.Cancel();};
         Directory.CreateDirectory(options.Root);
         using var owner=new FileStream(Path.Combine(options.Root,"host.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);

@@ -16,9 +16,18 @@ internal sealed class SlackApi : IDisposable
     internal async Task<JsonElement> Call(string method,object body,bool app,CancellationToken token)
     {
         if(method is not("apps.connections.open" or "auth.test" or "conversations.info" or "files.info" or "chat.postMessage"))throw new UnauthorizedAccessException("SLACK_METHOD_DENIED");
-        using var request=new HttpRequestMessage(HttpMethod.Post,"https://slack.com/api/"+method);
+        // Slack's read endpoints reject JSON POST arguments in the live API.
+        // Tokens remain exclusively in the Authorization header, never the URL.
+        var read=method is "conversations.info" or "files.info";
+        var url="https://slack.com/api/"+method;
+        if(read){
+            var name=method=="conversations.info"?"channel":"file";
+            var value=JsonSerializer.SerializeToElement(body).GetProperty(name).GetString()??throw new InvalidDataException("SLACK_READ_ARGUMENT_REQUIRED");
+            url+="?"+name+"="+Uri.EscapeDataString(value);
+        }
+        using var request=new HttpRequestMessage(read?HttpMethod.Get:HttpMethod.Post,url);
         request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",app?appToken:botToken);
-        request.Content=new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body));request.Content.Headers.ContentType=new("application/json");
+        if(!read){request.Content=new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(body));request.Content.Headers.ContentType=new("application/json");}
         using var response=await http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,token);
         if(response.StatusCode==HttpStatusCode.TooManyRequests){var retry=response.Headers.RetryAfter?.Delta?.TotalSeconds??30;throw new SlackRateLimit((int)Math.Ceiling(retry));}
         response.EnsureSuccessStatusCode();
@@ -32,7 +41,8 @@ internal sealed class SlackApi : IDisposable
         if(auth.GetProperty("team_id").GetString()!=o.TeamId||auth.GetProperty("user_id").GetString()!=o.BotUserId)throw new UnauthorizedAccessException("SLACK_IDENTITY_MISMATCH");
         var info=(await Call("conversations.info",new{channel=o.ChannelId},false,token)).GetProperty("channel");
         bool IsTrue(string k)=>info.TryGetProperty(k,out var x)&&x.ValueKind==JsonValueKind.True;
-        if(info.GetProperty("id").GetString()!=o.ChannelId||!IsTrue("is_member")||IsTrue("is_private")||IsTrue("is_shared")||IsTrue("is_ext_shared")||IsTrue("is_org_shared")||IsTrue("is_archived"))throw new UnauthorizedAccessException("SLACK_CHANNEL_NOT_ALLOWED");
+        bool IsFalse(string k)=>info.TryGetProperty(k,out var x)&&x.ValueKind==JsonValueKind.False;
+        if(info.GetProperty("id").GetString()!=o.ChannelId||!IsTrue("is_member")||!IsFalse("is_private")||!IsFalse("is_shared")||IsTrue("is_ext_shared")||IsTrue("is_org_shared")||!IsFalse("is_archived"))throw new UnauthorizedAccessException("SLACK_CHANNEL_NOT_ALLOWED");
     }
     internal async Task<Uri> Open(CancellationToken token)
     {

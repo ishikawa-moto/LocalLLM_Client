@@ -1,5 +1,21 @@
 # Slack candidate validation and release gates
 
+## Connection preparation update
+
+The operator has installed the App, invited the Bot and entered credentials in a
+local protected directory. The actual disabled Client identity preflight passes;
+no message history, message posts, Socket Mode events or inference are included
+in that check. A live metadata-only comparison reproduced `invalid_arguments`
+for JSON POST channel lookup and a successful GET lookup. Channel/file metadata
+now use the documented GET routes. Required channel safety fields fail closed.
+
+After this correction, Client core 60, priority/OCR 17, HTTPS 18 and
+adoption/retirement 63 public checks pass (158 total), and the complete ordinary
+regression exits 0. The published DLL is the same one used by those checks and
+the actual disabled identity preflight. Earlier lack-of-App statements below are
+historical. Production activation, real event/model qualification, independent
+review and physical phone/LAN trust are still separate gates.
+
 This branch is for review. It is not deployed, enabled, or qualified for real Slack traffic. The user requested implementation and PRs first, with Slack App installation and real connectivity later. No production services, model settings, certificates or firewall rules were changed.
 
 ## Public checks

@@ -77,9 +77,14 @@ internal static class SlackTests
         var calls=0;using var api=new SlackApi(new Handler(r=>{
             calls++;Check(r.RequestUri!.Host=="slack.com"&&r.Headers.Authorization!.Scheme=="Bearer","official authenticated API");
             if(r.RequestUri.AbsolutePath.EndsWith("auth.test"))return new(HttpStatusCode.OK){Content=new StringContent("{\"ok\":true,\"team_id\":\"TTEST\",\"user_id\":\"UBOT\"}")};
-            return new(HttpStatusCode.OK){Content=new StringContent("{\"ok\":true,\"channel\":{\"id\":\"CTEST\",\"is_member\":true,\"is_shared\":false}}")};
+            Check(r.Method==HttpMethod.Get&&r.Content is null,"read API uses GET without JSON POST");
+            Check(r.RequestUri.Query==(r.RequestUri.AbsolutePath.EndsWith("files.info")?"?file=FTEST":"?channel=CTEST"),"read argument stays separate from bearer token");
+            return new(HttpStatusCode.OK){Content=new StringContent("{\"ok\":true,\"channel\":{\"id\":\"CTEST\",\"is_member\":true,\"is_private\":false,\"is_shared\":false,\"is_archived\":false}}")};
         }),"xapp-public-fixture","xoxb-public-fixture");
         await api.ValidateIdentity(o,CancellationToken.None);Check(calls==2,"live identity channel validation");
+        await api.Call("files.info",new{file="FTEST"},false,CancellationToken.None);Check(calls==3,"file metadata uses documented read transport");
+        using var incomplete=new SlackApi(new Handler(r=>new(HttpStatusCode.OK){Content=new StringContent(r.RequestUri!.AbsolutePath.EndsWith("auth.test")?"{\"ok\":true,\"team_id\":\"TTEST\",\"user_id\":\"UBOT\"}":"{\"ok\":true,\"channel\":{\"id\":\"CTEST\",\"is_member\":true}}")}),"a","b");
+        try{await incomplete.ValidateIdentity(o,CancellationToken.None);throw new Exception("missing channel safety flags accepted");}catch(UnauthorizedAccessException){checks++;}
         using var limited=new SlackApi(new Handler(_=>{var r=new HttpResponseMessage(HttpStatusCode.TooManyRequests);r.Headers.RetryAfter=new(TimeSpan.FromSeconds(17));return r;}),"a","b");
         try{await limited.Open(CancellationToken.None);throw new Exception("rate limit ignored");}catch(SlackRateLimit r){Check(r.Seconds==17,"Slack retry-after");}
         using var bad=new SlackApi(new Handler(_=>new(HttpStatusCode.OK){Content=new StringContent("{\"ok\":true,\"url\":\"wss://attacker.invalid/socket\"}")}),"a","b");
