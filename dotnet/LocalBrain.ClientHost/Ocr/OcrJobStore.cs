@@ -35,7 +35,7 @@ internal sealed class OcrJobStore(OcrConfig config)
         var path=Path.Combine(DirectoryFor(id),"manifest.json");
         if(Read<JsonElement>(path+".binding").GetProperty("sha256").GetString()!=HashFile(path))throw new OcrException("MANIFEST_EVIDENCE_CHANGED");
         var m=Read<Manifest>(path);
-        if(m.JobId!=id||m.ExternalAi!="deny"||m.Origin!="local_file"||m.InputExtension is not(".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("JOB_BINDING_MISMATCH");return m;
+        if(m.JobId!=id||m.ExternalAi!="deny"||m.Origin is not("local_file" or "slack")||m.InputExtension is not(".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("JOB_BINDING_MISMATCH");return m;
     }
     internal State GetState(string id){
         var s=Read<State>(Path.Combine(DirectoryFor(id),"state.json"));
@@ -43,7 +43,8 @@ internal sealed class OcrJobStore(OcrConfig config)
     }
     internal string Input(Manifest manifest)=>Path.Combine(DirectoryFor(manifest.JobId),"input","source"+manifest.InputExtension);
     internal static string ConfigHash(OcrConfig config)=>CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions));
-    internal State Submit(string path,string expectedHash,string profile,string requestId,bool experimental=false,bool retainOriginal=false){
+    internal State Submit(string path,string expectedHash,string profile,string requestId,bool experimental=false,bool retainOriginal=false,string origin="local_file"){
+        if(origin is not("local_file" or "slack")||origin=="slack"&&!Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("OCR_ORIGIN_AUTHORITY");
         config.Validate();
         if(!Regex.IsMatch(requestId,@"^[A-Za-z0-9_-]{8,100}$")||!Regex.IsMatch(expectedHash,@"^[a-fA-F0-9]{64}$"))throw new OcrException("REQUEST_INVALID");
         if(!config.QualifiedProfiles.Contains(profile,StringComparer.Ordinal)&&!(experimental&&config.ExperimentalProfiles.Contains(profile,StringComparer.Ordinal)))throw new OcrException("PROFILE_UNQUALIFIED");
@@ -52,6 +53,7 @@ internal sealed class OcrJobStore(OcrConfig config)
         var ext=Path.GetExtension(path).ToLowerInvariant();if(ext is not (".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("INPUT_FORMAT");
         if(new FileInfo(path).Length>config.MaxInputBytes)throw new OcrException("INPUT_TOO_LARGE");
         var binding=CanonicalStore.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new{requestId,expectedHash=expectedHash.ToLowerInvariant(),profile,experimental,retainOriginal,config=ConfigHash(config)})));
+        if(origin=="slack")binding=CanonicalStore.Hash(Encoding.UTF8.GetBytes(binding+":slack"));
         var id=CanonicalStore.Hash(Encoding.UTF8.GetBytes(requestId))[..32];
         using var lease=Lock();var dir=DirectoryFor(id);
         if(Directory.Exists(dir)){
@@ -70,7 +72,7 @@ internal sealed class OcrJobStore(OcrConfig config)
         }
         if(HashFile(destination)!=expectedHash.ToLowerInvariant()){File.Delete(destination);throw new OcrException("INPUT_HASH_MISMATCH");}
         var now=DateTimeOffset.UtcNow;
-        var manifest=new Manifest(id,binding,"ocr:"+id+"/input",expectedHash.ToLowerInvariant(),ext,profile,experimental,retainOriginal,ConfigHash(config),"local_file","deny",now);
+        var manifest=new Manifest(id,binding,"ocr:"+id+"/input",expectedHash.ToLowerInvariant(),ext,profile,experimental,retainOriginal,ConfigHash(config),origin,"deny",now);
         New(Path.Combine(staging,"manifest.json"),manifest);
         New(Path.Combine(staging,"manifest.json.binding"),new{sha256=HashFile(Path.Combine(staging,"manifest.json"))});
         var state=new State(id,"queued",0,0,now,now,null,null,[]);Atomic(Path.Combine(staging,"state.json"),state);Directory.Move(staging,dir);Audit(id,"queued",null);return state;

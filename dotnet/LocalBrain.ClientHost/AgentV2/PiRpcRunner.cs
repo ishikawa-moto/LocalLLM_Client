@@ -16,6 +16,7 @@ internal static class PiRpcRunner
         string? windowsRoot = null, string? taskId = null,
         CancellationToken token = default)
     {
+        Slack.RestrictedExecution.DenyAgentTools();
         using var ocrPriority=Ocr.OcrPriority.Enter("agent");
         if (string.IsNullOrWhiteSpace(prompt) || prompt.Length > 100_000)
             throw new ArgumentException("Prompt must contain 1 to 100,000 characters");

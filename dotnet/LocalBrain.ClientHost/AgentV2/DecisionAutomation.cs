@@ -27,6 +27,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
     internal void Start(){worker??=Task.Run(LoopAsync);}
     internal async Task<string> EnqueueAsync(string requestJson,string mode)
     {
+        if(Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_REQUIRES_EXPLICIT_HOST_APPROVAL");
         var loaded=AutomaticDecisionPolicy.Load(config,hostRoot)??throw new UnauthorizedAccessException("Automatic adoption policy is disabled");
         if(mode is not ("proposal" or "user_request"))throw new ArgumentException("Unknown request origin");
         var request=DecisionProtocol.Parse(requestJson);var id=DecisionProtocol.Id(request.GetProperty("request_id").GetString()!);

@@ -44,6 +44,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var ticket=JsonSerializer.Deserialize<Ticket>(Store.ReadEvidence(hash))??throw new InvalidDataException("Invalid rescue ticket");RequireTicket(ticket,hash);return ticket;
     }
     internal async Task<string> ReserveAsync(AttemptStartingState.Saved starting,CancellationToken token=default) {
+        Slack.RestrictedExecution.DenyExternal();
         Store.RequireExportPolicy(journal.TaskId);journal.RequireMutationApproval();
         var source=Store.ReadTaskEvent(journal.TaskId,starting.EventId);
         if(source.Input.EventType!="attempt_starting_state" || source.Input.Producer!="windows_host" || !source.Input.EvidenceRefs.Contains(starting.StateHash) ||

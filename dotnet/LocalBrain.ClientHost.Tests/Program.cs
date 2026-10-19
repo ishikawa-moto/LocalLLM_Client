@@ -1,6 +1,12 @@
 using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
+TestProcessPolicy.Configure();
+if(args.Length==1&&args[0]=="--slack-adoption-proof"){await SlackAdoptionTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-proof"){await SlackTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-https-proof"){await SlackApprovalTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-process-proof"){await SlackProcessTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--memory-crash-proof"){await TaskMemoryEpochCrashTests.RunAsync();await TaskMemoryNativeTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--ocr-store-proof"){OcrStoreTests.Run();return;}
 if(args.Length==3&&args[0]=="--ocr-crash-proof"){await OcrRecoveryTests.RunAsync(args[1],args[2]);return;}
 if(args.Length==3&&args[0]=="--ocr-process-control-proof"){await OcrProcessControlTests.RunAsync(args[1],args[2]);return;}

@@ -8,6 +8,7 @@ namespace LocalBrain.ClientHost;
 internal sealed class GatewayClient : IDisposable
 {
     private readonly HttpClient client;
+    private readonly Lazy<HttpClient> slackClient;
     public GatewayClient(ClientConfig config)
     {
         var handler = new HttpClientHandler();
@@ -16,9 +17,35 @@ internal sealed class GatewayClient : IDisposable
         // Normal Windows chain, validity, hostname, and EKU checks still apply.
         handler.CheckCertificateRevocationList = false;
         client = new HttpClient(handler) { BaseAddress = new Uri(config.GatewayBaseUrl), Timeout = Timeout.InfiniteTimeSpan };
+        slackClient=new Lazy<HttpClient>(()=>{
+        var localHandler=new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false,ConnectTimeout=TimeSpan.FromSeconds(5)};
+        localHandler.SslOptions.ClientCertificates=new X509CertificateCollection{config.LoadCertificate()};
+        localHandler.SslOptions.CertificateRevocationCheckMode=X509RevocationMode.NoCheck;
+        localHandler.ConnectCallback=async(context,token)=>{
+            var addresses=await System.Net.Dns.GetHostAddressesAsync(context.DnsEndPoint.Host,token);
+            if(addresses.Length==0||addresses.Any(a=>!Slack.SlackLan.IsPrivate(a)))throw new UnauthorizedAccessException("SLACK_GATEWAY_MUST_BE_PRIVATE_LAN");
+            var socket=new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream,System.Net.Sockets.ProtocolType.Tcp);
+            try{await socket.ConnectAsync(new System.Net.IPEndPoint(addresses[0],context.DnsEndPoint.Port),token);return new System.Net.Sockets.NetworkStream(socket,ownsSocket:true);}catch{socket.Dispose();throw;}
+        };
+        return new HttpClient(localHandler){BaseAddress=new Uri(config.GatewayBaseUrl),Timeout=Timeout.InfiniteTimeSpan};
+        });
     }
     // Disposable HTTP fixture only. Production always uses the configured existing certificate above.
-    internal GatewayClient(Uri baseAddress,HttpMessageHandler fixtureHandler)=>client=new(fixtureHandler){BaseAddress=baseAddress,Timeout=Timeout.InfiniteTimeSpan};
+    internal GatewayClient(Uri baseAddress,HttpMessageHandler fixtureHandler){client=new(fixtureHandler){BaseAddress=baseAddress,Timeout=Timeout.InfiniteTimeSpan};slackClient=new(()=>client);}
+    internal async Task<string> SlackJsonAsync(string path,string json,CancellationToken token)
+    {
+        if(!Slack.RestrictedExecution.Active||path is not("/v1/slack/chat" or "/v1/slack/review" or "/v1/slack/proposal" or "/v1/slack/apply" or "/v1/slack/status" or "/v1/slack/retire" or "/v1/slack/cancel"))throw new UnauthorizedAccessException("SLACK_PRIVATE_ROUTE_DENIED");
+        var bytes=System.Text.Encoding.UTF8.GetBytes(json);if(bytes.Length>65536)throw new InvalidDataException("SLACK_LOCAL_INPUT_SIZE");
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(90));
+        using var request=new HttpRequestMessage(HttpMethod.Post,path){Content=new ByteArrayContent(bytes)};request.Content.Headers.ContentType=new("application/json");
+        request.Headers.TryAddWithoutValidation("X-LocalBrain-Request-Id",Guid.NewGuid().ToString());
+        request.Headers.TryAddWithoutValidation("X-LocalBrain-Approval-Owner",DecisionProtocol.Owner);
+        using var response=await slackClient.Value.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
+        if(!response.IsSuccessStatusCode)throw new HttpRequestException("SLACK_LOCAL_GATEWAY_REJECTED",null,response.StatusCode);
+        await using var stream=await response.Content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];int count;
+        while((count=await stream.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");output.Write(buffer,0,count);}
+        return System.Text.Encoding.UTF8.GetString(output.ToArray());
+    }
     private bool HostOwnedPath(string path)
     {
         var normalized=Uri.UnescapeDataString(new Uri(client.BaseAddress!,path).AbsolutePath).TrimEnd('/');
@@ -28,6 +55,10 @@ internal sealed class GatewayClient : IDisposable
     public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, Stream? body, string? contentType,
         long? contentLength, string requestId, CancellationToken cancellationToken)
     {
+        var normalizedPath=new Uri(client.BaseAddress!,path).AbsolutePath;
+        var slackPath=normalizedPath.StartsWith("/v1/slack/",StringComparison.Ordinal);
+        if(slackPath||Slack.RestrictedExecution.Active)
+            throw new UnauthorizedAccessException("SLACK_ROUTE_REQUIRES_RESTRICTED_HOST_OWNER");
         if(HostOwnedPath(path))throw new UnauthorizedAccessException("Decision adoption requires the owning Windows Host's durable approval dispatch");
         using var request = new HttpRequestMessage(method, path);
         request.Headers.TryAddWithoutValidation("X-LocalBrain-Request-Id", requestId);
@@ -41,6 +72,7 @@ internal sealed class GatewayClient : IDisposable
     }
     internal async Task<(int Status,string Json)> SendOwnedDecisionAsync(HostTaskJournal journal,DecisionAdoption.Reservation reservation,CancellationToken token)
     {
+        Slack.RestrictedExecution.DenyAgentTools();
         if(!OperatingSystem.IsWindows() || HostTaskJournal.Current!=journal)throw new UnauthorizedAccessException("Adoption needs its current Windows Host journal");
         var persisted=journal.Canonical.DecisionApproval(journal.TaskId,reservation.ApprovalId);
         var bytes=DecisionProtocol.Utf8.GetBytes(reservation.Json);var payload=DecisionProtocol.Parse(reservation.Json);
@@ -83,6 +115,7 @@ internal sealed class GatewayClient : IDisposable
 
     internal async Task<string> SendOwnedDecisionReviewAsync(HostTaskJournal journal,string path,string json,CancellationToken token)
     {
+        Slack.RestrictedExecution.DenyAgentTools();
         if(path!="/v1/brain/decision-review-register"||!OperatingSystem.IsWindows()||HostTaskJournal.Current!=journal)throw new UnauthorizedAccessException("Decision review registration requires the current Windows Host owner");
         var payload=DecisionProtocol.Parse(json);
         DecisionProtocol.Keys(payload,"proposal_id","request_mode","host_policy_hash","task_id","workspace_id");
@@ -105,5 +138,5 @@ internal sealed class GatewayClient : IDisposable
         if (!response.IsSuccessStatusCode) throw new HttpRequestException(result, null, response.StatusCode);
         return result;
     }
-    public void Dispose() => client.Dispose();
+    public void Dispose(){client.Dispose();if(slackClient.IsValueCreated&&!ReferenceEquals(client,slackClient.Value))slackClient.Value.Dispose();}
 }

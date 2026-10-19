@@ -16,6 +16,7 @@ internal static class ToolRouter
         long ElapsedMs, int? ExecutedTests, string[] FailureCodes);
 
     public static async Task<TestResult> RunAsync(string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default) {
+        Slack.RestrictedExecution.DenyAgentTools();
         using var ocrPriority=Ocr.OcrPriority.Enter("build_test");
         return await HostValidationIsolation.RunAsync(windowsRoot,wslRoot,test,token);
     }

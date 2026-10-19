@@ -1,0 +1,394 @@
+{
+  "fixture_only": {
+    "host_owner": "ClientPC-windows-host",
+    "host_certificate_sha256": "9537bf264067e8dc7e0f70aa342ad38d2358f849df62d7f9603f7303861bfff0",
+    "time_unix": 1000,
+    "real_slack_data": false
+  },
+  "knowledge": {
+    "review_request": {
+      "request_id": "request_knowledge_fixture",
+      "session_id": "session_fixture_01",
+      "source": "The public fixture uses a blue button.",
+      "max_tokens": 1024,
+      "timeout_seconds": 60,
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "review_response": {
+      "status": "complete",
+      "candidate": {
+        "kind": "knowledge",
+        "body": "The public fixture uses a blue button.",
+        "evidence": "blue button",
+        "review": {
+          "second": {
+            "pass": true,
+            "evidence": "blue button",
+            "issues": []
+          },
+          "source_sha256": "c5ca1c6d8cce85be5aa037a1bb9e347386273382f9613f0a451b647185cf6594"
+        }
+      },
+      "review": {
+        "schema": "localbrain.slack-review.v1",
+        "request_id": "request_knowledge_fixture",
+        "session_id": "session_fixture_01",
+        "source_sha256": "c5ca1c6d8cce85be5aa037a1bb9e347386273382f9613f0a451b647185cf6594",
+        "passes": [
+          "{\"kind\": \"knowledge\", \"body\": \"The public fixture uses a blue button.\", \"evidence\": \"blue button\"}",
+          "{\"pass\": true, \"evidence\": \"blue button\", \"issues\": []}"
+        ],
+        "candidate": {
+          "kind": "knowledge",
+          "body": "The public fixture uses a blue button.",
+          "evidence": "blue button",
+          "review": {
+            "second": {
+              "pass": true,
+              "evidence": "blue button",
+              "issues": []
+            },
+            "source_sha256": "c5ca1c6d8cce85be5aa037a1bb9e347386273382f9613f0a451b647185cf6594"
+          }
+        },
+        "classification": {
+          "origin": "slack",
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "cloud_fallback": false
+        }
+      },
+      "review_hash": "783b424b41f5e140760fb9053c2e664a72abc755d444e68c1570eb7320c478b8"
+    },
+    "proposal_request": {
+      "proposal_id": "proposal_knowledge_fixture",
+      "review_request_id": "request_knowledge_fixture",
+      "session_id": "session_fixture_01",
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "proposal_response": {
+      "status": "proposed_restricted",
+      "proposal_hash": "0227541e9adb7103da7ede7efb23d5878ecc457642181657fe2b7761aeac40bc",
+      "payload": {
+        "schema": "localbrain.slack-proposal.v1",
+        "proposal_id": "proposal_knowledge_fixture",
+        "session_id": "session_fixture_01",
+        "review_hash": "783b424b41f5e140760fb9053c2e664a72abc755d444e68c1570eb7320c478b8",
+        "candidate": {
+          "body": "The public fixture uses a blue button.",
+          "evidence": "blue button",
+          "kind": "knowledge",
+          "review": {
+            "second": {
+              "evidence": "blue button",
+              "issues": [],
+              "pass": true
+            },
+            "source_sha256": "c5ca1c6d8cce85be5aa037a1bb9e347386273382f9613f0a451b647185cf6594"
+          }
+        },
+        "classification": {
+          "origin": "slack",
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "cloud_fallback": false
+        },
+        "target": "restricted-knowledge",
+        "base_hash": "",
+        "new_hash": "284fc9f5fba7b2fb9c8ef22aac13c64edfd951aa37beceffc7276081e7824d97"
+      }
+    },
+    "apply_request": {
+      "request_id": "apply_knowledge_fixture",
+      "proposal_id": "proposal_knowledge_fixture",
+      "proposal_hash": "0227541e9adb7103da7ede7efb23d5878ecc457642181657fe2b7761aeac40bc",
+      "session_id": "session_fixture_01",
+      "approval": {
+        "schema": "localbrain.slack-host-approval.v1",
+        "approval_id": "approval_knowledge_fixture",
+        "nonce": "nonce_knowledge_fixture",
+        "approver_id": "admin_fixture_001",
+        "action": "accept_restricted",
+        "proposal_id": "proposal_knowledge_fixture",
+        "proposal_hash": "0227541e9adb7103da7ede7efb23d5878ecc457642181657fe2b7761aeac40bc",
+        "review_hash": "783b424b41f5e140760fb9053c2e664a72abc755d444e68c1570eb7320c478b8",
+        "session_id": "session_fixture_01",
+        "issued_at": 990,
+        "expires_at": 1100,
+        "host_owner": "ClientPC-windows-host",
+        "host_certificate_sha256": "9537bf264067e8dc7e0f70aa342ad38d2358f849df62d7f9603f7303861bfff0",
+        "target": "restricted-knowledge",
+        "base_hash": "",
+        "new_hash": "284fc9f5fba7b2fb9c8ef22aac13c64edfd951aa37beceffc7276081e7824d97",
+        "receipt_hash": "4813c9c0b98a0360b3c70789cfcfd29d42393a66a31c8c7f0a8c79f42b191f5d"
+      },
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "apply_response": {
+      "status": "applied_restricted",
+      "proposal_id": "proposal_knowledge_fixture",
+      "proposal_hash": "0227541e9adb7103da7ede7efb23d5878ecc457642181657fe2b7761aeac40bc",
+      "target": "restricted-knowledge",
+      "new_hash": "284fc9f5fba7b2fb9c8ef22aac13c64edfd951aa37beceffc7276081e7824d97",
+      "classification": {
+        "origin": "slack",
+        "data_class": "slack_restricted",
+        "external_ai": "deny",
+        "cloud_fallback": false
+      }
+    },
+    "status_request": {
+      "operation": "apply",
+      "request_id": "apply_knowledge_fixture",
+      "session_id": "session_fixture_01",
+      "request_hash": "6aae200f8f17099c380e581b52cddd4ffa4579b3632dbeeea3faae4a48d300b4",
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "status_unknown_response": {
+      "state": "unknown",
+      "retry_safe": false
+    },
+    "status_applied_response": {
+      "state": "applied",
+      "request_hash": "6aae200f8f17099c380e581b52cddd4ffa4579b3632dbeeea3faae4a48d300b4",
+      "result": {
+        "classification": {
+          "cloud_fallback": false,
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "origin": "slack"
+        },
+        "new_hash": "284fc9f5fba7b2fb9c8ef22aac13c64edfd951aa37beceffc7276081e7824d97",
+        "proposal_hash": "0227541e9adb7103da7ede7efb23d5878ecc457642181657fe2b7761aeac40bc",
+        "proposal_id": "proposal_knowledge_fixture",
+        "status": "applied_restricted",
+        "target": "restricted-knowledge"
+      },
+      "retry_safe": false
+    }
+  },
+  "rule": {
+    "review_request": {
+      "request_id": "request_rule_fixture",
+      "session_id": "session_fixture_01",
+      "source": "Use brief replies in en locale.",
+      "max_tokens": 1024,
+      "timeout_seconds": 60,
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "review_response": {
+      "status": "complete",
+      "candidate": {
+        "kind": "rule",
+        "body": "Use brief replies in en locale.",
+        "evidence": "brief",
+        "review": {
+          "second": {
+            "pass": true,
+            "evidence": "brief",
+            "issues": []
+          },
+          "source_sha256": "7fa4189ddb6ec67e534008d23fbe809daf866d092ca511ee6a6aa3b4fdcdf004"
+        },
+        "delta": {
+          "style": "brief"
+        }
+      },
+      "review": {
+        "schema": "localbrain.slack-review.v1",
+        "request_id": "request_rule_fixture",
+        "session_id": "session_fixture_01",
+        "source_sha256": "7fa4189ddb6ec67e534008d23fbe809daf866d092ca511ee6a6aa3b4fdcdf004",
+        "passes": [
+          "{\"kind\": \"rule\", \"body\": \"Use brief replies in en locale.\", \"evidence\": \"brief\", \"delta\": {\"style\": \"brief\"}}",
+          "{\"pass\": true, \"evidence\": \"brief\", \"issues\": []}"
+        ],
+        "candidate": {
+          "kind": "rule",
+          "body": "Use brief replies in en locale.",
+          "evidence": "brief",
+          "review": {
+            "second": {
+              "pass": true,
+              "evidence": "brief",
+              "issues": []
+            },
+            "source_sha256": "7fa4189ddb6ec67e534008d23fbe809daf866d092ca511ee6a6aa3b4fdcdf004"
+          },
+          "delta": {
+            "style": "brief"
+          }
+        },
+        "classification": {
+          "origin": "slack",
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "cloud_fallback": false
+        }
+      },
+      "review_hash": "071dff473463040e1f9ab866d6a564c5d2a9e08d9badc3d028030277a3325fc9"
+    },
+    "proposal_request": {
+      "proposal_id": "proposal_rule_fixture",
+      "review_request_id": "request_rule_fixture",
+      "session_id": "session_fixture_01",
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "proposal_response": {
+      "status": "proposed_restricted",
+      "proposal_hash": "425fe4dea6cc33849d1942442ad0931feb9ca5d62d58db3a2ecedefd42c2dc17",
+      "payload": {
+        "schema": "localbrain.slack-proposal.v1",
+        "proposal_id": "proposal_rule_fixture",
+        "session_id": "session_fixture_01",
+        "review_hash": "071dff473463040e1f9ab866d6a564c5d2a9e08d9badc3d028030277a3325fc9",
+        "candidate": {
+          "body": "Use brief replies in en locale.",
+          "delta": {
+            "style": "brief"
+          },
+          "evidence": "brief",
+          "kind": "rule",
+          "review": {
+            "second": {
+              "evidence": "brief",
+              "issues": [],
+              "pass": true
+            },
+            "source_sha256": "7fa4189ddb6ec67e534008d23fbe809daf866d092ca511ee6a6aa3b4fdcdf004"
+          }
+        },
+        "classification": {
+          "origin": "slack",
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "cloud_fallback": false
+        },
+        "target": "slack-response-policy",
+        "base_hash": "552fe70f2ab4a8558d7f927411d13493d7860f0ee94c78b71834427473e3d636",
+        "new_hash": "2bba6a2d8450f6c16af056b2ad91e3cb150b9560614b08af445580e7b7d1d09b",
+        "rule_diff": {
+          "before": {
+            "locale": "ja",
+            "style": "normal"
+          },
+          "delta": {
+            "style": "brief"
+          },
+          "after": {
+            "locale": "ja",
+            "style": "brief"
+          }
+        }
+      }
+    },
+    "apply_request": {
+      "request_id": "apply_rule_fixture",
+      "proposal_id": "proposal_rule_fixture",
+      "proposal_hash": "425fe4dea6cc33849d1942442ad0931feb9ca5d62d58db3a2ecedefd42c2dc17",
+      "session_id": "session_fixture_01",
+      "approval": {
+        "schema": "localbrain.slack-host-approval.v1",
+        "approval_id": "approval_rule_fixture",
+        "nonce": "nonce_rule_fixture",
+        "approver_id": "admin_fixture_001",
+        "action": "accept_restricted",
+        "proposal_id": "proposal_rule_fixture",
+        "proposal_hash": "425fe4dea6cc33849d1942442ad0931feb9ca5d62d58db3a2ecedefd42c2dc17",
+        "review_hash": "071dff473463040e1f9ab866d6a564c5d2a9e08d9badc3d028030277a3325fc9",
+        "session_id": "session_fixture_01",
+        "issued_at": 990,
+        "expires_at": 1100,
+        "host_owner": "ClientPC-windows-host",
+        "host_certificate_sha256": "9537bf264067e8dc7e0f70aa342ad38d2358f849df62d7f9603f7303861bfff0",
+        "target": "slack-response-policy",
+        "base_hash": "552fe70f2ab4a8558d7f927411d13493d7860f0ee94c78b71834427473e3d636",
+        "new_hash": "2bba6a2d8450f6c16af056b2ad91e3cb150b9560614b08af445580e7b7d1d09b",
+        "receipt_hash": "c554af62602ec3d534ab2674b96578ebfbff51cb7daa7e23affa9951cbff6d90"
+      },
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "apply_response": {
+      "status": "applied_restricted",
+      "proposal_id": "proposal_rule_fixture",
+      "proposal_hash": "425fe4dea6cc33849d1942442ad0931feb9ca5d62d58db3a2ecedefd42c2dc17",
+      "target": "slack-response-policy",
+      "new_hash": "2bba6a2d8450f6c16af056b2ad91e3cb150b9560614b08af445580e7b7d1d09b",
+      "classification": {
+        "origin": "slack",
+        "data_class": "slack_restricted",
+        "external_ai": "deny",
+        "cloud_fallback": false
+      }
+    },
+    "status_request": {
+      "operation": "apply",
+      "request_id": "apply_rule_fixture",
+      "session_id": "session_fixture_01",
+      "request_hash": "d7f3776573449d5fb1f784251afc5547460969795f9dd0e1215818d4973ef1c8",
+      "restriction": {
+        "origin": "slack",
+        "dataClass": "slack_restricted",
+        "externalAi": "deny",
+        "cloudFallback": false
+      }
+    },
+    "status_unknown_response": {
+      "state": "unknown",
+      "retry_safe": false
+    },
+    "status_applied_response": {
+      "state": "applied",
+      "request_hash": "d7f3776573449d5fb1f784251afc5547460969795f9dd0e1215818d4973ef1c8",
+      "result": {
+        "classification": {
+          "cloud_fallback": false,
+          "data_class": "slack_restricted",
+          "external_ai": "deny",
+          "origin": "slack"
+        },
+        "new_hash": "2bba6a2d8450f6c16af056b2ad91e3cb150b9560614b08af445580e7b7d1d09b",
+        "proposal_hash": "425fe4dea6cc33849d1942442ad0931feb9ca5d62d58db3a2ecedefd42c2dc17",
+        "proposal_id": "proposal_rule_fixture",
+        "status": "applied_restricted",
+        "target": "slack-response-policy"
+      },
+      "retry_safe": false
+    }
+  }
+}
