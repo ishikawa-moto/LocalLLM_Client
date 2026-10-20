@@ -87,6 +87,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     internal async Task Run(CancellationToken token)
     {
         while(!token.IsCancellationRequested){
+            SlackResultReturnRequests.Step(options,store);
             foreach(var waiting in store.WaitingForOcr()){
                 if(waiting.FileIds.All(f=>store.GetAttachment(waiting.Id,f) is {OcrJob: {} id} && new OcrJobStore(ocr).GetState(id).Status is "complete" or "failed" or "cancelled" or "expired"))store.OcrReady(waiting.Id);
             }
@@ -117,9 +118,12 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                         }
                         if(!ready){store.WaitForOcr(job.Id);}else{
                             var raw=string.Join("\n\n",texts);
-                            if(System.Text.Encoding.UTF8.GetByteCount(raw)>48000)throw new InvalidDataException("SLACK_PDF_ANALYSIS_REQUIRES_SMALLER_SECTION");
-                            var interpreted=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,JsonSerializer.Serialize(new{untrusted_ocr=raw,references=refs,restriction=SlackRestriction.Instance}),job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
-                            store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,interpretation=interpreted,restriction=SlackRestriction.Instance}),true,true);
+                            if(SlackResultText.OcrOnly(job.Text))store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,output_kind="ocr_text",restriction=SlackRestriction.Instance}),true,true);
+                            else{
+                                if(System.Text.Encoding.UTF8.GetByteCount(raw)>48000)throw new InvalidDataException("SLACK_PDF_ANALYSIS_REQUIRES_SMALLER_SECTION");
+                                var interpreted=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,JsonSerializer.Serialize(new{untrusted_ocr=raw,references=refs,restriction=SlackRestriction.Instance}),job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
+                                store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,interpretation=interpreted,restriction=SlackRestriction.Instance}),true,true);
+                            }
                         }
                     }else{
                         var session=store.GetSession(job.SessionId);var history=store.History(job.SessionId).Where(x=>x.Id!=job.Id&&x.Phase=="complete").ToArray();

@@ -11,5 +11,6 @@
   "maxFiles": 4,
   "outputTokens": 1024,
   "inferenceSeconds": 30,
-  "compressionThreshold": 8000
+  "compressionThreshold": 8000,
+  "returnFileResults": false
 }

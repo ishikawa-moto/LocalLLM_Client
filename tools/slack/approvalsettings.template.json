@@ -1,10 +1,8 @@
 {
   "listenAddress": "REPLACE_WITH_CLIENT_LAN_IP",
-  "port": 18443,
-  "publicOrigin": "https://REPLACE_WITH_TRUSTED_LAN_DNS:18443",
+  "port": "REPLACE_WITH_APPROVAL_PORT",
+  "publicOrigin": "https://REPLACE_WITH_TRUSTED_LAN_DNS:REPLACE_WITH_APPROVAL_PORT",
   "serverCertificateThumbprint": "REPLACE_WITH_SERVER_CERTIFICATE_THUMBPRINT",
-  "adminCertificateSha256": {
-    "REPLACE_WITH_CLIENT_AUTH_CERTIFICATE_SHA256": "localbrain-admin"
-  },
-  "lanCidr": "REPLACE_WITH_EXACT_PRIVATE_LAN_CIDR"
+  "lanCidr": "REPLACE_WITH_EXACT_PRIVATE_LAN_CIDR",
+  "passwordCredentialFile": "C:\\LocalBrainPrivate\\slack-secrets\\approval-password.json"
 }

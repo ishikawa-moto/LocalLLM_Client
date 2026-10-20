@@ -13,6 +13,10 @@ internal static class SlackCommands
             Console.WriteLine(JsonSerializer.Serialize(new{feature="slack",enabled=false,configuration_required=true,external_ai="deny",arbitrary_commands=false,automatic_adoption=false}));return;
         }
         var options=SlackOptions.Load(Option("--config"));
+        if(operation is "return-ocr-text" or "retry-ocr-ticket"){
+            if(!options.Enabled||!options.ReturnFileResults)throw new InvalidOperationException("SLACK_FILE_RETURN_DISABLED");
+            Console.WriteLine(JsonSerializer.Serialize(new{status=SlackResultReturnRequests.Submit(options,Option("--job"),operation=="retry-ocr-ticket"),format="txt",ocr_or_model_runs=0}));return;
+        }
         if(operation=="verify"){
             using var identityApi=new SlackApi(options);using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(40));
             await identityApi.ValidateIdentity(options,deadline.Token);
@@ -31,7 +35,7 @@ internal static class SlackCommands
         var ocr=OcrConfig.Read()!;using var api=new SlackApi(options);using var gateway=new GatewayClient(ClientConfig.Load());
         var priority=new SlackPriority(ocr);var processor=new SlackProcessor(options,store,api,new SlackLocalInference(gateway,store),ocr,priority);
         store.Recover();
-        var tasks=new List<Task>{new SlackSocket(options,store,api).Run(stop.Token),SlackSocket.Replies(store,api,stop.Token),processor.Run(stop.Token),processor.Maintenance(stop.Token),new SlackApplicationWorker(store,gateway).Run(stop.Token)};
+        var tasks=new List<Task>{new SlackSocket(options,store,api).Run(stop.Token),SlackSocket.Replies(store,api,stop.Token),processor.Run(stop.Token),processor.Maintenance(stop.Token),new SlackApplicationWorker(store,gateway).Run(stop.Token),SlackFileDelivery.Run(store,api,stop.Token)};
         if(args.Contains("--web-config")){
             var web=JsonSerializer.Deserialize<SlackApprovalOptions>(File.ReadAllBytes(Option("--web-config")),SlackOptions.Json)??throw new InvalidDataException("SLACK_WEB_CONFIG_INVALID");
             tasks.Add(new SlackApprovalWeb(web,store).Run(stop.Token));

@@ -29,7 +29,8 @@ internal static class RestrictedExecution
 
 internal sealed record SlackOptions(bool Enabled, string Root, string TeamId, string ChannelId, string BotUserId,
     string AppTokenFile, string BotTokenFile, int MaxQueue = 100, int MaxFileBytes = 4 * 1024 * 1024,
-    int MaxFiles = 4, int OutputTokens = 1024, int InferenceSeconds = 30, int CompressionThreshold = 8000)
+    int MaxFiles = 4, int OutputTokens = 1024, int InferenceSeconds = 30, int CompressionThreshold = 8000,
+    bool ReturnFileResults = false)
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     internal static string ConfigPath => Path.Combine(CanonicalStore.DefaultRoot, "slack", "config.json");

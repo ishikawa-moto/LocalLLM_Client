@@ -18,7 +18,7 @@ flowchart LR
   Host --> Memory[Existing Saluki 128K: lowest priority]
   Host <-->|Private LAN mTLS| Gateway[ServerPC local Gateway / Qwen 32K]
   Gateway --> Proposals[Restricted local review and proposals]
-  Browser[Enrolled LAN PC / phone] -->|Trusted HTTPS + administrator certificate| Approval[Host approval page]
+  Browser[LAN PC / phone] -->|Trusted HTTPS + password login| Approval[Host approval page]
   Approval -->|Exact human-bound receipt| Host
   Host -->|One reserved application| Proposals
   Foreground[Continue / Agent / TaskMemory / Laya] -->|Priority and preemption| Host
@@ -34,7 +34,7 @@ This diagram describes the implemented optional path. The public templates remai
 4. Copy the disabled settings template to a private Host-owned directory outside Git. Replace paths/IDs. Run `Set-SlackTokens.ps1` in a local Windows terminal; token entry is concealed and saved in user/SYSTEM-only files. Never paste tokens in chat, commands, screenshots or Git.
 5. Keep the feature disabled until both Client and Server candidates have passed their integration checks and the runtime/rollback plan has been approved.
 
-The bot subscribes only to `app_mention`; explicit `<@BOT_USER_ID>` is required on every request. The manifest requests `app_mentions:read`, `channels:read`, `chat:write`, and `files:read`. It does not request history scanning or arbitrary URL ingestion.
+The bot subscribes only to `app_mention`; explicit `<@BOT_USER_ID>` is required on every request. The manifest requests `app_mentions:read`, `channels:read`, `chat:write`, `files:read` and `files:write`. Reinstall the Slack App after changing scopes. It does not request history scanning or arbitrary URL ingestion.
 
 ## Durable reception and recovery
 
@@ -62,9 +62,9 @@ Daily cleanup removes inactive sessions after 30 days. Storage-attributable pres
 
 ClientPC Windows Host is the authority. Use a dedicated LAN HTTPS URL ending in `/slack/approvals` directly; do not depend on an HTTP redirect/menu for trust. The existing ServerPC chat can link to the registered URL but is not an approval authority.
 
-Use a trusted private-CA server certificate with the actual LAN DNS/IP SAN, plus separately enrolled administrator client-auth certificates. Import the CA trust and administrator client identity into each authorized PC/iPhone/Android using the organization's approved device process. Never bypass certificate warnings. Each device must be on the configured private subnet; actual reachability and mobile certificate selection need physical verification. No Internet/VPN/port-forwarding endpoint is installed.
+Use a trusted private-CA server certificate with the actual LAN DNS/IP SAN. Devices need to trust the server CA; they no longer need administrator client certificates. Never bypass certificate warnings. Each device must be on the configured private subnet; actual reachability and mobile usability need physical verification. No Internet/VPN/port-forwarding endpoint is installed. Use `tools/slack/Set-ApprovalPassword.ps1` locally to prepare a credential file outside Git and the matching web configuration. The script requires the known old configuration hash and preserves existing files.
 
-The approval listener requires TLS, exact enrolled client-certificate SHA256 and client-auth EKU, a short-lived Secure/HttpOnly/SameSite=Strict cookie, same-origin CSRF token, proposal content hash, expiration and replay checks. Untrusted proposal text is rendered as text. Server logs omit request bodies, certificates and tokens. Host approval is distinct from formal application; an `approved` item is not an `applied` item. Approval atomically reserves an exact canonical request, bound to the Host mTLS certificate, administrator, proposal/review hashes, target/base/new hashes, nonce and five-minute expiration. A separate worker dispatches it once. Ambiguous responses are reconciled through read-only Server status; unknown/interrupted results remain HOLD and are never replayed. Accepted items remain in restricted storage and are not ordinary SecondBrain knowledge.
+The approval listener requires HTTPS and administrator password login. The site-selected policy permits 4–256 characters, stores only a random-salted PBKDF2-SHA256 hash (600,000 iterations), and has no failed-attempt lockout. The Secure/HttpOnly/SameSite=Strict login cookie expires after one hour; logout, password rotation or receiver restart also ends the session. Same-origin CSRF, proposal content hash, expiration and replay checks remain mandatory. Untrusted proposal text is rendered as text. Server logs omit passwords, request bodies, certificates and tokens. Host approval is distinct from formal application; an `approved` item is not an `applied` item. Approval atomically reserves an exact canonical request, bound to the existing internal Host mTLS certificate, administrator, proposal/review hashes, target/base/new hashes, nonce and five-minute expiration. A separate worker dispatches it once. Ambiguous responses are reconciled through read-only Server status; unknown/interrupted results remain HOLD and are never replayed. Accepted items remain in restricted storage and are not ordinary SecondBrain knowledge.
 
 The optional user-session notification watcher displays only a generic pending notice. Run it in the logged-in Windows session, not session 0. The approval list remains authoritative when a notification is missed.
 
@@ -98,7 +98,15 @@ localbrain slack serve --config <private-slack-config.json> --web-config <privat
 
 This single owner runs intake, reply outbox, processing, background maintenance, approval application and HTTPS. It does not replace or restart the existing Bridge/OCR service. The `host.lock` prevents a second Slack owner. The existing Bridge OCR scheduler must be running with its qualified configuration. The optional notification watcher runs separately in the interactive user's session. No Windows service, firewall opening, certificate enrollment or scheduled task is installed by this PR.
 
-Use the real existing Host owner (`pc73-windows-host`) and Host mTLS certificate fingerprint in the Server's private settings; public fixture identities are not production identities. The Server connection is restricted to private IPv4, existing HTTPS certificate validation, no proxy and no redirects. Ordinary Client requests do not instantiate this optional transport. Client HTTPS supports `/slack/approvals`; the original `/` also serves the same authenticated page.
+Use the actual configured Host owner and Host mTLS certificate fingerprint in the Server's private settings; public fixture identities are not production identities. The Server connection is restricted to private IPv4, existing HTTPS certificate validation, no proxy and no redirects. Ordinary Client requests do not instantiate this optional transport. Client HTTPS supports `/slack/approvals`; the original `/` also serves the same login/approval page.
+
+### Text file results
+
+`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches the exact UTF-8 transcription as `ocr-<job-id>.txt` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
+
+The durable file outbox freezes content and destination before obtaining a Slack upload ticket, uploading bytes, and completing the share. Known rate limits defer; ambiguous network/completion outcomes remain held without automatic resend. Pending/uncertain files protect their Session from retention cleanup. Private upload capabilities and text are never logged or published.
+
+For an explicitly authorized, already completed job, `localbrain slack return-ocr-text --config <private-config> --job <job-id>` submits a local request to the standing single Host owner. It reuses saved OCR and does not rerun OCR or inference. Repeating the operator command observes the same request; a terminal sent file is not sent again. Local OCR results remain under the private OCR jobs directory and in the private Slack store.
 
 ## Review and release status
 
@@ -113,3 +121,5 @@ The Server stream parser now accepts valid role/finish/usage metadata while pres
 The Server still does not cold-start Qwen for Slack alone. When the existing model is stopped, Slack processing waits for the ordinary model lifecycle rather than changing settings or using a cloud fallback. Human knowledge/Rule application remains disabled on the qualified installation. Do not enable it merely because the text-reply check passed.
 
 All site-specific task, firewall, certificate, credential and activation changes remain local operator records. They are not copied into Git. Public templates remain disabled and contain placeholders; private configuration, original messages, OCR results and generated answers are not publication artifacts.
+
+An operator may use `slack retry-ocr-ticket --config <private-config> --job <job-id>` after correcting a known API rejection before upload. It only resets a held ticket with no remote file ID or upload URL and unchanged OCR bytes. It cannot reset uncertain uploads or completed/ambiguous shares.

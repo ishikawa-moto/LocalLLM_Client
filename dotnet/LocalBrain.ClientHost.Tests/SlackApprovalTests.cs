@@ -35,8 +35,15 @@ internal static class SlackApprovalTests
         var proposal=store.Propose(session,"knowledge","PUBLIC <script>alert(1)</script>","PUBLIC source","PUBLIC local two pass fixture",now);
         var portProbe=new TcpListener(IPAddress.Loopback,0);portProbe.Start();var port=((IPEndPoint)portProbe.LocalEndpoint).Port;portProbe.Stop();
         var origin="https://localhost:"+port;
-        var options=new SlackApprovalOptions(IPAddress.Loopback.ToString(),port,origin,server.Thumbprint,new(){[client.GetCertHashString(HashAlgorithmName.SHA256).ToLowerInvariant()]="public-test-admin"},"192.168.10.0/24");
-        var web=new SlackApprovalWeb(options,store);Check(web.ValidateCertificate(client)&&!web.ValidateCertificate(outsider),"exact admin enrollment");
+        var password="PUBLIC-test-password-20261020";
+        var credential=SlackPasswordCredential.Create(password,"public-test-admin");var clock=now;
+        Check(SlackPasswordCredential.Create("1234").Matches("1234"),"four character minimum supported");
+        Check(credential.Matches(password)&&!credential.Matches(password+"x"),"salted password exact matching");
+        var auth=new SlackPasswordAuth(()=>credential);
+        for(var i=0;i<6;i++)Check(!auth.Verify("wrong").Accepted,"invalid password");
+        Check(auth.Verify(password).Accepted,"no attempt-count lockout");
+        var options=new SlackApprovalOptions(IPAddress.Loopback.ToString(),port,origin,server.Thumbprint,Path.Combine(directory,"password.json"),"192.168.10.0/24");
+        var web=new SlackApprovalWeb(options,store,credential:()=>credential,clock:()=>clock);
         using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(30));var serving=web.RunPublicFixture(server,stop.Token);
         HttpClient Client(X509Certificate2? cert){var handler=new HttpClientHandler{UseProxy=false,AllowAutoRedirect=false};if(cert is not null)handler.ClientCertificates.Add(cert);
             handler.ServerCertificateCustomValidationCallback=(request,certificate,chain,errors)=>{
@@ -45,13 +52,20 @@ internal static class SlackApprovalTests
             };return new(handler){BaseAddress=new Uri(origin),Timeout=TimeSpan.FromSeconds(5)};
         }
         try{
-            using var admin=Client(client);HttpResponseMessage? page=null;
+            using var admin=Client(null);HttpResponseMessage? page=null;
             for(var i=0;i<30;i++){try{page=await admin.GetAsync("/",stop.Token);break;}catch(HttpRequestException error){if(i==0)Console.WriteLine("PUBLIC_FIXTURE_CONNECT: "+error.ToString());await Task.Delay(100,stop.Token);}}
-            Check(page is not null&&page.IsSuccessStatusCode,"real HTTPS authenticated page");
+            Check(page is not null&&page.IsSuccessStatusCode,"real HTTPS login without client certificate");
             var html=await page!.Content.ReadAsStringAsync(stop.Token);Check(page.Headers.TryGetValues("Content-Security-Policy",out var csp)&&csp.Single().Contains("frame-ancestors 'none'"),"frame and script policy");
             Check(page.Headers.GetValues("Set-Cookie").Any(x=>x.Contains("secure",StringComparison.OrdinalIgnoreCase)&&x.Contains("httponly",StringComparison.OrdinalIgnoreCase)&&x.Contains("samesite=strict",StringComparison.OrdinalIgnoreCase)),"secure cookie");
-            var csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;Check(csrf.Length==64,"session CSRF token");
-            foreach(var candidate in new X509Certificate2?[]{null,outsider}){using var denied=Client(candidate);try{using var response=await denied.GetAsync("/",stop.Token);Check(!response.IsSuccessStatusCode,"unauthenticated request denied");}catch(HttpRequestException){checks++;}}
+            var csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;Check(csrf.Length==64,"prelogin CSRF token");
+            using(var denied=await admin.GetAsync("/api/proposals",stop.Token))Check(denied.StatusCode==HttpStatusCode.Unauthorized,"unauthenticated data denied");
+            async Task<HttpResponseMessage> Login(string value,string? csrfValue,string originValue){using var req=new HttpRequestMessage(HttpMethod.Post,"/api/login");req.Headers.Add("Origin",originValue);if(csrfValue is not null)req.Headers.Add("X-CSRF-Token",csrfValue);req.Content=new StringContent(JsonSerializer.Serialize(new{password=value}),Encoding.UTF8,"application/json");return await admin.SendAsync(req,stop.Token);}
+            using(var denied=await Login(password,null,origin))Check(denied.StatusCode==HttpStatusCode.Unauthorized,"login CSRF required");
+            using(var denied=await Login(password,csrf,"https://foreign.invalid"))Check(denied.StatusCode==HttpStatusCode.Unauthorized,"login origin required");
+            using(var denied=await Login("wrong",csrf,origin))Check(denied.StatusCode==HttpStatusCode.Unauthorized,"wrong password denied");
+            using(var yes=await Login(password,csrf,origin))Check(yes.IsSuccessStatusCode,"password login without browser certificate");
+            html=await admin.GetStringAsync("/",stop.Token);csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;
+            Check(html.Contains("一覧を更新")&&csrf.Length==64,"authenticated approval page");
             using(var list=await admin.GetAsync("/api/proposals",stop.Token)){Check(list.IsSuccessStatusCode,"authorized list");var body=await list.Content.ReadAsStringAsync(stop.Token);Check(body.Contains("slack_restricted")&&!body.Contains("<script>"),"restriction and JSON encoding");}
             async Task<HttpResponseMessage> Decide(string hash,string? csrfValue,string originValue){using var req=new HttpRequestMessage(HttpMethod.Post,"/api/decision");req.Headers.Add("Origin",originValue);if(csrfValue is not null)req.Headers.Add("X-CSRF-Token",csrfValue);req.Content=new StringContent(JsonSerializer.Serialize(new{id=proposal.Id,hash,action="approve"}),Encoding.UTF8,"application/json");return await admin.SendAsync(req,stop.Token);}
             using(var no=await Decide(proposal.Hash,null,origin))Check(!no.IsSuccessStatusCode,"missing CSRF denied");
@@ -59,6 +73,19 @@ internal static class SlackApprovalTests
             using(var no=await Decide(new string('0',64),csrf,origin))Check(!no.IsSuccessStatusCode,"hash drift denied");
             using(var yes=await Decide(proposal.Hash,csrf,origin)){Check(yes.IsSuccessStatusCode,"real HTTPS Host approval");Check(!(JsonSerializer.Deserialize<JsonElement>(await yes.Content.ReadAsStringAsync(stop.Token)).GetProperty("formal_adoption").GetBoolean()),"approval does not falsely claim apply");}
             using(var no=await Decide(proposal.Hash,csrf,origin))Check(!no.IsSuccessStatusCode,"replay denied");
+            credential=SlackPasswordCredential.Create(password,"public-test-admin");
+            using(var no=await admin.GetAsync("/api/proposals",stop.Token))Check(no.StatusCode==HttpStatusCode.Unauthorized,"password rotation revokes sessions");
+            html=await admin.GetStringAsync("/",stop.Token);csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;
+            using(var yes=await Login(password,csrf,origin))Check(yes.IsSuccessStatusCode,"login after rotation");
+            clock=now.AddMinutes(59);
+            using(var yes=await admin.GetAsync("/api/proposals",stop.Token))Check(yes.IsSuccessStatusCode,"session remains valid before one hour");
+            html=await admin.GetStringAsync("/",stop.Token);csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;
+            using(var request=new HttpRequestMessage(HttpMethod.Post,"/api/logout")){request.Headers.Add("Origin",origin);request.Headers.Add("X-CSRF-Token",csrf);using var response=await admin.SendAsync(request,stop.Token);Check(response.IsSuccessStatusCode,"explicit logout");}
+            using(var no=await admin.GetAsync("/api/proposals",stop.Token))Check(no.StatusCode==HttpStatusCode.Unauthorized,"logout immediately ends session");
+            html=await admin.GetStringAsync("/",stop.Token);csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;
+            using(var yes=await Login(password,csrf,origin))Check(yes.IsSuccessStatusCode,"login after logout");
+            clock=now.AddMinutes(120);
+            using(var no=await admin.GetAsync("/api/proposals",stop.Token))Check(no.StatusCode==HttpStatusCode.Unauthorized,"session expires after one hour");
         }finally{stop.Cancel();try{await serving;}catch(OperationCanceledException){}}
         Console.WriteLine(JsonSerializer.Serialize(new{slack_https_public_checks=checks,status="PASS",real_lan_phone_test=false,system_certificate_store_modified=false}));
     }

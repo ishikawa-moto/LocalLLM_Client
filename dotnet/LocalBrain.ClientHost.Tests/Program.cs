@@ -2,6 +2,7 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
+if(args.Length==1&&args[0]=="--slack-file-proof"){await SlackFileTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-adoption-proof"){await SlackAdoptionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-proof"){await SlackTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-https-proof"){await SlackApprovalTests.RunAsync();return;}
