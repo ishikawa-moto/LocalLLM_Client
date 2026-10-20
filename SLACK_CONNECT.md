@@ -24,7 +24,7 @@ flowchart LR
   Foreground[Continue / Agent / TaskMemory / Laya] -->|Priority and preemption| Host
 ```
 
-This diagram describes the implemented optional path. The public templates remain disabled; the separately approved installation has qualified a public text-only Slack round trip. Slack itself stores uploads in its cloud; OCR, local inference, summaries and private result/proposal storage do not use external AI. The approval page runs on ClientPC. The legacy ServerPC HTTP menu is only a link to its trusted HTTPS address.
+This diagram describes the implemented optional path. The public templates remain disabled; the separately approved installation has qualified a public text-only Slack round trip. Slack itself stores uploads in its cloud; OCR, local inference, summaries and private result/proposal storage do not use external AI. The approval page runs on ClientPC. The ServerPC chat sidebar links directly to its trusted HTTPS address; the HTTP chat is not an approval proxy. On the approved installation the link appears below the new-chat button after reloading an already open page.
 
 ## Slack administrator setup
 
@@ -110,7 +110,7 @@ For an explicitly authorized, already completed job, `localbrain slack return-oc
 
 ## Review and release status
 
-See `SLACK_VALIDATION.md` for exact public test coverage and unqualified gates. Actual public Slack mention reception, acknowledgement and completion reply now pass on the approved installation. Client checks and normal regression, Server full public regression, limited independent SSE review, authenticated capabilities, public priority/completion probes and the local enrolled-admin HTTPS checks are recorded in `SLACK_VALIDATION.md`. Real Slack file/OCR events, reconnect and reboot recovery, restricted Saluki compression, live knowledge/Rule application and retention, physical mobile usability and broader resource performance remain unqualified. The PR remains an unmerged Draft; local activation is a separate operator decision. A failed local process never falls back to Cloud AI.
+See `SLACK_VALIDATION.md` for exact public test coverage and unqualified gates. Actual public Slack mention reception, acknowledgement and completion reply now pass on the approved installation. Client checks and normal regression, Server full public regression, limited independent SSE review, authenticated capabilities, public priority/completion probes and the local password-authenticated HTTPS checks are recorded in `SLACK_VALIDATION.md`. Real Slack file/OCR events, reconnect and reboot recovery, restricted Saluki compression, live knowledge/Rule application and retention, physical mobile usability and broader resource performance remain unqualified. The implemented scope is ready for review against main. Local activation remains a separate operator decision; merging does not change another installation. A failed local process never falls back to Cloud AI.
 
 ## Current operator qualification
 
@@ -118,7 +118,9 @@ The App is installed and invited, concealed credentials were entered locally, an
 
 The Server stream parser now accepts valid role/finish/usage metadata while preserving malformed-frame, size, completion and cancellation checks. A bounded public restricted request completed successfully after the correction. This fixes the observed text-reply failure; it does not qualify arbitrary attachments or general model quality.
 
-The Server still does not cold-start Qwen for Slack alone. When the existing model is stopped, Slack processing waits for the ordinary model lifecycle rather than changing settings or using a cloud fallback. Human knowledge/Rule application remains disabled on the qualified installation. Do not enable it merely because the text-reply check passed.
+The approved Server installation enables opt-in local model startup for validated Host-authenticated chat. A bounded public stopped-to-ready-to-complete probe passed with one inference. Autonomous review, status and capabilities do not start the model; uncertain requests are not blindly retried. Public templates still default to disabled.
+
+The approved installation also enables human-bound restricted knowledge and enumerated Slack-response Rule application. Candidates can accumulate without adoption. After password login, an administrator reviews the exact content and local review, then explicitly approves it; the authenticated Host binds the application to the proposal/review/target/base/new hashes, nonce and expiry. Actual Host capabilities report human application enabled while automatic adoption, ordinary SecondBrain adoption, external AI and cloud fallback remain false. The chat entry, HTTPS login page and unauthenticated denial were checked from ClientPC. No real private proposal was adopted or production Rule changed as a test; physical other-device approval remains unqualified.
 
 All site-specific task, firewall, certificate, credential and activation changes remain local operator records. They are not copied into Git. Public templates remain disabled and contain placeholders; private configuration, original messages, OCR results and generated answers are not publication artifacts.
 
