@@ -78,6 +78,11 @@ internal sealed partial class SlackStore : IDisposable
         Execute("UPDATE jobs SET phase=$phase WHERE id=$id AND phase='running';",null,("$phase",phase),("$id",id));
     }}
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
+    internal int FailWaitingSummary(string session){lock(gate){using var tx=db.BeginTransaction();var waiting=new List<Job>();using(var c=Command("SELECT * FROM jobs WHERE session_id=$id AND phase='waiting_summary';",tx,("$id",session)))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));var failed=0;
+        foreach(var job in waiting){if(Execute("UPDATE jobs SET phase='failed',result='LOCAL_COMPRESSION_UNAVAILABLE' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==0)continue;
+            var s=GetSession(job.SessionId,tx);QueueReply(job.Id+"-completed",job.Id,s.Channel,s.Thread,$"<@{job.User}> 処理を完了できませんでした。処理ID：{job.Id}。管理者に確認してください。","completed",tx);Audit("failed",job.Id,DateTimeOffset.UtcNow,tx);failed++;}
+        tx.Commit();return failed;
+    }}
     internal void WaitForOcr(string id){lock(gate)Execute("UPDATE jobs SET phase='waiting_ocr' WHERE id=$id AND phase='running';",null,("$id",id));}
     internal Job[] WaitingForOcr(){lock(gate){using var c=Command("SELECT * FROM jobs WHERE phase='waiting_ocr';");using var r=c.ExecuteReader();var list=new List<Job>();while(r.Read())list.Add(ReadJob(r));return list.ToArray();}}
     internal void OcrReady(string id){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='waiting_ocr';",null,("$id",id));}

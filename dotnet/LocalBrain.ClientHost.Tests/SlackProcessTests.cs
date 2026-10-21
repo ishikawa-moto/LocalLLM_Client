@@ -60,6 +60,12 @@ internal static class SlackProcessTests
             try{store.SaveAttachment(fileJob,"FOTHER",".png",[1]);throw new Exception("foreign attachment accepted");}catch(UnauthorizedAccessException){checks++;}
             while(store.ClaimReply(now) is {} reply)store.ReplySent(reply.Id,"1700000000.000001");
             var claimed=store.ClaimNext()!;store.Finish(claimed.Id,"PUBLIC OCR",true,true);while(store.ClaimReply(now) is {} reply)store.ReplySent(reply.Id,"1700000000.000002");
+            var summaryTs=now.AddSeconds(2).ToUnixTimeSeconds()+".000000";var summaryMention=new SlackMention("EV-SUMMARY","TTEST","CTEST","UALICE",summaryTs,summaryTs,"<@UBOT> summary",[],now);
+            var summaryId=store.Accept(summaryMention,since,now).JobId!;var acceptedReply=store.ClaimReply(now);Check(acceptedReply?.JobId==summaryId,"summary fixture acceptance reply");store.ReplySent(acceptedReply!.Id,"1700000000.000003");
+            var summaryJob=store.ClaimNext()!;store.WaitForSummary(summaryJob.Id);Check(store.GetJob(summaryJob.Id).Phase=="waiting_summary","summary wait fixture");
+            Check(store.FailWaitingSummary(summaryJob.SessionId)==1,"disabled compression fails waiting job");
+            Check(store.GetJob(summaryJob.Id) is {Phase:"failed",Result:"LOCAL_COMPRESSION_UNAVAILABLE"},"compression failure is terminal");
+            var failedReply=store.ClaimReply(now);Check(failedReply?.JobId==summaryJob.Id&&failedReply.Text.Contains("完了できませんでした",StringComparison.Ordinal),"compression failure notification");store.ReplySent(failedReply!.Id,"1700000000.000004");
             Check(store.Cleanup(now,true,()=>true)==1&&store.GetAttachment(fileJob,"FPUBLIC") is null,"session cleanup owns only its attachment rows");
             Check(store.GetJob(job.Id).Result=="PUBLIC","other session survives");
         }finally{Environment.SetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG",old);}

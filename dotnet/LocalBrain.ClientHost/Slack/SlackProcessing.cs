@@ -186,7 +186,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
         var source=JsonSerializer.Serialize(history.Where(x=>x.Phase=="complete").Select(x=>new{message_id=x.EventId,user=x.Text,assistant=x.Result,ocr_refs=x.FileIds}));
         if(source.Length>200000)throw new InvalidDataException("SLACK_HISTORY_SEGMENT_LIMIT");
         await using var memory=new TaskMemoryQ8(CanonicalStore.DefaultRoot,background:true);
-        if(!memory.Enabled)throw new SlackDeferred();
+        if(!memory.Enabled){store.FailWaitingSummary(sessionId);return;}
         try{var summary=await priority.Run(t=>memory.SummarizeSlackAsync(source,t),120,token);if(store.SaveSummary(sessionId,summary,hash))store.SummaryReady(sessionId);}
         catch(IOException){/* Existing TaskMemory backend owns the lease: leave queued, never steal it. */}
     }
