@@ -9,7 +9,7 @@ namespace LocalBrain.ClientHost.Slack;
 internal static class SlackResultText
 {
     // Explicit transcription requests do not require or invite model interpretation.
-    internal static bool OcrOnly(string request)=>Regex.IsMatch(request,@"文字起こし|文字.{0,30}テキスト|(?:OCR|読み取).{0,20}(?:テキスト|文字).{0,20}(?:返|出力|添付)",RegexOptions.IgnoreCase|RegexOptions.Singleline);
+    internal static bool OcrOnly(string request)=>Regex.IsMatch(request,@"文字起こし|文字.{0,30}テキスト|(?:OCR|読み取).{0,20}(?:テキスト|文字).{0,20}(?:返|出力|添付)|表.{0,25}(?:Markdown|md).{0,20}(?:返|出力|添付|再現)|(?:Markdown|md).{0,20}(?:再現|文字起こし)",RegexOptions.IgnoreCase|RegexOptions.Singleline);
     internal static byte[] Utf8(string value){var b=new UTF8Encoding(false,true).GetBytes(value);if(b.Length is <1 or >1024*1024)throw new InvalidDataException("SLACK_RESULT_FILE_SIZE");return b;}
 }
 
@@ -23,31 +23,48 @@ internal sealed partial class SlackStore
     {
         if(kind is not("ocr" or "analysis"))throw new InvalidDataException("SLACK_RESULT_KIND");
         var session=GetSession(job.SessionId,tx);if(session.Channel!=options.ChannelId)throw new UnauthorizedAccessException("SLACK_RESULT_CHANNEL");
-        var bytes=SlackResultText.Utf8(text);var hash=SlackHash.Of(bytes);var id=job.Id+"-"+kind+"-text";
+        var id=job.Id+"-"+kind+"-text";
+        var bytes=SlackResultText.Utf8(text);var hash=SlackHash.Of(bytes);
         var existing=Scalar("SELECT hash FROM result_files WHERE id=$id;",tx,("$id",id)) as string;
-        if(existing is not null){if(existing!=hash)throw new InvalidDataException("SLACK_RESULT_FILE_CHANGED");return;}
+        if(existing is not null){if(existing!=hash)throw new InvalidDataException("SLACK_RESULT_FILE_CHANGED");ValidateFrozenResult(id,hash,tx);return;}
         if(StoredBytes(tx)+bytes.Length>512L*1024*1024)throw new IOException("SLACK_STORAGE_ADMISSION");
-        Execute("INSERT INTO result_files VALUES($id,$job,$channel,$thread,$filename,$bytes,$hash,'ticket','pending',NULL,NULL,0);",tx,("$id",id),("$job",job.Id),("$channel",session.Channel),("$thread",session.Thread),("$filename",kind+"-"+job.Id+".txt"),("$bytes",bytes),("$hash",hash));
+        Execute("INSERT INTO result_files VALUES($id,$job,$channel,$thread,$filename,$bytes,$hash,'ticket','pending',NULL,NULL,0);",tx,("$id",id),("$job",job.Id),("$channel",session.Channel),("$thread",session.Thread),("$filename",kind+"-"+job.Id+(kind=="ocr"?".md":".txt")),("$bytes",bytes),("$hash",hash));
     }
-    private string OcrText(Job job,SqliteTransaction tx)
+    private void ValidateFrozenResult(string id,string expected,SqliteTransaction tx)
+    {
+        var bytes=Scalar("SELECT bytes FROM result_files WHERE id=$id;",tx,("$id",id)) as byte[];
+        if(bytes is null||SlackHash.Of(bytes)!=expected)throw new InvalidDataException("SLACK_RESULT_FILE_CHANGED");
+    }
+    private string OcrText(Job job,SqliteTransaction tx,bool markdown=false)
     {
         var texts=job.FileIds.Select(file=>GetAttachment(job.Id,file,tx)??throw new InvalidDataException("SLACK_OCR_NOT_FOUND")).Select(a=>{
-            using var d=JsonDocument.Parse(a.Result??throw new InvalidDataException("SLACK_OCR_NOT_READY"));return d.RootElement.GetProperty("text").GetString()??"";
+            using var d=JsonDocument.Parse(a.Result??throw new InvalidDataException("SLACK_OCR_NOT_READY"));return markdown?a.Result!:d.RootElement.GetProperty("text").GetString()??"";
         }).ToArray();
-        return string.Join("\n\n",texts);
+        return markdown?SlackOcrMarkdown.Render(texts):string.Join("\n\n",texts);
+    }
+    private void QueueOcrFile(Job job,SqliteTransaction tx)
+    {
+        // Old uploads (including uncertain ones) retain exactly their original filename and bytes.
+        var id=job.Id+"-ocr-text";
+        if(Scalar("SELECT hash FROM result_files WHERE id=$id;",tx,("$id",id)) is string hash){ValidateFrozenResult(id,hash,tx);return;}
+        QueueResultFile(job,"ocr",OcrText(job,tx,true),tx);
     }
     internal string QueueSavedOcrText(string id)
     {
         lock(gate){using var tx=db.BeginTransaction();var job=GetJob(id,tx);
             if(!options.ReturnFileResults||job.Phase!="complete"||job.FileIds.Length==0)throw new InvalidOperationException("SLACK_SAVED_OCR_UNAVAILABLE");
-            QueueResultFile(job,"ocr",OcrText(job,tx),tx);Audit("ocr_text_return_queued",id,DateTimeOffset.UtcNow,tx);tx.Commit();return "queued";
+            QueueOcrFile(job,tx);Audit("ocr_text_return_queued",id,DateTimeOffset.UtcNow,tx);tx.Commit();return "queued";
         }
     }
     internal string RetryRejectedOcrTicket(string id)
     {
         lock(gate){using var tx=db.BeginTransaction();var job=GetJob(id,tx);
             if(!options.ReturnFileResults||job.Phase!="complete"||job.FileIds.Length==0)throw new InvalidOperationException("SLACK_SAVED_OCR_UNAVAILABLE");
-            var hash=SlackHash.Of(SlackResultText.Utf8(OcrText(job,tx)));
+            var resultId=id+"-ocr-text";
+            var filename=Scalar("SELECT filename FROM result_files WHERE id=$id;",tx,("$id",resultId)) as string;
+            if(filename is null||filename!="ocr-"+id+".txt"&&filename!="ocr-"+id+".md")throw new InvalidDataException("SLACK_REJECTED_TICKET_RETRY_DENIED");
+            var hash=SlackHash.Of(SlackResultText.Utf8(OcrText(job,tx,filename.EndsWith(".md",StringComparison.Ordinal))));
+            ValidateFrozenResult(resultId,hash,tx);
             // No bytes/share were attempted. Uncertain stages and any allocated remote ID are never reset.
             if(Execute("UPDATE result_files SET state='pending',retry_after=0 WHERE id=$id AND hash=$hash AND stage='ticket' AND state='held' AND remote_id IS NULL AND upload_url IS NULL;",tx,("$id",id+"-ocr-text"),("$hash",hash))!=1)throw new InvalidDataException("SLACK_REJECTED_TICKET_RETRY_DENIED");
             Audit("operator_rejected_ticket_retry",id,DateTimeOffset.UtcNow,tx);tx.Commit();return "queued";
@@ -56,7 +73,7 @@ internal sealed partial class SlackStore
     private void QueueSuccessfulFileResults(Job job,string localResult,SqliteTransaction tx)
     {
         if(job.FileIds.Length>0){
-            QueueResultFile(job,"ocr",OcrText(job,tx),tx);
+            QueueOcrFile(job,tx);
             if(!SlackResultText.OcrOnly(job.Text)){
                 using var value=JsonDocument.Parse(localResult);
                 var interpretation=value.RootElement.GetProperty("interpretation").GetString()??"";

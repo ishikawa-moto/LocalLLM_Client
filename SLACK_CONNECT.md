@@ -102,7 +102,7 @@ Use the actual configured Host owner and Host mTLS certificate fingerprint in th
 
 ### Text file results
 
-`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches the exact UTF-8 transcription as `ocr-<job-id>.txt` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
+`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches a local Markdown reconstruction as `ocr-<job-id>.md` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
 
 The durable file outbox freezes content and destination before obtaining a Slack upload ticket, uploading bytes, and completing the share. Known rate limits defer; ambiguous network/completion outcomes remain held without automatic resend. Pending/uncertain files protect their Session from retention cleanup. Private upload capabilities and text are never logged or published.
 
@@ -125,3 +125,11 @@ The approved installation also enables human-bound restricted knowledge and enum
 All site-specific task, firewall, certificate, credential and activation changes remain local operator records. They are not copied into Git. Public templates remain disabled and contain placeholders; private configuration, original messages, OCR results and generated answers are not publication artifacts.
 
 An operator may use `slack retry-ocr-ticket --config <private-config> --job <job-id>` after correcting a known API rejection before upload. It only resets a held ticket with no remote file ID or upload URL and unchanged OCR bytes. It cannot reset uncertain uploads or completed/ambiguous shares.
+
+### Default OCR Markdown attachments
+
+New image/PDF results are attached as UTF-8 Markdown. Page/attachment boundaries, detected ruled-table cells and estimated spatial reading order are retained. Synthetic column labels show position, not inferred headers. Standard Markdown cannot merge cells: content is anchored at the top-left and the row/column span is noted. Text with no usable geometry falls back to escaped line text. Original page images, colors, fonts and exact document layout are not recreated.
+
+Uncertain regions remain marked. A retained local OCR hypothesis for an unreadable span is included with `[推測]`; without a usable hypothesis `[判読不能]` remains. No model is invoked to invent missing text or layout. General unruled/complex/handwritten layout remains unqualified. Document markup is escaped so OCR content cannot activate HTML or remote image links. Output has the existing 1 MiB attachment limit and never silently truncates.
+
+Frozen legacy `.txt` uploads keep their filename, bytes and delivery state. A default-format change never resends already-sent or uncertain uploads. Known rejected pre-upload tickets remain recoverable under their original format. Analysis attachments remain separate `.txt` files. No DB schema, OCR model, credential, Cloud AI or storage-policy change is required.

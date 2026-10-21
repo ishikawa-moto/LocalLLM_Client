@@ -24,11 +24,12 @@ internal static class SlackFileTests
             store.SaveOcrResult(id,"FPUBLIC",JsonSerializer.Serialize(new{text=raw}));
             store.Finish(id,"{\"output_kind\":\"ocr_text\"}",true,true);return id;
         }
+        var markdown=SlackOcrMarkdown.Render([JsonSerializer.Serialize(new{text=raw})]);
         var job=Prepare("SUCCESS");
         Check(SlackResultText.OcrOnly(store.GetJob(job).Text)&&!SlackResultText.OcrOnly("添付資料の要点を要約してください"),"transcription distinguished from interpretation");
         var file=store.ClaimResultFile(now)!;
-        Check(Encoding.UTF8.GetString(file.Bytes)==raw&&file.Bytes.Length>48000,"long raw UTF8 transcription untruncated");
-        Check(file.Channel=="CTEST"&&file.Thread==now.ToUnixTimeSeconds()+".000001"&&file.Filename=="ocr-"+job+".txt","original channel thread and txt binding");
+        Check(Encoding.UTF8.GetString(file.Bytes)==markdown&&file.Bytes.Length>48000,"long raw UTF8 transcription untruncated");
+        Check(file.Channel=="CTEST"&&file.Thread==now.ToUnixTimeSeconds()+".000001"&&file.Filename=="ocr-"+job+".md","original channel thread and default markdown binding");
         store.RetryResultFile(file,now.AddSeconds(-1));
         var calls=0;using var api=new SlackApi(new Handler(async request=>{
             calls++;var url=request.RequestUri!;
@@ -65,7 +66,7 @@ internal static class SlackFileTests
         var rejected=Prepare("REJECTED");using var rejectApi=new SlackApi(new Handler(_=>Task.FromResult(Json("{\"ok\":false,\"error\":\"invalid_arguments\"}"))),"xapp-PUBLIC","xoxb-PUBLIC");
         await SlackFileDelivery.Step(store,rejectApi,CancellationToken.None);
         Check(store.RetryRejectedOcrTicket(rejected)=="queued","operator may recover only known rejected pre-upload ticket");
-        var same=store.ClaimResultFile(now)!;Check(same.JobId==rejected&&same.Stage=="ticket"&&same.RemoteId is null&&Encoding.UTF8.GetString(same.Bytes)==raw,"recovery freezes original content and destination");store.HoldResultFile(same,false,"public_fixture_hold");
+        var same=store.ClaimResultFile(now)!;Check(same.JobId==rejected&&same.Stage=="ticket"&&same.RemoteId is null&&Encoding.UTF8.GetString(same.Bytes)==markdown,"recovery freezes original content and destination");store.HoldResultFile(same,false,"public_fixture_hold");
         Check(store.Cleanup(now.AddDays(31),false)==1,"uncertain file preserves its session while sent session expires");
         var retry=Prepare("RATE");using var rateApi=new SlackApi(new Handler(_=>{
             var response=new HttpResponseMessage(HttpStatusCode.TooManyRequests);response.Headers.RetryAfter=new(TimeSpan.FromSeconds(60));return Task.FromResult(response);
