@@ -32,6 +32,7 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     }
     internal async Task<object> StartAsync(TaskCommandRequest request,CancellationToken token)
     {
+        Slack.RestrictedExecution.DenyAgentTools();
         await gate.WaitAsync(token);try{
             ObjectDisposedException.ThrowIf(disposed,this);TaskCommandAuthorization.Validate(grant);request.Validate(contract);
             var cwd=ResolveCwd(request.WorkingDirectory);_ = ResolveOutputs(cwd,request.ExpectedOutputs??[]);

@@ -73,6 +73,7 @@ internal sealed class HostEgress(CanonicalStore store)
         return Path.GetRelativePath(Path.GetFullPath(root),path).Replace('\\','/');
     }
     public Prepared Prepare(string taskId,string[] eventIds,string[] sourceIds,FileRef[] fileRefs,string[] deviations,bool packetOnly=false) {
+        Slack.RestrictedExecution.DenyExternal();
         if(eventIds.Length is <1 or >64 || eventIds.Distinct(StringComparer.Ordinal).Count()!=eventIds.Length || sourceIds.Length>64 || fileRefs.Length>100)
             throw new InvalidDataException("Invalid explicit export selection");
         var task=store.GetTask(taskId)??throw new InvalidDataException("Unknown export task");
@@ -115,6 +116,7 @@ internal sealed class HostEgress(CanonicalStore store)
         return new(manifest,manifestHash,payload);
     }
     public IDisposable AuthorizeDispatch(Prepared export,string provider) {
+        Slack.RestrictedExecution.DenyExternal();
         if(CanonicalStore.Hash(Encoding.UTF8.GetBytes(export.Payload))!=export.Manifest.ExportHash ||
             CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(export.Manifest))!=export.ManifestHash ||
             !store.ReadEvidence(export.Manifest.ExportHash).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(export.Payload)))

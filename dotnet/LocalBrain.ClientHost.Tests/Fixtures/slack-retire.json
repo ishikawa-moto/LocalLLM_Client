@@ -1,0 +1,35 @@
+{
+  "schema": "localbrain.slack-retirement-fixture.v1",
+  "retire_request": {
+    "request_id": "retire_fixture_0001",
+    "session_id": "session_fixture_01",
+    "restriction": {
+      "origin": "slack",
+      "dataClass": "slack_restricted",
+      "externalAi": "deny",
+      "cloudFallback": false
+    }
+  },
+  "retired_response": {
+    "status": "retired",
+    "session_id": "session_fixture_01",
+    "request_id": "retire_fixture_0001",
+    "adopted_knowledge_preserved": true
+  },
+  "deferred_response": {
+    "status": "deferred",
+    "retry_safe": true
+  },
+  "late_session_error": {
+    "http_status": 409,
+    "body": {
+      "error": "session_retired"
+    }
+  },
+  "reused_retirement_id_error": {
+    "http_status": 409,
+    "body": {
+      "error": "retirement_id_conflict"
+    }
+  }
+}

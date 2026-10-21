@@ -92,3 +92,9 @@ Desktop.ini
 # Local originals with personal identifiers - never publish
 private-*
 private_*
+
+# Slack local credentials, settings and restricted data; templates only are public.
+*.token
+/slacksettings.json
+/approvalsettings.json
+/slack-private/

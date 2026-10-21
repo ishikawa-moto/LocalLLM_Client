@@ -1,0 +1,8 @@
+{
+  "listenAddress": "REPLACE_WITH_CLIENT_LAN_IP",
+  "port": "REPLACE_WITH_APPROVAL_PORT",
+  "publicOrigin": "https://REPLACE_WITH_TRUSTED_LAN_DNS:REPLACE_WITH_APPROVAL_PORT",
+  "serverCertificateThumbprint": "REPLACE_WITH_SERVER_CERTIFICATE_THUMBPRINT",
+  "lanCidr": "REPLACE_WITH_EXACT_PRIVATE_LAN_CIDR",
+  "passwordCredentialFile": "C:\\LocalBrainPrivate\\slack-secrets\\approval-password.json"
+}

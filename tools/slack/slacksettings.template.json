@@ -1,0 +1,16 @@
+{
+  "enabled": false,
+  "root": "C:\\LocalBrainPrivate\\slack",
+  "teamId": "TREPLACE",
+  "channelId": "CREPLACE",
+  "botUserId": "UREPLACE",
+  "appTokenFile": "C:\\LocalBrainPrivate\\slack-secrets\\app.token",
+  "botTokenFile": "C:\\LocalBrainPrivate\\slack-secrets\\bot.token",
+  "maxQueue": 100,
+  "maxFileBytes": 4194304,
+  "maxFiles": 4,
+  "outputTokens": 1024,
+  "inferenceSeconds": 30,
+  "compressionThreshold": 8000,
+  "returnFileResults": false
+}

@@ -12,6 +12,7 @@ internal static class CopilotReviewer
     public static async Task<Review> ReviewFinalAsync(string packet, CancellationToken token,
         Action<string>? diagnostic = null)
     {
+        Slack.RestrictedExecution.DenyExternal();
         if(HostTaskJournal.Current is {} journal) {
             // A generic view tool does not enforce the Host export manifest's file boundary.
             journal.ExternalAdapterUnavailable("copilot","Packet-only filesystem confinement has not been qualified; no task data dispatched");
@@ -42,6 +43,7 @@ internal static class CopilotReviewer
                 "--deny-tool=memory", "--output-format=text"
             }) start.ArgumentList.Add(arg);
             HostTaskJournal.Current?.ReviewStarted("copilot");
+            Slack.RestrictedExecution.DenyExternal();
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("Copilot reviewer did not start");
             process.StandardInput.Close();

@@ -129,6 +129,7 @@ internal static class SolReviewer
 
     private static async Task<string> InvokeAsync(string packet, string variant, CancellationToken token,string[]? sources=null,string[]? files=null)
     {
+        Slack.RestrictedExecution.DenyExternal();
         using var export=HostTaskJournal.Current?.BeginExternalPacket(packet,"sol",sources,files);
         if(export is not null)packet=export.Packet;
         if (Encoding.UTF8.GetByteCount(packet) > 64_000)
@@ -148,6 +149,7 @@ internal static class SolReviewer
             "run", "--model", Model, "--variant", variant, "--agent", "plan",
             "--dir", SafeDirectory }) start.ArgumentList.Add(arg);
         HostTaskJournal.Current?.ReviewStarted("sol");
+        Slack.RestrictedExecution.DenyExternal();
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Sol reviewer did not start");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromMinutes(5));

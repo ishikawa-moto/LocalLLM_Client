@@ -3,6 +3,12 @@ using LocalBrain.ClientHost.AgentV2;
 
 try
 {
+    if(args.FirstOrDefault()=="slack"){
+        try{await LocalBrain.ClientHost.Slack.SlackCommands.Run(args.Skip(1).ToArray());}
+        catch(OperationCanceledException){}
+        catch(Exception error){Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(new{component="slack",error_type=error.GetType().Name,code="SLACK_STOPPED_CONFIGURATION_OR_OPERATOR_ATTENTION_REQUIRED"}));Environment.ExitCode=2;}
+        return;
+    }
     if(args.FirstOrDefault()=="ocr"){
         await LocalBrain.ClientHost.Ocr.OcrCommands.RunAsync(args.Skip(1).ToArray());return;
     }
