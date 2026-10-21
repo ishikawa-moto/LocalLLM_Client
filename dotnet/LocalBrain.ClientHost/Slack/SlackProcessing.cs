@@ -142,7 +142,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                 }catch(SlackDeferred){store.Defer(job.Id);}
                 catch(OperationCanceledException)when(!token.IsCancellationRequested){store.Defer(job.Id);}
                 catch(SlackRateLimit){store.Defer(job.Id);}
-                catch(Exception e)when(e is SlackInterrupted or IOException or JsonException or HttpRequestException or InvalidDataException or UnauthorizedAccessException or OcrException){
+                catch(Exception e)when(e is SlackRejected or SlackInterrupted or IOException or JsonException or HttpRequestException or InvalidDataException or UnauthorizedAccessException or OcrException){
                     store.Finish(job.Id,"LOCAL_PROCESSING_FAILED",false,true);
                 }
             }
