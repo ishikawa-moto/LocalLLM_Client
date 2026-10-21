@@ -104,7 +104,9 @@ internal sealed class SlackApi : IDisposable
         var uri=new Uri(file.GetProperty("url_private").GetString()!);
         if(uri.Scheme!="https"||uri.Host!="files.slack.com"||!uri.IsDefaultPort||uri.UserInfo!=""||!uri.AbsolutePath.StartsWith("/files-pri/",StringComparison.Ordinal))throw new UnauthorizedAccessException("SLACK_DOWNLOAD_ORIGIN_DENIED");
         using var request=new HttpRequestMessage(HttpMethod.Get,uri);request.Headers.Authorization=new("Bearer",botToken);
-        using var response=await http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,token);response.EnsureSuccessStatusCode();
+        using var response=await http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,token);
+        if(response.StatusCode==HttpStatusCode.TooManyRequests)throw new SlackRateLimit((int)Math.Ceiling(response.Headers.RetryAfter?.Delta?.TotalSeconds??30));
+        response.EnsureSuccessStatusCode();
         var bytes=await Bounded(response.Content,options.MaxFileBytes,token);
         if(bytes.LongLength!=file.GetProperty("size").GetInt64())throw new InvalidDataException("SLACK_FILE_SIZE_MISMATCH");
         bool magic=extension switch{".png"=>bytes.AsSpan().StartsWith(new byte[]{137,80,78,71,13,10,26,10}),".jpg"=>bytes.AsSpan().StartsWith(new byte[]{255,216,255}),".webp"=>bytes.Length>=12&&System.Text.Encoding.ASCII.GetString(bytes,0,4)=="RIFF"&&System.Text.Encoding.ASCII.GetString(bytes,8,4)=="WEBP",".pdf"=>bytes.AsSpan().StartsWith("%PDF-"u8),_=>false};
