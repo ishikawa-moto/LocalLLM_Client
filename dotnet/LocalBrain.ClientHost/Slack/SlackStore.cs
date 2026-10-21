@@ -21,7 +21,7 @@ internal sealed partial class SlackStore : IDisposable
         this.options=options;options.Validate();CanonicalStore.GuardPath(options.Root);Directory.CreateDirectory(options.Root);
         var path=Path.Combine(options.Root,"slack.db");CanonicalStore.GuardPath(path);
         db=new(new SqliteConnectionStringBuilder{DataSource=path,Pooling=false}.ToString());db.Open();
-        Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000;"+Schema+AdoptionSchema+ResultFileSchema);
+        Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000;"+Schema+AdoptionSchema+ResultFileSchema+SummaryCheckpointSchema);
         Execute("DELETE FROM replies WHERE kind='error' AND job_id='' AND state='sent';");
     }
     private int Execute(string sql,SqliteTransaction? tx=null,params (string,object?)[] args) {using var c=Command(sql,tx,args);return c.ExecuteNonQuery();}
@@ -72,9 +72,9 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void Recover(){lock(gate){using var tx=db.BeginTransaction();Execute("UPDATE jobs SET phase='queued' WHERE phase='running'; UPDATE replies SET state='uncertain' WHERE state='sending'; UPDATE proposals SET state='apply_uncertain' WHERE state='applying'; UPDATE result_files SET state='uncertain' WHERE state='sending';",tx);tx.Commit();}}
     internal void Defer(string id){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",null,("$id",id));}
-    internal void WaitForSummary(string id){lock(gate){
+    internal void WaitForSummary(string id,int maxBytes=SlackConversation.SummaryBytes){lock(gate){
         var job=GetJob(id);var session=GetSession(job.SessionId);
-        var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)?"queued":"waiting_summary";
+        var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)&&SlackConversation.EncodedBytes(session.Summary)<=maxBytes?"queued":"waiting_summary";
         Execute("UPDATE jobs SET phase=$phase WHERE id=$id AND phase='running';",null,("$phase",phase),("$id",id));
     }}
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
@@ -111,7 +111,12 @@ internal sealed partial class SlackStore : IDisposable
     internal static string ReplyHash(Reply r)=>SlackHash.Of(JsonSerializer.Serialize(new{r.Id,r.JobId,r.Channel,r.Thread,r.Text,r.Kind}));
     internal void ReconcileReply(string id,string hash,string remoteTs,string actor){lock(gate){var r=UncertainReplies().Single(r=>r.Id==id);if(ReplyHash(r)!=hash||!SlackMention.ValidTs(remoteTs)||string.IsNullOrWhiteSpace(actor))throw new UnauthorizedAccessException("SLACK_REPLY_RECONCILIATION_DENIED");using var tx=db.BeginTransaction();Execute("UPDATE replies SET state='sent',remote_ts=$ts WHERE id=$id AND state='uncertain';",tx,("$ts",remoteTs),("$id",id));DeleteConfirmedRefusal(id,tx);Audit("human_delivery_confirmed",id+actor,DateTimeOffset.UtcNow,tx);tx.Commit();}}
     internal IReadOnlyList<Job> History(string session){lock(gate){using var c=Command("SELECT * FROM jobs WHERE session_id=$id ORDER BY created,rowid;",null,("$id",session));using var r=c.ExecuteReader();var list=new List<Job>();while(r.Read())list.Add(ReadJob(r));return list;}}
-    internal (Job[] Jobs,string Hash) Snapshot(string id){lock(gate){var jobs=History(id).ToArray();return(jobs,SlackHash.Of(JsonSerializer.Serialize(jobs.Where(x=>x.Phase=="complete").Select(x=>new{x.Id,x.EventId,x.Text,x.Result,x.FileIds}))));}}
+    internal (Job[] Jobs,string Hash) Snapshot(string id){lock(gate){
+        var jobs=History(id).ToArray();
+        var sources=jobs.Where(x=>x.Phase=="complete").Select(x=>new{x.Id,x.EventId,x.Text,x.Result,x.FileIds,
+            attachments=x.FileIds.Select(f=>GetAttachment(x.Id,f)).Select(a=>a is null?null:new{a.FileId,a.Hash,result_hash=a.Result is null?null:SlackHash.Of(a.Result)})});
+        return(jobs,SlackHash.Of("slack-summary-v2:"+JsonSerializer.Serialize(sources)));
+    }}
     internal string HistoryHash(string id)=>Snapshot(id).Hash;
     internal string FreezeInference(string route,string request,string session,string json){lock(gate){
         if(!RestrictedExecution.Active||route is not("/v1/slack/chat" or "/v1/slack/review"))throw new UnauthorizedAccessException("SLACK_INFERENCE_OWNER_REQUIRED");
@@ -129,7 +134,7 @@ internal sealed partial class SlackStore : IDisposable
         var bytes=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs WHERE session_id=$id;",tx,("$id",id)));
         // Formal knowledge is owned by ServerPC. Erase expired local candidate content; retain hash-only audit.
         bytes+=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id);",tx,("$id",id)));
-        Execute("DELETE FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM jobs WHERE session_id=$id; DELETE FROM analysis WHERE session_id=$id; DELETE FROM inference WHERE session_id=$id; DELETE FROM remote_proposals WHERE id IN(SELECT id FROM proposals WHERE session_id=$id); DELETE FROM applications WHERE session_id=$id; DELETE FROM proposals WHERE session_id=$id; DELETE FROM sessions WHERE id=$id;",tx,("$id",id));
+        Execute("DELETE FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM jobs WHERE session_id=$id; DELETE FROM analysis WHERE session_id=$id; DELETE FROM inference WHERE session_id=$id; DELETE FROM remote_proposals WHERE id IN(SELECT id FROM proposals WHERE session_id=$id); DELETE FROM applications WHERE session_id=$id; DELETE FROM proposals WHERE session_id=$id; DELETE FROM summary_checkpoints WHERE session_id=$id; DELETE FROM sessions WHERE id=$id;",tx,("$id",id));
         Execute("INSERT INTO audit(at,code,object_hash,bytes) VALUES($at,$reason,$hash,$bytes);",tx,("$at",Ms(now)),("$reason",reason),("$hash",SlackHash.Of(id)),("$bytes",bytes));
     }
     internal int Cleanup(DateTimeOffset now,bool sessionStoragePressure,Func<bool>? stillPressured=null){lock(gate){var candidates=new List<Session>();using(var c=Command("SELECT * FROM sessions ORDER BY last_mention;"))using(var r=c.ExecuteReader())while(r.Read())candidates.Add(ReadSession(r));var removed=0;
@@ -159,16 +164,22 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void BindOcr(string job,string file,string ocr){lock(gate){var a=GetAttachment(job,file)??throw new KeyNotFoundException();if(a.OcrJob is not null&&a.OcrJob!=ocr)throw new InvalidDataException("SLACK_OCR_CHANGED");Execute("UPDATE attachments SET ocr_job=$o WHERE job_id=$j AND file_id=$f;",null,("$o",ocr),("$j",job),("$f",file));}}
     internal void SaveOcrResult(string job,string file,string result){lock(gate){if(result.Length>8*1024*1024)throw new InvalidDataException("SLACK_OCR_RESULT_SIZE");var a=GetAttachment(job,file)??throw new KeyNotFoundException();if(a.Result is not null&&a.Result!=result)throw new InvalidDataException("SLACK_OCR_RESULT_CHANGED");Execute("UPDATE attachments SET result=$r WHERE job_id=$j AND file_id=$f;",null,("$r",result),("$j",job),("$f",file));}}
-    internal long StoredBytes(SqliteTransaction? tx=null){lock(gate)return Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)),0) FROM result_files;",tx))+ Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM inference;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM proposals;",tx));}
+    internal long StoredBytes(SqliteTransaction? tx=null){lock(gate)return Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM summary_checkpoints;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM sessions;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)),0) FROM result_files;",tx))+ Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM inference;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM proposals;",tx));}
     internal bool HasPendingJobs(){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM jobs j WHERE j.phase IN('queued','running','waiting_ocr') AND NOT EXISTS(SELECT 1 FROM jobs p WHERE p.session_id=j.session_id AND p.phase NOT IN('complete','failed') AND (p.created<j.created OR (p.created=j.created AND p.rowid<j.rowid)));"))>0;}
     internal Session[] Sessions(){lock(gate){using var c=Command("SELECT * FROM sessions ORDER BY last_mention;");using var r=c.ExecuteReader();var list=new List<Session>();while(r.Read())list.Add(ReadSession(r));return list.ToArray();}}
     internal bool ExtractionDone(string session,string hash){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM analysis WHERE session_id=$s AND source_hash=$h;",null,("$s",session),("$h",hash)))>0;}
     internal void ExtractionComplete(string session,string hash){lock(gate)Execute("INSERT OR IGNORE INTO analysis VALUES($s,$h);",null,("$s",session),("$h",hash));}
-    internal void DropSummaryCache(){lock(gate)Execute("UPDATE sessions SET summary=NULL,summary_hash=NULL WHERE summary IS NOT NULL;");}
+    internal void DropSummaryCache(){lock(gate)Execute("UPDATE sessions SET summary=NULL,summary_hash=NULL WHERE summary IS NOT NULL; DELETE FROM summary_checkpoints;");}
     internal (string Session,string Request)[] PendingRetirements(){lock(gate){using var c=Command("SELECT session_id,request_id FROM retirements WHERE state='pending' ORDER BY rowid LIMIT 5;");using var r=c.ExecuteReader();var rows=new List<(string,string)>();while(r.Read())rows.Add((r.GetString(0),r.GetString(1)));return rows.ToArray();}}
     internal void RetirementComplete(string session,string request){lock(gate)Execute("UPDATE retirements SET state='retired' WHERE session_id=$s AND request_id=$r AND state='pending';",null,("$s",session),("$r",request));}
     private void Audit(string code,string id,DateTimeOffset now,SqliteTransaction tx)=>Execute("INSERT INTO audit(at,code,object_hash,bytes) VALUES($at,$code,$hash,0);",tx,("$at",Ms(now)),("$code",code),("$hash",SlackHash.Of(id)));
     public void Dispose()=>db.Dispose();
+    internal sealed record Checkpoint(int Count,string Hash,string Summary);
+    private const string SummaryCheckpointSchema="CREATE TABLE IF NOT EXISTS summary_checkpoints(session_id TEXT PRIMARY KEY,count INTEGER NOT NULL,prefix_hash TEXT NOT NULL,summary TEXT NOT NULL);";
+    internal Checkpoint? SummaryCheckpoint(string session){lock(gate){using var c=Command("SELECT count,prefix_hash,summary FROM summary_checkpoints WHERE session_id=$id;",null,("$id",session));using var r=c.ExecuteReader();return r.Read()?new(r.GetInt32(0),r.GetString(1),r.GetString(2)):null;}}
+    internal bool SaveSummaryCheckpoint(string session,int count,string hash,string summary,string history){lock(gate){if(HistoryHash(session)!=history)return false;Execute("INSERT INTO summary_checkpoints VALUES($id,$n,$h,$s) ON CONFLICT(session_id) DO UPDATE SET count=$n,prefix_hash=$h,summary=$s;",null,("$id",session),("$n",count),("$h",hash),("$s",summary));return true;}}
+    internal bool HasSummaryWaiter(string session){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session)))>0;}
+    internal int WaitingSummaryBudget(string session){lock(gate){using var c=Command("SELECT text FROM jobs WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));using var r=c.ExecuteReader();var budget=SlackConversation.SummaryBytes;while(r.Read())budget=Math.Min(budget,SlackConversation.Budget(r.GetString(0)));return budget;}}
     private const string Schema="""
         CREATE TABLE IF NOT EXISTS epochs(id TEXT PRIMARY KEY,started INTEGER NOT NULL,ended INTEGER);
         CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,team TEXT,channel TEXT,thread TEXT,owner TEXT,last_mention INTEGER,summary TEXT,summary_hash TEXT,UNIQUE(team,channel,thread));

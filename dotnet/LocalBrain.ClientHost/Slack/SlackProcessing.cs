@@ -21,9 +21,9 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
     {
         if(!RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_HOST_CONTEXT_REQUIRED");
         var supplied=JsonSerializer.SerializeToElement(body,SlackOptions.Json);
+        ValidateInput(route,supplied);
         var frozen=store.FreezeInference(route,supplied.GetProperty("request_id").GetString()!,supplied.GetProperty("session_id").GetString()!,supplied.GetRawText());
-        var actual=DecisionProtocol.Parse(frozen);var input=route=="/v1/slack/chat"?actual.GetProperty("context").GetString()+actual.GetProperty("prompt").GetString():actual.GetProperty("source").GetString();
-        if(System.Text.Encoding.UTF8.GetByteCount(input!)>16000)throw new InvalidDataException("SLACK_INFERENCE_INPUT_BUDGET");
+        var actual=DecisionProtocol.Parse(frozen);ValidateInput(route,actual);
         string response;
         try{response=await gateway.SlackJsonAsync(route,frozen,token);}
         catch(OperationCanceledException){
@@ -36,9 +36,13 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         }
         if(response.Length>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");
         var json=JsonSerializer.Deserialize<JsonElement>(response);
-        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy")throw new SlackDeferred();
+        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True)throw new SlackDeferred();
         if(state=="interrupted")throw new SlackInterrupted();
         if(state!="complete")throw new InvalidDataException("SLACK_LOCAL_RESULT_INVALID");return json;
+    }
+    private static void ValidateInput(string route,JsonElement value){
+        var fits=route=="/v1/slack/chat"?SlackConversation.Fits(value.GetProperty("context").GetString()!,value.GetProperty("prompt").GetString()!):SlackConversation.Bytes(value.GetProperty("source").GetString()!)<=SlackConversation.InputBytes;
+        if(!fits)throw new InvalidDataException("SLACK_INFERENCE_INPUT_BUDGET");
     }
     public async Task<string> Chat(string requestId,string session,string context,string prompt,int outputTokens,int seconds,CancellationToken token)
     {
@@ -165,15 +169,8 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                         }
                     }else{
                         var session=store.GetSession(job.SessionId);var history=store.History(job.SessionId).Where(x=>x.Id!=job.Id&&x.Phase=="complete").ToArray();
-                        var context=JsonSerializer.Serialize(history.Select(x=>new{message_id=x.EventId,user=x.Text,assistant=x.FileIds.Length==0?x.Result:null,ocr_refs=x.FileIds.Length>0?x.Result:null}));
-                        // A byte upper bound is conservative; the local Gateway must additionally enforce its exact Qwen template token count.
-                        if(System.Text.Encoding.UTF8.GetByteCount(context)>options.CompressionThreshold){
-                            if(session.Summary is null||session.SummaryHash!=store.HistoryHash(session.Id)){store.WaitForSummary(job.Id);continue;}
-                            context=JsonSerializer.Serialize(new{summary=session.Summary,source_history_hash=session.SummaryHash,latest=history.TakeLast(2).Select(x=>new{message_id=x.EventId,user=x.Text,assistant=x.FileIds.Length==0?x.Result:null,ocr_refs=x.FileIds.Length>0?x.Result:null})});
-                        }
-                        var lastOcr=history.LastOrDefault(x=>x.FileIds.Length>0);
-                        if(lastOcr is not null){var retained=lastOcr.FileIds.Select(f=>store.GetAttachment(lastOcr.Id,f)).Where(a=>a?.Result is not null).Select(a=>new{file_id=a!.FileId,source_hash=a.Hash,ocr_text=JsonSerializer.Deserialize<JsonElement>(a.Result!).GetProperty("text").GetString()}).ToArray();context=JsonSerializer.Serialize(new{history=context,latest_ocr=retained});}
-                        if(System.Text.Encoding.UTF8.GetByteCount(context)>64000)throw new InvalidDataException("SLACK_CONTEXT_REQUIRES_SMALLER_SECTION");
+                        var context=SlackConversation.Context(store,session,history,job.Text,options.CompressionThreshold);
+                        if(context is null){store.WaitForSummary(job.Id,SlackConversation.Budget(job.Text));continue;}
                         var result=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,context,job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
                         var sensitive=history.Any(x=>x.FileIds.Length>0);store.Finish(job.Id,result,true,sensitive);
                     }
@@ -190,13 +187,14 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     private async Task Compress(string sessionId,CancellationToken token)
     {
         if(!priority.Admission())return;
-        var snapshot=store.Snapshot(sessionId);var history=snapshot.Jobs;var hash=snapshot.Hash;
-        var source=JsonSerializer.Serialize(history.Where(x=>x.Phase=="complete").Select(x=>new{message_id=x.EventId,user=x.Text,assistant=x.Result,ocr_refs=x.FileIds}));
-        if(source.Length>200000)throw new InvalidDataException("SLACK_HISTORY_SEGMENT_LIMIT");
         await using var memory=new TaskMemoryQ8(CanonicalStore.DefaultRoot,background:true);
         if(!memory.Enabled){store.FailWaitingSummary(sessionId);return;}
-        try{var summary=await priority.Run(t=>memory.SummarizeSlackAsync(source,t),120,token);if(store.SaveSummary(sessionId,summary,hash))store.SummaryReady(sessionId);}
-        catch(IOException){/* Existing TaskMemory backend owns the lease: leave queued, never steal it. */}
+        try{
+            await SlackConversation.Compress(store,sessionId,store.WaitingSummaryBudget(sessionId),
+                (source,budget,t)=>priority.Run(ct=>memory.SummarizeSlackAsync(source,ct,budget),120,t),
+                ()=>priority.Admission()&&!store.HasPendingJobs(),token);
+        }catch(IOException){/* Another TaskMemory owner keeps its lease; the checkpoint remains resumable. */}
+        catch(Exception e)when(e is InvalidDataException or JsonException or UnauthorizedAccessException){store.FailWaitingSummary(sessionId);}
     }
     internal async Task Maintenance(CancellationToken token)
     {
@@ -212,7 +210,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                     if(!priority.Admission()||store.HasPendingJobs())break;
                     var history=store.History(s.Id);var hash=store.HistoryHash(s.Id);
                     try{
-                        if(System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(history))>options.CompressionThreshold&&s.SummaryHash!=hash)await Compress(s.Id,token);
+                        if(System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(history))>options.CompressionThreshold&&(s.SummaryHash!=hash||store.HasSummaryWaiter(s.Id)))await Compress(s.Id,token);
                         if(store.HasPendingJobs())break;
                         var source=JsonSerializer.Serialize(history.Select(x=>new{message_id=x.EventId,user=x.Text,result=x.Result}));
                         var sourceHash=SlackHash.Of(source);if(System.Text.Encoding.UTF8.GetByteCount(source)>16000||store.ExtractionDone(s.Id,sourceHash))continue;

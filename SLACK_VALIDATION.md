@@ -66,3 +66,16 @@ Slack model cold-start is an explicit Server opt-in, enabled only for validated 
 New installations must use the disabled public templates and complete their own exact approval, rollback, trust and live qualification steps. PR merge does not install tasks, enroll certificates, open firewall rules or activate intake/application. Site-specific changes and receipts remain in protected local storage.
 
 Review `SLACK_CONNECT.md` and the paired Server `SLACK-SERVER.md` for the contracts and setup. Do not restore the ordinary canonical DB, replay unknown sends/applies or force-stop unrelated models/services. The implemented scope is ready for review; the remaining qualifications above stay explicit limits rather than claims of completed coverage. Review and merge do not automatically deploy or enable another installation.
+
+
+## 2026-10-21 long-session integration fixes
+
+The normal Client regression completed successfully. All Slack public suites passed 343 checks (80 protocol, 27 processing/priority/OCR, 7 HTTP retry, 95 new conversation/transport, 28 file-return, 67 adoption, 39 HTTPS approval). These use public data and fake model/Slack responses, not live inference or private inputs.
+
+Long conversation compression now uses bounded 65,536-byte batches with restricted, prefix-bound durable checkpoints. A 60-turn fixture above the old 200,000-character cap resumes after store reopen, preserves original history, completes compression and wakes the waiting job. Appended history reuses the verified prefix; stale prefixes are rejected. Retained OCR text and source hashes are part of the source binding. Invalid or oversized summaries fail explicitly rather than leaving the waiting head indefinitely.
+
+The final UTF-8 budget is context + one LF + prompt, at most 16,000 bytes, matching Server. Summaries are bounded to the space remaining after prompt and metadata; whole recent turns are included only if they fit. Omitted raw excerpts remain in the restricted store and are represented by the bound summary, not silently truncated. Unicode byte-boundary and oversized-input fixtures are included.
+
+Only structured deferred/busy responses with boolean retry_safe=true are retried using the identical frozen request. A resource-pressure fixture defers once then completes; ambiguous HTTP 503 and unsafe/missing retry flags remain terminal. This does not authorize replay after an uncertain inference result.
+
+These changes are source/PR fixes only. This validation did not deploy, restart services, run live Slack, launch native models, apply production knowledge or qualify general summary accuracy. Existing installation evidence above describes earlier deployed builds.
