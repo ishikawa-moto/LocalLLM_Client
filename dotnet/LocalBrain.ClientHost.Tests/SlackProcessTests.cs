@@ -26,6 +26,15 @@ internal static class SlackProcessTests
         Check(acknowledgements==2&&store.History(job.SessionId).Count==1,"repeated envelopes ACK without duplicate job");
         var ocr=new OcrConfig(true,Path.Combine(root,"ocr"),Path.Combine(root,"assets"),Path.Combine(root,"assets","python.exe"),Path.Combine(root,"assets","worker.py"),Path.Combine(root,"assets","models"),[root],new(){["a"]="a",["b"]="b",["c"]="c"},["AUTO","PDF_DOCUMENT"],[],512L<<20,512L<<20,384L<<20,30,new string('a',64));
         var config=Path.Combine(root,"ocr-config.json");File.WriteAllBytes(config,JsonSerializer.SerializeToUtf8Bytes(ocr,OcrJobStore.Json));
+        var staging=Path.Combine(root,"slack-restricted");Directory.CreateDirectory(staging);
+        var ownedBytes=new byte[]{1,2,3,4};var ownedHash=SlackHash.Of(ownedBytes);
+        var orphan=SlackStagingFiles.PathFor(staging,new string('b',32),"FRECOVER",ownedHash,".png");File.WriteAllBytes(orphan,ownedBytes);
+        var changed=SlackStagingFiles.PathFor(staging,new string('c',32),"FCHANGED",ownedHash,".png");File.WriteAllBytes(changed,[9,8,7]);
+        var unrelated=Path.Combine(staging,"not-owned.png");File.WriteAllBytes(unrelated,ownedBytes);
+        SlackStagingFiles.Reconcile(ocr);
+        Check(!File.Exists(orphan)&&File.Exists(changed)&&File.Exists(unrelated),"restart reconciles only hash-matching owned staging files");
+        SlackStagingFiles.DeleteIfHashMatches(changed,ownedHash);
+        Check(File.Exists(changed),"failure cleanup preserves staging file with changed content");
         var old=Environment.GetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG");Environment.SetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG",config);
         try{
             var p=SlackPriority.ForFixture(ocr,()=>new(long.MaxValue,long.MaxValue,0));Check(p.Admission(),"idle background admission");

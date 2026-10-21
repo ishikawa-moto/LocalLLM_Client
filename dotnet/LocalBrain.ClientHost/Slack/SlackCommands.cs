@@ -35,6 +35,7 @@ internal static class SlackCommands
         var ocr=OcrConfig.Read()!;using var api=new SlackApi(options);using var gateway=new GatewayClient(ClientConfig.Load());
         var priority=new SlackPriority(ocr);var processor=new SlackProcessor(options,store,api,new SlackLocalInference(gateway,store),ocr,priority);
         store.Recover();
+        SlackStagingFiles.Reconcile(ocr);
         var tasks=new List<Task>{new SlackSocket(options,store,api).Run(stop.Token),SlackSocket.Replies(store,api,stop.Token),processor.Run(stop.Token),processor.Maintenance(stop.Token),new SlackApplicationWorker(store,gateway).Run(stop.Token),SlackFileDelivery.Run(store,api,stop.Token)};
         if(args.Contains("--web-config")){
             var web=JsonSerializer.Deserialize<SlackApprovalOptions>(File.ReadAllBytes(Option("--web-config")),SlackOptions.Json)??throw new InvalidDataException("SLACK_WEB_CONFIG_INVALID");

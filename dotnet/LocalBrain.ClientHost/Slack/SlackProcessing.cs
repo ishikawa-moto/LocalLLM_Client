@@ -82,6 +82,36 @@ internal sealed class SlackPriority
     }
 }
 
+internal static class SlackStagingFiles
+{
+    private static readonly System.Text.RegularExpressions.Regex OwnedFileName=new(
+        @"^[a-f0-9]{32}-F[A-Z0-9]{2,32}-([a-f0-9]{64})\.(?:png|jpg|webp|pdf)$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    internal static string PathFor(string directory,string job,string file,string hash,string extension)=>
+        Path.Combine(directory,$"{job}-{file}-{hash}{extension}");
+
+    internal static void DeleteIfHashMatches(string path,string expectedHash)
+    {
+        if(!File.Exists(path))return;
+        CanonicalStore.GuardPath(path);
+        if(OcrJobStore.HashFile(path)==expectedHash)File.Delete(path);
+    }
+
+    internal static void Reconcile(OcrConfig config)
+    {
+        var directory=Path.Combine(config.InputRoots[0],"slack-restricted");
+        CanonicalStore.GuardPath(directory);
+        if(!Directory.Exists(directory))return;
+        foreach(var path in Directory.EnumerateFiles(directory))
+        {
+            CanonicalStore.GuardPath(path);
+            var match=OwnedFileName.Match(Path.GetFileName(path));
+            if(match.Success)DeleteIfHashMatches(path,match.Groups[1].Value);
+        }
+    }
+}
+
 internal sealed class SlackProcessor(SlackOptions options,SlackStore store,SlackApi api,ISlackLocalInference inference,OcrConfig ocr,SlackPriority priority)
 {
     internal async Task Run(CancellationToken token)
@@ -102,12 +132,12 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                                 var os=new OcrJobStore(ocr);
                                 if(a.OcrJob is null){
                                     var inbox=Path.Combine(ocr.InputRoots[0],"slack-restricted");CanonicalStore.GuardPath(inbox);Directory.CreateDirectory(inbox);
-                                    var input=Path.Combine(inbox,job.Id+"-"+file+a.Extension);CanonicalStore.GuardPath(input);
-                                    if(File.Exists(input)){if(OcrJobStore.HashFile(input)!=a.Hash)throw new InvalidDataException("SLACK_INPUT_CHANGED");}else{using var f=new FileStream(input,FileMode.CreateNew,FileAccess.Write,FileShare.None);f.Write(a.Bytes);f.Flush(true);}
-                                    var registered=os.Submit(input,a.Hash,a.Extension==".pdf"?"PDF_DOCUMENT":"AUTO","slack_"+job.Id+"_"+file,origin:"slack");
-                                    store.BindOcr(job.Id,file,registered.JobId);a=store.GetAttachment(job.Id,file)!;
-                                    // Only our exact hashed staging file is removed; OCR owns its durable snapshot.
-                                    if(OcrJobStore.HashFile(input)==a.Hash)File.Delete(input);
+                                    var input=SlackStagingFiles.PathFor(inbox,job.Id,file,a.Hash,a.Extension);CanonicalStore.GuardPath(input);
+                                    try{
+                                        if(File.Exists(input)){if(OcrJobStore.HashFile(input)!=a.Hash)throw new InvalidDataException("SLACK_INPUT_CHANGED");}else{using var f=new FileStream(input,FileMode.CreateNew,FileAccess.Write,FileShare.None);f.Write(a.Bytes);f.Flush(true);}
+                                        var registered=os.Submit(input,a.Hash,a.Extension==".pdf"?"PDF_DOCUMENT":"AUTO","slack_"+job.Id+"_"+file,origin:"slack");
+                                        store.BindOcr(job.Id,file,registered.JobId);a=store.GetAttachment(job.Id,file)!;
+                                    }finally{SlackStagingFiles.DeleteIfHashMatches(input,a.Hash);}
                                 }
                                 var state=os.GetState(a.OcrJob!);if(state.Status is "failed" or "expired" or "cancelled")throw new InvalidDataException("SLACK_OCR_FAILED");
                                 if(state.Status!="complete"){ready=false;continue;}
