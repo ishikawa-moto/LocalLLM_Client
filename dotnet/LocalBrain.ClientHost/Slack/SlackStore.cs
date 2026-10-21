@@ -70,7 +70,11 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void Recover(){lock(gate){using var tx=db.BeginTransaction();Execute("UPDATE jobs SET phase='queued' WHERE phase='running'; UPDATE replies SET state='uncertain' WHERE state='sending'; UPDATE proposals SET state='apply_uncertain' WHERE state='applying'; UPDATE result_files SET state='uncertain' WHERE state='sending';",tx);tx.Commit();}}
     internal void Defer(string id){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",null,("$id",id));}
-    internal void WaitForSummary(string id){lock(gate)Execute("UPDATE jobs SET phase='waiting_summary' WHERE id=$id AND phase='running';",null,("$id",id));}
+    internal void WaitForSummary(string id){lock(gate){
+        var job=GetJob(id);var session=GetSession(job.SessionId);
+        var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)?"queued":"waiting_summary";
+        Execute("UPDATE jobs SET phase=$phase WHERE id=$id AND phase='running';",null,("$phase",phase),("$id",id));
+    }}
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
     internal void WaitForOcr(string id){lock(gate)Execute("UPDATE jobs SET phase='waiting_ocr' WHERE id=$id AND phase='running';",null,("$id",id));}
     internal Job[] WaitingForOcr(){lock(gate){using var c=Command("SELECT * FROM jobs WHERE phase='waiting_ocr';");using var r=c.ExecuteReader();var list=new List<Job>();while(r.Read())list.Add(ReadJob(r));return list.ToArray();}}
