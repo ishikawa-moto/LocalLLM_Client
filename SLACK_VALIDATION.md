@@ -79,3 +79,16 @@ The final UTF-8 budget is context + one LF + prompt, at most 16,000 bytes, match
 Only structured deferred/busy responses with boolean retry_safe=true are retried using the identical frozen request. A resource-pressure fixture defers once then completes; ambiguous HTTP 503 and unsafe/missing retry flags remain terminal. This does not authorize replay after an uncertain inference result.
 
 These changes are source/PR fixes only. This validation did not deploy, restart services, run live Slack, launch native models, apply production knowledge or qualify general summary accuracy. Existing installation evidence above describes earlier deployed builds.
+
+
+## Latest review follow-up (2026-10-21)
+
+The six follow-up review comments were valid. Document analysis now combines prior completed conversation or a source-bound summary with the current OCR and its references under the same 16,000-byte context + LF + prompt budget. A pending summary budget includes current document metadata/text; nothing truncates the new document to make room. A summary waiter triggers compression independently of the short job-metadata threshold.
+
+Replies are escaped before applying their output cap, preserving trailing text and Unicode pairs. Frozen pending reply channels are checked before send admission: a changed channel configuration fails closed without redirecting or incrementing attempts. Delivery remains on hold until the original destination is reconciled.
+
+Only queued jobs with confirmed acceptance delivery block maintenance. Running and waiting-OCR jobs remain blockers. Unacknowledged or uncertain inputs are not extracted as review evidence, while their frozen records remain available for reconciliation. Password setup now requires PowerShell 7.2 or later before password entry.
+
+The added public regressions cover actual document-follow-up processing with prior OCR/constraints, a 14KB transcription with sub-threshold job metadata, document-aware summary budgets, escaped suffix preservation, destination changes, uncertain acceptance scheduling and password setup version admission. No real model, Slack, OCR, password entry or production service is used by these regressions. This follow-up is a source/PR change, not a deployment.
+
+Final follow-up validation: normal Client regression exit 0; all Slack suites passed 370 checks (80 protocol, 27 processing, 7 retries, 95 conversation, 27 review regressions, 28 files, 67 adoption, 39 HTTPS). Build: 9 existing warnings, 0 errors. Password script parsed with 0 syntax errors and a 7.2 requirement; no password UI was opened.

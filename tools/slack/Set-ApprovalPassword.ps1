@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.2
 param([Parameter(Mandatory)][string]$ExistingWebConfig,
       [Parameter(Mandatory)][string]$ExpectedConfigHash,
       [Parameter(Mandatory)][string]$CredentialFile,

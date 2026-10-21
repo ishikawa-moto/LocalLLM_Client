@@ -163,7 +163,11 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                             if(SlackResultText.OcrOnly(job.Text))store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,output_kind="ocr_text",restriction=SlackRestriction.Instance}),true,true);
                             else{
                                 if(System.Text.Encoding.UTF8.GetByteCount(raw)>48000)throw new InvalidDataException("SLACK_PDF_ANALYSIS_REQUIRES_SMALLER_SECTION");
-                                var interpreted=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,JsonSerializer.Serialize(new{untrusted_ocr=raw,references=refs,restriction=SlackRestriction.Instance}),job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
+                                var session=store.GetSession(job.SessionId);var history=store.History(job.SessionId).Where(x=>x.Id!=job.Id&&x.Phase=="complete").ToArray();
+                                var document=SlackConversation.CurrentDocument(store,job);
+                                var context=SlackConversation.Context(store,session,history,job.Text,options.CompressionThreshold,document);
+                                if(context is null){store.WaitForSummary(job.Id,SlackConversation.JobBudget(store,job));continue;}
+                                var interpreted=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,context,job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
                                 store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,interpretation=interpreted,restriction=SlackRestriction.Instance}),true,true);
                             }
                         }
@@ -208,10 +212,11 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
             if(!store.HasPendingJobs()&&priority.Admission()){
                 foreach(var s in store.Sessions()){
                     if(!priority.Admission()||store.HasPendingJobs())break;
-                    var history=store.History(s.Id);var hash=store.HistoryHash(s.Id);
+                    var history=store.History(s.Id).Where(x=>x.Phase=="complete").ToArray();
                     try{
-                        if(System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(history))>options.CompressionThreshold&&(s.SummaryHash!=hash||store.HasSummaryWaiter(s.Id)))await Compress(s.Id,token);
+                        if(SlackConversation.NeedsCompression(store,s,options.CompressionThreshold))await Compress(s.Id,token);
                         if(store.HasPendingJobs())break;
+                        if(history.Length==0)continue; // Unacknowledged/uncertain intake is not review evidence.
                         var source=JsonSerializer.Serialize(history.Select(x=>new{message_id=x.EventId,user=x.Text,result=x.Result}));
                         var sourceHash=SlackHash.Of(source);if(System.Text.Encoding.UTF8.GetByteCount(source)>16000||store.ExtractionDone(s.Id,sourceHash))continue;
                         var candidate=await priority.Run(t=>inference.Candidate(s.Id,source,t),65,token);
