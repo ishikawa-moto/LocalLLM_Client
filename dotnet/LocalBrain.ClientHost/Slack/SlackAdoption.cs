@@ -31,8 +31,14 @@ internal sealed partial class SlackStore
         else if(payload.GetProperty("base_hash").GetString()!=""||DecisionProtocol.Digest(candidate)!=payload.GetProperty("new_hash").GetString())throw new InvalidDataException("SLACK_KNOWLEDGE_HASH");
         var evidence=JsonSerializer.Serialize(new{target=payload.GetProperty("target"),base_hash=payload.GetProperty("base_hash"),new_hash=payload.GetProperty("new_hash"),payload=payload,restriction=SlackRestriction.Instance},SlackOptions.Json);
         lock(gate){GetSession(session);using var tx=db.BeginTransaction();
-            var old=Scalar("SELECT hash FROM proposals WHERE id=$id;",tx,("$id",id));
-            if(old is string existing){if(existing!=hash)throw new InvalidDataException("SLACK_PROPOSAL_CHANGED");tx.Commit();return Proposals().Single(p=>p.Id==id);}
+            using(var existingCommand=Command("SELECT hash,json,state FROM proposals WHERE id=$id;",tx,("$id",id)))
+            using(var reader=existingCommand.ExecuteReader()){
+                if(reader.Read()){
+                    if(reader.GetString(0)!=hash)throw new InvalidDataException("SLACK_PROPOSAL_CHANGED");
+                    var existingProposal=JsonSerializer.Deserialize<Proposal>(reader.GetString(1))! with{State=reader.GetString(2)};
+                    reader.Close();tx.Commit();return existingProposal;
+                }
+            }
             var p=new Proposal(id,session,kind,candidate.GetRawText(),evidence,reviewJson,hash,now.AddDays(7).ToUnixTimeMilliseconds(),"pending");
             Execute("INSERT INTO proposals VALUES($id,$session,$hash,$state,$json);",tx,("$id",p.Id),("$session",p.SessionId),("$hash",hash),("$state",p.State),("$json",JsonSerializer.Serialize(p)));
             Execute("INSERT INTO remote_proposals VALUES($id,$hash,$payload);",tx,("$id",id),("$hash",hash),("$payload",payload.GetRawText()));
