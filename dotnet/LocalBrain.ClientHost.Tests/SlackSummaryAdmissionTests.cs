@@ -33,13 +33,25 @@ internal static class SlackSummaryAdmissionTests
         var progress=store.ClaimReply(now.AddMinutes(1));Check(progress is{Kind:"progress"}&&progress.JobId==job&&progress.Text.Contains("ローカルで要約"),"local summary progress targets original requester");store.ReplySent(progress!.Id,"1700000000.000002");
         Check(store.ClaimReply(now.AddMinutes(1)) is null,"progress notification does not duplicate across attempts");
         Check(store.HistoryHash(session.Id)==historyHash&&store.GetJob(job)==original,"progress metadata does not alter original request or history");
-        var calls=0;
-        Check(await SlackConversation.Compress(store,session.Id,4096,(source,budget,t)=>{calls++;return Task.FromResult("PUBLIC SUMMARY OF SEED");},()=>true,CancellationToken.None),"existing summary waiter resumes under normal contract");
-        Check(calls==1&&store.GetJob(job).Phase=="queued","summary wakes same request without resubmission");
-        Check(store.ClaimNext()?.Id==job&&store.ClaimNext() is null,"original request resumes once");
-        var context=SlackConversation.Context(store,store.GetSession(session.Id),store.History(session.Id).Where(j=>j.Phase=="complete").ToArray(),original.Text,8000);
-        Check(context is not null&&SlackConversation.Fits(context,original.Text),"bound summary produces valid context");
+        var history=store.History(session.Id).Where(j=>j.Phase=="complete").ToArray();
+        var rawContext=SlackConversation.Context(store,session,history,original.Text,8000);
+        Check(rawContext is not null&&SlackConversation.Bytes(rawContext)>8000&&SlackConversation.Fits(rawContext,original.Text),"soft threshold cannot block a request within hard limit");
+        Check(store.ResumeReadySummaryWaiters(8000)==1&&store.GetJob(job).Phase=="queued","older unnecessary summary wait resumes same request");
+        Check(store.ClaimNext()?.Id==job&&store.ClaimNext() is null,"original request resumes once without model call");
         Check(store.HistoryHash(session.Id)==historyHash,"original completed turns remain intact");
+        store.Finish(job,"PUBLIC RESUMED",true,false);Ack();
+        var large=Accept("EV-LARGE-SEED",2);Ack();store.ClaimNext();store.Finish(large,new string('x',25000),true,false);Ack();
+        var hard=Accept("EV-HARD-WAIT",2);Ack();store.ClaimNext();store.WaitForSummary(hard);var beforeHard=store.HistoryHash(session.Id);
+        Check(store.ResumeReadySummaryWaiters(8000)==0&&store.GetJob(hard).Phase=="waiting_summary","hard-limit waiter never bypasses budget");
+        var calls=0;
+        Check(await SlackConversation.Compress(store,session.Id,4096,(source,budget,t)=>{calls++;return Task.FromResult("PUBLIC SUMMARY OF SEED");},()=>true,CancellationToken.None),"hard-limit waiter resumes under normal summary contract");
+        Check(calls>0&&store.GetJob(hard).Phase=="queued","real summary wakes same request");
+        Check(store.HistoryHash(session.Id)==beforeHard,"summary never deletes original history");
+        var ocr=new OcrConfig(true,Path.Combine(root,"ocr"),Path.Combine(root,"assets"),Path.Combine(root,"assets","python.exe"),Path.Combine(root,"assets","worker.py"),Path.Combine(root,"assets","models"),[root],new(),["AUTO"],[],1024L*1024*1024,1024L*1024*1024,700L*1024*1024,25,new string('a',64));
+        var priority=SlackPriority.ForFixture(ocr,()=>new(long.MaxValue,long.MaxValue,0));
+        var yield=false;using var started=new SemaphoreSlim(0);var running=priority.Run(async t=>{started.Release();await Task.Delay(TimeSpan.FromSeconds(20),t);return true;},25,CancellationToken.None,()=>yield);
+        await started.WaitAsync();yield=true;
+        try{await running;throw new Exception("summary ignored pending user work");}catch(OperationCanceledException){checks++;}
         try{store.SummaryState(session.Id,"PRIVATE CONTENT");throw new Exception("unrestricted diagnostic code accepted");}catch(ArgumentException){checks++;}
         Console.WriteLine(JsonSerializer.Serialize(new{slack_summary_admission_checks=checks,status="PASS",model_calls=0,real_slack=false,private_data=false}));
     }

@@ -42,7 +42,8 @@ internal static class SlackConversation
             .Select(a=>new{file_id=a!.FileId,source_hash=a.Hash,ocr_text=JsonSerializer.Deserialize<JsonElement>(a.Result!).GetProperty("text").GetString()}).ToArray();
         var historyContext=JsonSerializer.Serialize(new{history=history.Select(Turn),latest_ocr=retained});
         var raw=WithDocument(historyContext,document);
-        if(Bytes(historyContext)<=threshold&&Fits(raw,prompt))return raw;
+        // The soft threshold schedules background compression; only the hard transport limit may block a reply.
+        if(Fits(raw,prompt))return raw;
         var budget=Budget(prompt,document);
         if(session.Summary is null||session.SummaryHash!=store.HistoryHash(session.Id)||EncodedBytes(session.Summary)>budget)return null;
         var context=WithDocument(Base(session.Summary,session.SummaryHash),document);

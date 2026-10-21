@@ -78,6 +78,25 @@ internal sealed partial class SlackStore : IDisposable
         var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)&&SlackConversation.EncodedBytes(session.Summary)<=maxBytes?"queued":"waiting_summary";
         Execute("UPDATE jobs SET phase=$phase WHERE id=$id AND phase='running';",null,("$phase",phase),("$id",id));
     }}
+    internal int ResumeReadySummaryWaiters(int threshold)
+    {
+        lock(gate){
+            var waiting=new List<Job>();
+            using(var c=Command("SELECT j.* FROM jobs j WHERE j.phase='waiting_summary' AND NOT EXISTS(SELECT 1 FROM jobs p WHERE p.session_id=j.session_id AND p.phase NOT IN('complete','failed') AND (p.created<j.created OR (p.created=j.created AND p.rowid<j.rowid)));"))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));
+            var resumed=0;
+            foreach(var job in waiting){
+                var session=GetSession(job.SessionId);var history=History(job.SessionId).Where(j=>j.Phase=="complete").ToArray();
+                try{
+                    var document=job.FileIds.Length==0?null:SlackConversation.CurrentDocument(this,job);
+                    if(SlackConversation.Context(this,session,history,job.Text,threshold,document) is null)continue;
+                }catch(InvalidDataException){continue;}
+                using var tx=db.BeginTransaction();
+                if(Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==1){Audit("summary_not_required",job.Id,DateTimeOffset.UtcNow,tx);resumed++;}
+                tx.Commit();
+            }
+            return resumed;
+        }
+    }
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
     internal int FailWaitingSummary(string session){lock(gate){using var tx=db.BeginTransaction();var waiting=new List<Job>();using(var c=Command("SELECT * FROM jobs WHERE session_id=$id AND phase='waiting_summary';",tx,("$id",session)))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));var failed=0;
         foreach(var job in waiting){if(Execute("UPDATE jobs SET phase='failed',result='LOCAL_COMPRESSION_UNAVAILABLE' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==0)continue;
