@@ -22,6 +22,7 @@ internal sealed partial class SlackStore : IDisposable
         var path=Path.Combine(options.Root,"slack.db");CanonicalStore.GuardPath(path);
         db=new(new SqliteConnectionStringBuilder{DataSource=path,Pooling=false}.ToString());db.Open();
         Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000;"+Schema+AdoptionSchema+ResultFileSchema);
+        Execute("DELETE FROM replies WHERE kind='error' AND job_id='' AND state='sent';");
     }
     private int Execute(string sql,SqliteTransaction? tx=null,params (string,object?)[] args) {using var c=Command(sql,tx,args);return c.ExecuteNonQuery();}
     private SqliteCommand Command(string sql,SqliteTransaction? tx=null,params (string,object?)[] args) {var c=db.CreateCommand();c.CommandText=sql;c.Transaction=tx;foreach(var (k,v) in args)c.Parameters.AddWithValue(k,v??DBNull.Value);return c;}
@@ -46,7 +47,8 @@ internal sealed partial class SlackStore : IDisposable
             if(session is not null&&session.Owner!=m.UserId){tx.Commit();return new("foreign_owner",null);}
             var count=Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE phase NOT IN ('complete','failed');",tx));
             if(count>=options.MaxQueue){
-                QueueReply("refused-"+m.EventId,"",m.ChannelId,m.RootTs,"現在は受付できません。時間をおいて再度メンションしてください。","error",tx);
+                var refusalPending=Convert.ToInt32(Scalar("SELECT count(*) FROM replies WHERE kind='error' AND job_id='' AND state IN ('pending','sending','uncertain');",tx))>0;
+                if(!refusalPending)QueueReply("refused-"+m.EventId,"",m.ChannelId,m.RootTs,"現在は受付できません。時間をおいて再度メンションしてください。","error",tx);
                 tx.Commit();return new("queue_full",null);
             }
             var id=SlackHash.Id();
@@ -96,7 +98,7 @@ internal sealed partial class SlackStore : IDisposable
         using(var r=c.ExecuteReader())p=r.Read()?new(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6),r.GetInt32(7),r.GetInt64(8)):null;
         if(p is not null)Execute("UPDATE replies SET state='sending',attempts=attempts+1 WHERE id=$id;",tx,("$id",p.Id));tx.Commit();return p;
     }}
-    internal void ReplySent(string id,string ts){lock(gate)Execute("UPDATE replies SET state='sent',remote_ts=$ts WHERE id=$id AND state IN ('sending','uncertain');",null,("$ts",ts),("$id",id));}
+    internal void ReplySent(string id,string ts){lock(gate){using var tx=db.BeginTransaction();Execute("UPDATE replies SET state='sent',remote_ts=$ts WHERE id=$id AND state IN ('sending','uncertain');",tx,("$ts",ts),("$id",id));Execute("DELETE FROM replies WHERE id=$id AND kind='error' AND job_id='' AND state='sent';",tx,("$id",id));tx.Commit();}}
     internal void ReplyRetry(string id,DateTimeOffset at){lock(gate)Execute("UPDATE replies SET state='pending',retry_after=$at WHERE id=$id AND state='sending';",null,("$at",Ms(at)),("$id",id));}
     internal void ReplyUncertain(string id){lock(gate)Execute("UPDATE replies SET state='uncertain' WHERE id=$id AND state='sending';",null,("$id",id));}
     internal Reply[] UncertainReplies(){lock(gate){using var c=Command("SELECT id,job_id,channel,thread,text,kind,state,attempts,retry_after FROM replies WHERE state='uncertain' ORDER BY rowid LIMIT 100;");using var r=c.ExecuteReader();var list=new List<Reply>();while(r.Read())list.Add(new(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6),r.GetInt32(7),r.GetInt64(8)));return list.ToArray();}}

@@ -47,7 +47,20 @@ internal static class SlackTests
             var m=Mention("EV-PERSIST",now);var j=s.Accept(m,online,now).JobId!;var r=s.ClaimReply(now)!;s.ReplyRetry(r.Id,now.AddMinutes(1));
             Check(s.ClaimReply(now) is null,"retry-after respected");Check(s.ClaimReply(now.AddMinutes(2)) is not null,"known rate limit retry");s.Recover();Check(s.ClaimReply(now.AddMinutes(2)) is null,"crash during send held");
         }
-        using(var s=new SlackStore(Options(Path.Combine(root,"queue"),1))){s.Accept(Mention("EV-Q1",now),online,now);Check(s.Accept(Mention("EV-Q2",now.AddSeconds(1)),online,now.AddSeconds(1)).Status=="queue_full","queue capacity");var r=s.ClaimReply(now)!;s.ReplySent(r.Id,"1700000000.000001");var error=s.ClaimReply(now)!;Check(error.Kind=="error"&&!error.Text.Contains("受け付けました"),"no false acceptance");}
+        using(var s=new SlackStore(Options(Path.Combine(root,"queue"),1))){
+            s.Accept(Mention("EV-Q1",now),online,now);
+            Check(s.Accept(Mention("EV-Q2",now.AddSeconds(1)),online,now.AddSeconds(1)).Status=="queue_full","queue capacity");
+            Check(s.Accept(Mention("EV-Q3",now.AddSeconds(2)),online,now.AddSeconds(2)).Status=="queue_full","queue refusal coalesced");
+            var r=s.ClaimReply(now)!;s.ReplySent(r.Id,"1700000000.000001");var error=s.ClaimReply(now)!;
+            Check(error.Kind=="error"&&!error.Text.Contains("受け付けました"),"no false acceptance");
+            s.Accept(Mention("EV-Q4",now.AddSeconds(3)),online,now.AddSeconds(3));
+            s.ReplyUncertain(error.Id);
+            Check(s.UncertainReplies().Any(x=>x.Id==error.Id),"uncertain refusal retained");
+            Check(s.ClaimReply(now) is null,"uncertain refusal is not replayed");
+            s.ReplySent(error.Id,"1700000000.000002");
+            s.Accept(Mention("EV-Q5",now.AddSeconds(4)),online,now.AddSeconds(4));
+            Check(s.ClaimReply(now)?.Kind=="error","delivered refusal row cleaned for next notice");
+        }
         using(var s=new SlackStore(Options(Path.Combine(root,"retention")))){
             var dates=new[]{now.AddDays(-31),now.AddDays(-10),now.AddDays(-6)};var ids=new List<string>();
             for(var i=0;i<dates.Length;i++){var m=Mention("EV-AGE"+i,dates[i]);var id=s.Accept(m,dates[i].AddSeconds(-1),dates[i]).JobId!;Ack(s);var j=s.ClaimNext()!;s.Finish(id,"public",true,false);Ack(s);ids.Add(j.SessionId);}
