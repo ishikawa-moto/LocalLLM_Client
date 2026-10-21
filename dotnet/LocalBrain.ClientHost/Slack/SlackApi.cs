@@ -115,8 +115,9 @@ internal sealed class SlackApi : IDisposable
     private static async Task<byte[]> Bounded(HttpContent content,int max,CancellationToken token)
     {
         if(content.Headers.ContentLength>max)throw new InvalidDataException("SLACK_RESPONSE_SIZE");
-        await using var input=await content.ReadAsStreamAsync(token);using var output=new MemoryStream();var buffer=new byte[8192];int n;
-        while((n=await input.ReadAsync(buffer,token))>0){if(output.Length+n>max)throw new InvalidDataException("SLACK_RESPONSE_SIZE");output.Write(buffer,0,n);}return output.ToArray();
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var input=await content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];int n;
+        while((n=await input.ReadAsync(buffer,deadline.Token))>0){if(output.Length+n>max)throw new InvalidDataException("SLACK_RESPONSE_SIZE");output.Write(buffer,0,n);}return output.ToArray();
     }
     public void Dispose()=>http.Dispose();
 }
