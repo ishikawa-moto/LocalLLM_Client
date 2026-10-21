@@ -22,7 +22,8 @@ internal sealed class SlackSocket(SlackOptions options,SlackStore store,SlackApi
                     await ProcessEnvelope(payload,options,store,since,(bytes,t)=>ws.SendAsync(bytes,WebSocketMessageType.Text,true,t),token);
                 }
             }catch(OperationCanceledException)when(token.IsCancellationRequested){break;}
-            catch(Exception e)when(e is HttpRequestException or WebSocketException or IOException or JsonException or InvalidOperationException or UnauthorizedAccessException or SlackRejected or SlackRateLimit or OperationCanceledException){
+            catch(SlackRateLimit rate){await Task.Delay(TimeSpan.FromSeconds(rate.Seconds),token);continue;}
+            catch(Exception e)when(e is HttpRequestException or WebSocketException or IOException or JsonException or InvalidOperationException or UnauthorizedAccessException or SlackRejected or OperationCanceledException){
                 // No URL, token, payload or exception.Message is printed.
                 Console.Error.WriteLine(JsonSerializer.Serialize(new{component="slack_socket",code="reconnect_or_configuration_required",error_type=e.GetType().Name}));failures++;
                 if(e is UnauthorizedAccessException||e is SlackRejected{Code:"invalid_auth" or "token_revoked" or "missing_scope"})throw new InvalidOperationException("SLACK_SETUP_REQUIRED");
