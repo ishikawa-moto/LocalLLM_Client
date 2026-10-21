@@ -38,6 +38,22 @@ Vertical/strongly rotated text is unqualified and flagged when its geometry is d
 
 Measured public fixtures include Japanese/ASCII symbols, synthetic skewed photograph, WebP, 90-degree rotation, vertical text, ruled/unruled/merged tables, two-page scan PDF and labelled public KMNIST cursive kana. Generated print is not a genuine handwriting or camera-photo benchmark. KMNIST's CC-BY-SA-4.0 attribution and transformation are recorded separately. A small sample does not establish general model quality.
 
+## Japanese recognition vocabulary
+
+The CTC decoder restricts output labels to ASCII and the Japanese JIS X 0213
+repertoire (`euc_jis_2004`). Hangul and Bopomofo are explicitly excluded. Chinese
+forms outside that Japanese repertoire are excluded before decoding. Japanese
+kanji shared with Chinese are retained; this is a character policy, not a promise
+to identify the language of an arbitrary Han-only sentence. The pinned PP-OCRv5
+weights, CPU settings and offline execution remain unchanged.
+
+When an excluded label wins, its score competes as CTC blank rather than forcing
+a weaker Japanese replacement. Affected lines include `[対象外文字あり]`, the page
+records `NON_JAPANESE_CANDIDATE_EXCLUDED_VERIFY_SOURCE`, and `needs_review=true`.
+Excluded original labels are not retained in text, hypotheses, tables or Slack
+text attachments. Scores are not renormalized or promoted to a quality guarantee.
+Existing completed results are preserved; this policy applies to new page work.
+
 ## Fixed Host API
 
 The initial local transport is the machine-readable Host CLI. The logical operations are `ocr_submit`, `ocr_status`, `ocr_result`, `ocr_cancel`, `ocr_resume`, mapped to `localbrain ocr submit|status|result|cancel|resume`. This is not a generic terminal tool. No Slack API, Bot, HTTP upload endpoint or Continue image UI is installed by this change.

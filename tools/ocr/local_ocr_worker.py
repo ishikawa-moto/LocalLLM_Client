@@ -103,6 +103,60 @@ def load_page(path,index):
     maps={1:lambda x,y:(x,y),2:lambda x,y:(width-x,y),3:lambda x,y:(width-x,height-y),4:lambda x,y:(x,height-y),5:lambda x,y:(y,x),6:lambda x,y:(y,height-x),7:lambda x,y:(width-y,height-x),8:lambda x,y:(width-y,x)}
     if orientation not in maps:raise OcrError('EXIF_ORIENTATION')
     return image,dict(units='original_image_pixels',origin='top_left',width=width,height=height,exif_orientation=orientation,raster_width=image.width,raster_height=image.height),maps[orientation]
+# JIS X 0213 retains Japanese kanji (including extended Japanese names), kana,
+# punctuation and ASCII. Shared Japanese/Chinese ideographs cannot be classified
+# by language from a code point alone. Never delete the whole Han Unicode block.
+LANGUAGE_POLICY = 'ja-jis0213-ascii-v1'
+EXCLUDED_MARKER = '[対象外文字あり]'
+
+def target_character(character):
+    if len(character) != 1:
+        return False
+    code = ord(character)
+    if (0x1100 <= code <= 0x11ff or 0x3130 <= code <= 0x318f or
+        0xa960 <= code <= 0xa97f or 0xac00 <= code <= 0xd7ff or
+        0x3100 <= code <= 0x312f or 0x31a0 <= code <= 0x31bf):
+        return False
+    try:
+        character.encode('euc_jis_2004')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+class JapaneseDecode:
+    """Exclude non-target labels before CTC decoding, without guessing a substitute.
+
+    Keep blank competitive with the excluded maximum. Simply zeroing foreign
+    scores would force a weaker Japanese guess and inflate apparent confidence.
+    Mark affected lines explicitly; no excluded text is retained as a hypothesis.
+    """
+    def __init__(self, decoder):
+        if not decoder.character or decoder.character[0] != 'blank':
+            raise OcrError('LANGUAGE_DECODER_INCOMPATIBLE')
+        self.decoder = decoder
+        self.character = tuple(decoder.character)
+        self.blocked = tuple(i for i, c in enumerate(self.character)
+                             if i and not target_character(c))
+        self.excluded_steps = 0
+
+    def __call__(self, preds, return_word_box=False, **kwargs):
+        import numpy as np
+        if return_word_box or preds.ndim != 3 or preds.shape[2] != len(self.character):
+            raise OcrError('LANGUAGE_DECODER_INCOMPATIBLE')
+        if not self.blocked:
+            return self.decoder(preds, return_word_box=False, **kwargs)
+        winners = preds.argmax(axis=2)
+        excluded = np.isin(winners, self.blocked)
+        self.excluded_steps += int(excluded.sum())
+        limited = preds.copy()
+        limited[:, :, 0] = np.where(excluded, preds[:, :, self.blocked].max(axis=2), preds[:, :, 0])
+        limited[:, :, self.blocked] = 0
+        lines, words = self.decoder(limited, return_word_box=False, **kwargs)
+        # The marker survives plain-text / table / Slack attachment exports.
+        lines = [(text + EXCLUDED_MARKER if excluded[i].any() else text, score)
+                 for i, (text, score) in enumerate(lines)]
+        return lines, words
+
 def load_engine(model_root,variant):
     from rapidocr import RapidOCR,OCRVersion,ModelType
     model_root=Path(model_root)
@@ -122,9 +176,10 @@ def load_engine(model_root,variant):
       'Rec.model_path':str(model_root/rec),'Rec.ocr_version':version,'Rec.model_type':ModelType.MOBILE,'Rec.lang_type':'ch' if variant=='v5' else 'japan',
       'Cls.model_path':str(model_root/cls),'Cls.ocr_version':OCRVersion.PPOCRV4,'Cls.model_type':ModelType.MOBILE,'Rec.rec_batch_num':2}
     engine=RapidOCR(params=params)
+    engine.text_rec.postprocess_op=JapaneseDecode(engine.text_rec.postprocess_op)
     providers={name:getattr(engine,name).session.session.get_providers() for name in ('text_det','text_rec','text_cls')}
     if any(p!=['CPUExecutionProvider'] for p in providers.values()):raise OcrError('CPU_PROVIDER_REQUIRED')
-    return engine,dict(engine='RapidOCR',version=importlib.metadata.version('rapidocr'),recognition_model=rec,detection_model=det,model_hashes={name:manifest['files'][name]['sha256'] for name in [det,rec,cls]},runtime='onnxruntime',runtime_version=importlib.metadata.version('onnxruntime'),requested_providers=['CPUExecutionProvider'],actual_providers=providers,threads=2)
+    return engine,dict(engine='RapidOCR',version=importlib.metadata.version('rapidocr'),recognition_model=rec,detection_model=det,model_hashes={name:manifest['files'][name]['sha256'] for name in [det,rec,cls]},runtime='onnxruntime',runtime_version=importlib.metadata.version('onnxruntime'),requested_providers=['CPUExecutionProvider'],actual_providers=providers,threads=2,language_policy=LANGUAGE_POLICY)
 def grid_cells(image):
     import cv2,numpy as np
     gray=cv2.cvtColor(np.array(image),cv2.COLOR_RGB2GRAY)
@@ -166,6 +221,8 @@ def process_page(path,index,profile,models,variant='v5'):
         if profile=='TABLE_LAYOUT' and not tables:warnings_out.append('NO_CONFIDENT_RULED_GRID_UNRULED_LAYOUT_UNQUALIFIED')
     engine,identity=load_engine(models,variant)
     result=engine(cv2.cvtColor(np.array(image),cv2.COLOR_RGB2BGR))
+    if engine.text_rec.postprocess_op.excluded_steps:
+        warnings_out.append('NON_JAPANESE_CANDIDATE_EXCLUDED_VERIFY_SOURCE')
     spans=[]
     if result.txts is not None:
         if len(result.txts)>2500:raise OcrError('SPAN_LIMIT')
@@ -178,7 +235,7 @@ def process_page(path,index,profile,models,variant='v5'):
             raw_width=max(p[0] for p in raw)-min(p[0] for p in raw);raw_height=max(p[1] for p in raw)-min(p[1] for p in raw)
             vertical=raw_height>max(1,raw_width)*2
             if vertical and 'VERTICAL_TEXT_UNQUALIFIED' not in warnings_out:warnings_out.append('VERTICAL_TEXT_UNQUALIFIED')
-            uncertain=confidence<0.85 or vertical;unreadable=confidence<0.50
+            uncertain=confidence<0.85 or vertical or EXCLUDED_MARKER in candidate;unreadable=confidence<0.50
             span=dict(page=index,block=None,paragraph=None,line=i,span_id=f'p{index}_s{i}',text='[判読不能]' if unreadable else candidate,hypothesis=candidate if unreadable else None,polygon=poly,bounding_box=bbox,confidence=confidence,confidence_kind='uncalibrated_recognizer_score_not_probability_of_correctness',needs_review=uncertain,unreadable=unreadable,table_id=None,row_index=None,column_index=None)
             center=[sum(p[0] for p in raw)/4,sum(p[1] for p in raw)/4]
             matching=[cell for cell in tables if cell['bounding_box'][0]<=center[0]<=cell['bounding_box'][2] and cell['bounding_box'][1]<=center[1]<=cell['bounding_box'][3]]
