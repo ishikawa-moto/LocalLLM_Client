@@ -33,6 +33,7 @@ internal static class SlackApprovalTests
         var now=DateTimeOffset.UtcNow;var mention=new SlackMention("EV-WEB","TTEST","CTEST","UALICE",now.ToUnixTimeSeconds()+".000000",now.ToUnixTimeSeconds()+".000000","<@UBOT> public",[],now);
         var job=store.Accept(mention,now.AddMinutes(-1),now).JobId!;var session=store.GetJob(job).SessionId;
         var proposal=store.Propose(session,"knowledge","PUBLIC <script>alert(1)</script>","PUBLIC source","PUBLIC local two pass fixture",now);
+        for(var i=0;i<100;i++)store.Propose(session,"knowledge","PUBLIC page fixture "+i,"PUBLIC source","PUBLIC local two pass fixture",now);
         var portProbe=new TcpListener(IPAddress.Loopback,0);portProbe.Start();var port=((IPEndPoint)portProbe.LocalEndpoint).Port;portProbe.Stop();
         var origin="https://localhost:"+port;
         var password="PUBLIC-test-password-20261020";
@@ -65,8 +66,9 @@ internal static class SlackApprovalTests
             using(var denied=await Login("wrong",csrf,origin))Check(denied.StatusCode==HttpStatusCode.Unauthorized,"wrong password denied");
             using(var yes=await Login(password,csrf,origin))Check(yes.IsSuccessStatusCode,"password login without browser certificate");
             html=await admin.GetStringAsync("/",stop.Token);csrf=Regex.Match(html,"const csrf='([A-F0-9]+)'").Groups[1].Value;
-            Check(html.Contains("一覧を更新")&&csrf.Length==64,"authenticated approval page");
-            using(var list=await admin.GetAsync("/api/proposals",stop.Token)){Check(list.IsSuccessStatusCode,"authorized list");var body=await list.Content.ReadAsStringAsync(stop.Token);Check(body.Contains("slack_restricted")&&!body.Contains("<script>"),"restriction and JSON encoding");}
+            Check(html.Contains("一覧を更新")&&html.Contains("次へ")&&csrf.Length==64,"authenticated approval page");
+            using(var list=await admin.GetAsync("/api/proposals",stop.Token)){Check(list.IsSuccessStatusCode,"authorized list");var body=await list.Content.ReadAsStringAsync(stop.Token);Check(body.Contains("slack_restricted")&&!body.Contains("<script>"),"restriction and JSON encoding");using var json=JsonDocument.Parse(body);Check(json.RootElement.GetProperty("pageCount").GetInt32()==2&&!body.Contains(proposal.Id),"proposal list first page");}
+            using(var list=await admin.GetAsync("/api/proposals?page=2",stop.Token)){using var json=JsonDocument.Parse(await list.Content.ReadAsStringAsync(stop.Token));Check(list.IsSuccessStatusCode&&json.RootElement.GetProperty("proposals").EnumerateArray().Any(p=>p.GetProperty("id").GetString()==proposal.Id),"proposal list reaches older items");}
             async Task<HttpResponseMessage> Decide(string hash,string? csrfValue,string originValue){using var req=new HttpRequestMessage(HttpMethod.Post,"/api/decision");req.Headers.Add("Origin",originValue);if(csrfValue is not null)req.Headers.Add("X-CSRF-Token",csrfValue);req.Content=new StringContent(JsonSerializer.Serialize(new{id=proposal.Id,hash,action="approve"}),Encoding.UTF8,"application/json");return await admin.SendAsync(req,stop.Token);}
             using(var no=await Decide(proposal.Hash,null,origin))Check(!no.IsSuccessStatusCode,"missing CSRF denied");
             using(var no=await Decide(proposal.Hash,csrf,"https://foreign.invalid"))Check(!no.IsSuccessStatusCode,"foreign origin denied");
