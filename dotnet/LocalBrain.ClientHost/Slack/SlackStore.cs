@@ -10,6 +10,7 @@ internal sealed partial class SlackStore : IDisposable
     private readonly object gate = new();
     private readonly SqliteConnection db;
     private readonly SlackOptions options;
+    // Owner remains the initiating user for persisted-schema compatibility only.
     internal sealed record Session(string Id,string Team,string Channel,string Thread,string Owner,long LastMention,string? Summary,string? SummaryHash){public SlackRestriction Restriction=>SlackRestriction.Instance;}
     internal sealed record Job(string Id,string EventId,string SessionId,string User,string Text,string[] FileIds,string Phase,string? Result,long Created){public SlackRestriction Restriction=>SlackRestriction.Instance;}
     internal sealed record Reply(string Id,string JobId,string Channel,string Thread,string Text,string Kind,string State,int Attempts,long RetryAfter);
@@ -44,7 +45,7 @@ internal sealed partial class SlackStore : IDisposable
                 DeleteSession(session.Id,"expired",now,tx);
                 if(FindSession(m.TeamId,m.ChannelId,m.RootTs,tx) is not null){tx.Commit();return new("session_pending_approval",null);}session=null;
             }
-            if(session is not null&&session.Owner!=m.UserId){tx.Commit();return new("foreign_owner",null);}
+            // Team/channel/thread define the shared conversation. Owner is creator metadata, not an ACL.
             var count=Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE phase NOT IN ('complete','failed');",tx));
             if(count>=options.MaxQueue){
                 var refusalPending=Convert.ToInt32(Scalar("SELECT count(*) FROM replies WHERE kind='error' AND job_id='' AND state IN ('pending','sending','uncertain');",tx))>0;

@@ -25,7 +25,7 @@ internal static class SlackTests
             Check(s.Accept(first,online,now).Status=="duplicate"&&s.ClaimReply(now) is null,"dedup before receipt");
             s.ReplySent(reply.Id,"1700000000.000001");var j=s.ClaimNext()!;
             Check(j is not null,"claim after acceptance");
-            Check(s.Accept(Mention("EV-OTHER",now.AddSeconds(1),first.RootTs,"UBOB"),online,now.AddSeconds(1)).Status=="foreign_owner","session isolation");
+            Check(s.Accept(Mention("EV-OTHER",now.AddSeconds(1),first.RootTs,"UBOB") with{ChannelId="COTHER"},online,now.AddSeconds(1)).Status=="offline_or_foreign","channel isolation");
             s.Recover();Check(s.GetJob(j!.Id).Phase=="queued","accepted job recovery");
             Check(s.Accept(first,now.AddSeconds(2),now.AddSeconds(3)).Status=="duplicate","persisted job survives offline filter");
             Check(s.Accept(Mention("EV-OFFLINE",now.AddHours(-1)),online,now).Status=="offline_or_foreign","reject shutdown delayed event");
@@ -117,6 +117,7 @@ internal static class SlackTests
             var tasks=Enumerable.Range(0,3).Select(_=>Task.Run(()=>Denied(RestrictedExecution.DenyExternal,"derived task inherits")));await Task.WhenAll(tasks);
         }
         RestrictedExecution.DenyExternal();Check(!RestrictedExecution.Active,"ordinary work unaffected");
+        await SlackSharedThreadTests.RunAsync();
         await ApiAsync(opts);
         Console.WriteLine(JsonSerializer.Serialize(new{slack_public_checks=checks,status="PASS",real_slack=false,real_model=false}));
     }

@@ -33,7 +33,7 @@ internal static class SlackConversation
     internal static int JobBudget(SlackStore store,SlackStore.Job job)=>Budget(job.Text,job.FileIds.Length==0?null:CurrentDocument(store,job));
     internal static bool NeedsCompression(SlackStore store,SlackStore.Session session,int threshold)=>
         store.HasSummaryWaiter(session.Id)||(Bytes(JsonSerializer.Serialize(store.History(session.Id).Where(x=>x.Phase=="complete")))>threshold&&session.SummaryHash!=store.HistoryHash(session.Id));
-    internal static object Turn(SlackStore.Job job)=>new{message_id=job.EventId,user=job.Text,assistant=job.Result,ocr_refs=job.FileIds};
+    internal static object Turn(SlackStore.Job job)=>new{message_id=job.EventId,user_id=job.User,user=job.Text,assistant=job.Result,ocr_refs=job.FileIds};
     internal static string? Context(SlackStore store,SlackStore.Session session,SlackStore.Job[] history,string prompt,int threshold,object? document=null)
     {
         if(history.Length==0){var current=document is null?"":JsonSerializer.Serialize(document);if(!Fits(current,prompt))throw new InvalidDataException("SLACK_INFERENCE_INPUT_BUDGET");return current;}
@@ -66,17 +66,17 @@ internal static class SlackConversation
     internal static List<string> Records(SlackStore store,SlackStore.Job[] history)
     {
         var records=new List<string>();
-        void Add(string id,string kind,string text,string? hash=null){var index=0;foreach(var part in Parts(text))records.Add(JsonSerializer.Serialize(new{message_id=id,kind,part=index++,source_hash=hash,text=part}));}
+        void Add(string id,string kind,string text,string actor,string? hash=null){var index=0;foreach(var part in Parts(text))records.Add(JsonSerializer.Serialize(new{message_id=id,user_id=actor,kind,part=index++,source_hash=hash,text=part}));}
         foreach(var job in history.Where(x=>x.Phase=="complete")){
-            Add(job.EventId,"user",job.Text);Add(job.EventId,"assistant",job.Result??"");
-            foreach(var file in job.FileIds){var a=store.GetAttachment(job.Id,file);if(a?.Result is not null)Add(job.EventId+":"+file,"ocr",JsonSerializer.Deserialize<JsonElement>(a.Result).GetProperty("text").GetString()??"",a.Hash);}
+            Add(job.EventId,"user",job.Text,job.User);Add(job.EventId,"assistant",job.Result??"",job.User);
+            foreach(var file in job.FileIds){var a=store.GetAttachment(job.Id,file);if(a?.Result is not null)Add(job.EventId+":"+file,"ocr",JsonSerializer.Deserialize<JsonElement>(a.Result).GetProperty("text").GetString()??"",job.User,a.Hash);}
         }
         return records;
     }
     internal static async Task<bool> Compress(SlackStore store,string session,int budget,Func<string,int,CancellationToken,Task<string>> summarize,Func<bool> admission,CancellationToken token)
     {
         var snapshot=store.Snapshot(session);var records=Records(store,snapshot.Jobs);
-        var prefixes=new List<string>{SlackHash.Of("slack-summary-v2")};
+        var prefixes=new List<string>{SlackHash.Of("slack-summary-participants-v1")};
         foreach(var record in records)prefixes.Add(SlackHash.Of(prefixes[^1]+record));
         var saved=store.SummaryCheckpoint(session);var done=0;var summary="";
         if(saved is not null&&saved.Count>=0&&saved.Count<=records.Count&&prefixes[saved.Count]==saved.Hash){done=saved.Count;summary=saved.Summary;}
