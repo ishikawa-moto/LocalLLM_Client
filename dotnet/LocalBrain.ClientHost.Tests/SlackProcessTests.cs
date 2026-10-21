@@ -35,6 +35,19 @@ internal static class SlackProcessTests
         Check(!File.Exists(orphan)&&File.Exists(changed)&&File.Exists(unrelated),"restart reconciles only hash-matching owned staging files");
         SlackStagingFiles.DeleteIfHashMatches(changed,ownedHash);
         Check(File.Exists(changed),"failure cleanup preserves staging file with changed content");
+        using(var legacyStore=new SlackStore(options with{Root=Path.Combine(root,"legacy-store")})){
+            var legacyMention=new SlackMention("EV-LEGACY","TTEST","CTEST","UALICE",now.ToUnixTimeSeconds()+".000000",now.ToUnixTimeSeconds()+".000000","PUBLIC legacy fixture",["FLEGACY","FCHANGED"],now);
+            var legacyJob=legacyStore.Accept(legacyMention,since,now).JobId!;
+            legacyStore.SaveAttachment(legacyJob,"FLEGACY",".png",ownedBytes);legacyStore.BindOcr(legacyJob,"FLEGACY","public-previously-bound-ocr");
+            legacyStore.SaveAttachment(legacyJob,"FCHANGED",".png",ownedBytes);
+            var legacy=Path.Combine(staging,legacyJob+"-FLEGACY.png");File.WriteAllBytes(legacy,ownedBytes);
+            var legacyChanged=Path.Combine(staging,legacyJob+"-FCHANGED.png");File.WriteAllBytes(legacyChanged,[9,8,7]);
+            var unknown=Path.Combine(staging,new string('d',32)+"-FUNKNOWN.png");File.WriteAllBytes(unknown,ownedBytes);
+            SlackStagingFiles.Reconcile(ocr,legacyStore);
+            Check(!File.Exists(legacy),"restart cleans old-format original after an existing OCR binding");
+            Check(File.Exists(legacyChanged)&&File.Exists(unknown)&&File.Exists(unrelated),"legacy cleanup preserves changed and unowned originals");
+            Check(legacyStore.GetAttachment(legacyJob,"FLEGACY")!.Bytes.SequenceEqual(ownedBytes),"legacy cleanup preserves the durable attachment");
+        }
         var old=Environment.GetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG");Environment.SetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG",config);
         try{
             var p=SlackPriority.ForFixture(ocr,()=>new(long.MaxValue,long.MaxValue,0));Check(p.Admission(),"idle background admission");
@@ -70,5 +83,6 @@ internal static class SlackProcessTests
             Check(store.GetJob(job.Id).Result=="PUBLIC","other session survives");
         }finally{Environment.SetEnvironmentVariable("LOCALBRAIN_OCR_CONFIG",old);}
         Console.WriteLine(JsonSerializer.Serialize(new{slack_protocol_priority_ocr_checks=checks,status="PASS",public_local_ack_ms=ackMilliseconds,public_local_preemption_ms=preemptionMilliseconds,real_ocr_model=false,real_slack=false,real_saluki=false}));
+        await SlackRetryTests.RunAsync();
     }
 }

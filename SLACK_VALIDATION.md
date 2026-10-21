@@ -8,15 +8,22 @@ The public implementation is ready for review against main, with disabled templa
 | --- | --- | --- |
 | Client build | PASS, 0 errors | Existing platform/nullability warnings retained |
 | Client normal regression | PASS, exit 0 | Existing canonical state, Agent, decision, TaskMemory and crash-recovery public fixtures |
-| Slack core | 60 checks PASS | Identity, channel/mention/owner, receipt-before-work, dedup, offline boundary, restart, retention, replies, rate limits and external-AI denial |
-| Protocol / priority / OCR registration | 17 checks PASS | Durable OCR registration and restricted origin; local control-path admission/preemption |
-| HTTPS password approval | 37 checks PASS | Real loopback HTTPS, no browser client certificate, password matching, minimum4/no attempt lockout, one-hour expiry/logout/rotation, CSRF, exact hashes and replay |
+| Slack core | 80 checks PASS | Identity, channel/mention/owner, receipt-before-work, dedup, offline boundary, restart, retention, replies, summary wake-up and external-AI denial |
+| Protocol / priority / OCR registration | 27 checks PASS | Durable OCR registration, restricted origin, legacy staging recovery, unavailable compression and local admission/preemption |
+| HTTP failure / retry regression | 7 checks PASS | Metadata/download Retry-After, cancellable waiting, file rejection isolation and a stalled body after response headers |
+| HTTPS password approval | 39 checks PASS | Real loopback HTTPS, no browser client certificate, password matching, minimum4/no attempt lockout, one-hour expiry/logout/rotation, CSRF, exact hashes, pagination and replay |
 | File result outbox | 28 checks PASS | Exact UTF8 text, original thread, official form upload ticket, no bearer on upload capability, stage recovery, pre-upload rejection-only retry, uncertain HOLD and retention |
-| Adoption / retirement contract | 63 checks PASS | Canonical cross-language vectors, reservations, lost-response/restart reconciliation, unknown HOLD, cancellation and cleanup outbox |
-| Server complete public regression | 142 tests PASS, 0 failures/errors/skips | Includes SSE parser and opt-in authenticated cold-start lifecycle; test-bound loopback listeners, no production model/config |
+| Adoption / retirement contract | 67 checks PASS | Canonical cross-language vectors, reservations, lost-response/restart reconciliation, older duplicate binding, unknown HOLD, cancellation and cleanup outbox |
+| Server complete public regression | 144 tests PASS, 0 failures/errors/skips | Includes SSE parser, restricted resource admission and opt-in authenticated cold-start lifecycle; test-bound loopback listeners, no production model/config |
 | Independent SSE review | No findings | Limited read-only review of the fixed parser and one-source deployment boundary; not a general security guarantee |
 
-The five Client public groups total 205 checks. Run the Client test executable with `--slack-proof`, `--slack-process-proof`, `--slack-https-proof`, `--slack-file-proof` and `--slack-adoption-proof`; run without arguments for the normal suite. Server tests are in the paired Server repository. Test certificates do not enroll production trust.
+The five Client public commands total 248 checks; `--slack-process-proof` includes both protocol and HTTP retry groups. Run the Client test executable with `--slack-proof`, `--slack-process-proof`, `--slack-https-proof`, `--slack-file-proof` and `--slack-adoption-proof`; run without arguments for the normal suite. Server tests are in the paired Server repository. Test certificates do not enroll production trust.
+
+### PR review follow-up, 2026-10-21
+
+Metadata and private-file download rate limits now defer the accepted job and respect Slack's Retry-After interval. Owner cancellation interrupts the wait. Startup also reconciles legacy staging names using the retained job/file attachment, exact extension and content hash; unknown or modified originals are preserved. Human confirmation removes delivered queue-refusal rows in the same transaction while retaining uncertain deliveries and ordinary job receipts.
+
+Public regressions additionally cover a summary completing before its waiter transition, atomic wake-up across reopening, duplicate Server proposal binding beyond the first 100 items with terminal state preserved, and the response-body deadline after HTTP headers arrive. These PR follow-up commits have not been deployed to the running installation. The approved installation evidence below describes its separately qualified earlier revision.
 
 The initial restricted environment denied a fixture rename; the normal-user run passed. An earlier crash-test Windows dialog was resolved with test-process-local dialog suppression. These failures remain in the local audit history, rather than being counted as successful runs. The SSE follow-up reused unchanged qualifying tests instead of rerunning unrelated suites.
 

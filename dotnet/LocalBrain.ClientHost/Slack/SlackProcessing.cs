@@ -87,6 +87,9 @@ internal static class SlackStagingFiles
     private static readonly System.Text.RegularExpressions.Regex OwnedFileName=new(
         @"^[a-f0-9]{32}-F[A-Z0-9]{2,32}-([a-f0-9]{64})\.(?:png|jpg|webp|pdf)$",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex LegacyFileName=new(
+        @"^([a-f0-9]{32})-(F[A-Z0-9]{2,32})(\.(?:png|jpg|webp|pdf))$",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     internal static string PathFor(string directory,string job,string file,string hash,string extension)=>
         Path.Combine(directory,$"{job}-{file}-{hash}{extension}");
@@ -98,7 +101,7 @@ internal static class SlackStagingFiles
         if(OcrJobStore.HashFile(path)==expectedHash)File.Delete(path);
     }
 
-    internal static void Reconcile(OcrConfig config)
+    internal static void Reconcile(OcrConfig config,SlackStore? store=null)
     {
         var directory=Path.Combine(config.InputRoots[0],"slack-restricted");
         CanonicalStore.GuardPath(directory);
@@ -107,7 +110,12 @@ internal static class SlackStagingFiles
         {
             CanonicalStore.GuardPath(path);
             var match=OwnedFileName.Match(Path.GetFileName(path));
-            if(match.Success)DeleteIfHashMatches(path,match.Groups[1].Value);
+            if(match.Success){DeleteIfHashMatches(path,match.Groups[1].Value);continue;}
+            // Old releases did not put a hash in the filename. Require the retained
+            // job/file binding and exact extension/hash; an unknown original stays intact.
+            var legacy=LegacyFileName.Match(Path.GetFileName(path));
+            if(!legacy.Success||store?.GetAttachment(legacy.Groups[1].Value,legacy.Groups[2].Value) is not {} attachment||attachment.Extension!=legacy.Groups[3].Value)continue;
+            DeleteIfHashMatches(path,attachment.Hash);
         }
     }
 }
@@ -171,7 +179,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                     }
                 }catch(SlackDeferred){store.Defer(job.Id);}
                 catch(OperationCanceledException)when(!token.IsCancellationRequested){store.Defer(job.Id);}
-                catch(SlackRateLimit){store.Defer(job.Id);}
+                catch(SlackRateLimit rate){store.Defer(job.Id);await Task.Delay(TimeSpan.FromSeconds(rate.Seconds),token);}
                 catch(Exception e)when(e is SlackRejected or SlackInterrupted or IOException or JsonException or HttpRequestException or InvalidDataException or UnauthorizedAccessException or OcrException){
                     store.Finish(job.Id,"LOCAL_PROCESSING_FAILED",false,true);
                 }

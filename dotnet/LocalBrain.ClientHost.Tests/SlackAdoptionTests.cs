@@ -91,6 +91,9 @@ internal static class SlackAdoptionTests
             var expiring=JsonNode.Parse(proposal.ToJsonString())!.AsObject();expiring["payload"]!["proposal_id"]="proposal_expiry_fixture";expiring["proposal_hash"]=DecisionProtocol.Digest(JsonSerializer.SerializeToElement(expiring["payload"]));
             var e=store.BindServerProposal(session,expiring.ToJsonString(),review.ToJsonString(),now);store.Authorize(e.Id,e.Hash,"admin_public",true,"approve",now,new string('a',64));
             Check(store.ClaimApplication(now.AddMinutes(6)) is null&&store.Proposals().Single(p=>p.Id==e.Id).State=="approval_expired","dispatch never renews expired approval");
+            for(var i=0;i<101;i++)store.Propose(session,"knowledge","PUBLIC newer candidate "+i,"PUBLIC evidence","PUBLIC review",now);
+            Check(store.Proposals().All(x=>x.Id!=p.Id),"bound proposal is outside first listing page");
+            Check(store.BindServerProposal(session,proposal.ToJsonString(),review.ToJsonString(),now) is {State:"applied"} retained&&retained.Id==p.Id,"duplicate binding retrieves older proposal by ID and preserves terminal state");
         }
         {
             var root=Directory.CreateTempSubdirectory("slack-retirement-public-").FullName;var old=DateTimeOffset.UtcNow.AddDays(-31);

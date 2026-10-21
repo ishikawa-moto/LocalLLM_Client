@@ -59,8 +59,23 @@ internal static class SlackTests
             Check(s.ClaimReply(now) is null,"uncertain refusal is not replayed");
             s.ReplySent(error.Id,"1700000000.000002");
             s.Accept(Mention("EV-Q5",now.AddSeconds(4)),online,now.AddSeconds(4));
-            Check(s.ClaimReply(now)?.Kind=="error","delivered refusal row cleaned for next notice");
+            var manual=s.ClaimReply(now);Check(manual?.Kind=="error","delivered refusal row cleaned for next notice");
+            s.ReplyUncertain(manual!.Id);
+            s.ReconcileReply(manual.Id,SlackStore.ReplyHash(manual),"1700000000.000003","public-admin");
+            using var rows=new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder{DataSource=Path.Combine(root,"queue","slack.db"),Mode=Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,Pooling=false}.ToString());rows.Open();
+            using var count=rows.CreateCommand();count.CommandText="SELECT count(*) FROM replies WHERE kind='error' AND job_id='';";
+            Check(Convert.ToInt32(count.ExecuteScalar())==0,"human-confirmed refusal is erased in the confirmation transaction");
+            Check(s.UncertainReplies().Length==0,"human-confirmed refusal is no longer uncertain");
         }
+        var summaryOptions=Options(Path.Combine(root,"summary-wakeup"));string summaryJob;
+        using(var s=new SlackStore(summaryOptions)){
+            summaryJob=s.Accept(Mention("EV-SUMMARY-WAKE",now),online,now).JobId!;Ack(s);s.ClaimNext();var session=s.GetJob(summaryJob).SessionId;var hash=s.HistoryHash(session);
+            Check(s.SaveSummary(session,"public summary",hash),"summary finishes before waiter transition");s.WaitForSummary(summaryJob);
+            Check(s.GetJob(summaryJob).Phase=="queued","completed summary cannot lose its wake-up");
+            s.DropSummaryCache();s.ClaimNext();s.WaitForSummary(summaryJob);Check(s.GetJob(summaryJob).Phase=="waiting_summary","summary waiter fixture");
+            Check(s.SaveSummary(session,"public summary",hash),"summary saves and wakes atomically without separate notification");
+        }
+        using(var s=new SlackStore(summaryOptions))Check(s.GetJob(summaryJob).Phase=="queued","summary wake-up persists across reopening");
         using(var s=new SlackStore(Options(Path.Combine(root,"retention")))){
             var dates=new[]{now.AddDays(-31),now.AddDays(-10),now.AddDays(-6)};var ids=new List<string>();
             for(var i=0;i<dates.Length;i++){var m=Mention("EV-AGE"+i,dates[i]);var id=s.Accept(m,dates[i].AddSeconds(-1),dates[i]).JobId!;Ack(s);var j=s.ClaimNext()!;s.Finish(id,"public",true,false);Ack(s);ids.Add(j.SessionId);}
