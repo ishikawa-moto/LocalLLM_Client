@@ -140,3 +140,7 @@ CPU admission now reuses a measurement over a 250ms window instead of interpreti
 
 Summary attempts record only hashed session identity and fixed progress codes. One deduplicated progress message tells the original requester that local history summarization is underway. Its operation deadline is bounded at 900 seconds, including cold startup; foreground cancellation remains immediate. Native completion uses the existing token-count-dependent deadline instead of a fixed 120-second cutoff. No CPU/RAM limit, model context, credential or Cloud AI policy is relaxed.
 The compression threshold is a background-work hint, not a reply gate: a complete context inside the existing hard 16,000-byte contract is sent directly. Old unnecessary summary waiters are reconsidered by the single owning Host without changing input identity. True over-budget requests still wait for a bound summary. A running background summary yields when runnable user work appears.
+
+### Slack応答の期限（候補・切替前）
+
+新規設定の推論許容は最大120秒、Clientの外側期限は指定値+5秒、Chat通信期限は125秒です。Serverは入力量に応じて30〜120秒に制限し、呼出し側の指定を超えません。既存の30秒設定や固定済みrequestは書き換えず、設定移行は別途切替時に行います。foreground優先・中断後の再送禁止・外部AI禁止は維持します。
