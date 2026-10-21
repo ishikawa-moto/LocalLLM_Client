@@ -133,3 +133,9 @@ New image/PDF results are attached as UTF-8 Markdown. Page/attachment boundaries
 Uncertain regions remain marked. A retained local OCR hypothesis for an unreadable span is included with `[推測]`; without a usable hypothesis `[判読不能]` remains. No model is invoked to invent missing text or layout. General unruled/complex/handwritten layout remains unqualified. Document markup is escaped so OCR content cannot activate HTML or remote image links. Output has the existing 1 MiB attachment limit and never silently truncates.
 
 Frozen legacy `.txt` uploads keep their filename, bytes and delivery state. A default-format change never resends already-sent or uncertain uploads. Known rejected pre-upload tickets remain recoverable under their original format. Analysis attachments remain separate `.txt` files. No DB schema, OCR model, credential, Cloud AI or storage-policy change is required.
+
+### Summary-wait recovery
+
+CPU admission now reuses a measurement over a 250ms window instead of interpreting zero-duration/single-tick samples as 100% load. RAM/commit and foreground leases are still checked on every call, and sample updates are synchronized. Sessions with accepted requests waiting for a summary precede optional knowledge-candidate extraction. The original request and original history are preserved.
+
+Summary attempts record only hashed session identity and fixed progress codes. One deduplicated progress message tells the original requester that local history summarization is underway. Its operation deadline is bounded at 900 seconds, including cold startup; foreground cancellation remains immediate. Native completion uses the existing token-count-dependent deadline instead of a fixed 120-second cutoff. No CPU/RAM limit, model context, credential or Cloud AI policy is relaxed.

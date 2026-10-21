@@ -192,6 +192,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
         catch(IOException e)when((e.HResult&65535)==32){return true;}
     }
     // Restricted text remains in the dedicated Slack store; it is never captured as ordinary TaskMemory evidence.
+    internal const int SlackSummaryOperationSeconds=900; // Includes cold startup and bounded CPU-only inference; priority cancellation remains immediate.
     internal async Task<string> SummarizeSlackAsync(string source,CancellationToken token,int maxBytes=Slack.SlackConversation.SummaryBytes)
     {
         if(!background||!Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_MEMORY_OWNER_REQUIRED");
@@ -203,7 +204,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
         var rendered=template.GetProperty("prompt").GetString()!;
         var tokens=(await PostAsync("tokenize",new{content=rendered,add_special=false,parse_special=true},token)).GetProperty("tokens").EnumerateArray().Select(x=>x.GetInt32()).ToArray();
         if(tokens.Length+2048+SafetyReserve>options.ContextLimit)throw new InvalidDataException("SLACK_SUMMARY_BUDGET");
-        var response=await PostAsync("completion",new{prompt=tokens,n_predict=2048,temperature=0.0,stream=false,cache_prompt=false,json_schema=new{type="object",properties=new{summary=new{type="string",maxLength=maxBytes/6}},required=new[]{"summary"},additionalProperties=false}},token,TimeSpan.FromSeconds(120));
+        var response=await PostAsync("completion",new{prompt=tokens,n_predict=2048,temperature=0.0,stream=false,cache_prompt=false,json_schema=new{type="object",properties=new{summary=new{type="string",maxLength=maxBytes/6}},required=new[]{"summary"},additionalProperties=false}},token,CompletionTimeout(tokens.Length));
         if(response.TryGetProperty("truncated",out var truncated)&&truncated.GetBoolean())throw new InvalidDataException("SLACK_SUMMARY_TRUNCATED");
         using var doc=JsonDocument.Parse(response.GetProperty("content").GetString()!);
         var summary=doc.RootElement.GetProperty("summary").GetString()!;if(string.IsNullOrWhiteSpace(summary)||Slack.SlackConversation.EncodedBytes(summary)>maxBytes)throw new InvalidDataException("SLACK_SUMMARY_SIZE");return summary;
