@@ -67,6 +67,27 @@ internal static class SlackTests
             Check(s.Cleanup(now,false)==1,"30 day expiration");var pressured=true;Check(s.Cleanup(now,true,()=>{var p=pressured;pressured=false;return p;})==1,"oldest over7 pressure cleanup stops after recovery");Check(s.GetSession(ids[2]).Id==ids[2],"7 day protection");
             var running=s.Accept(Mention("EV-RUN",now.AddDays(-40)),now.AddDays(-41),now.AddDays(-40)).JobId!;Ack(s);s.ClaimNext();Check(s.Cleanup(now,false)==0,"active job cannot expire");
         }
+        using(var s=new SlackStore(Options(Path.Combine(root,"ordering")))){
+            var first=s.Accept(Mention("EV-ORDER-1",now,"ORDER_THREAD"),online,now).JobId!;
+            var follower=s.Accept(Mention("EV-ORDER-2",now.AddSeconds(1),"ORDER_THREAD",files:["FORDER"]),online,now.AddSeconds(1)).JobId!;
+            Ack(s);var head=s.ClaimNext()!;Check(head.Id==first,"same-session turns retain arrival order over file priority");
+            s.WaitForSummary(head.Id);Check(!s.HasPendingJobs()&&s.ClaimNext() is null,"blocked follower does not block summary maintenance");
+            s.SummaryReady(head.SessionId);Check(s.ClaimNext()!.Id==first,"summary wake-up resumes session head");
+            s.Finish(first,"public",true,false);Check(s.ClaimNext()!.Id==follower,"follower becomes claimable after predecessor completes");
+        }
+        using(var s=new SlackStore(Options(Path.Combine(root,"ocr-ordering")))){
+            var image=s.Accept(Mention("EV-OCR-ORDER-1",now,"OCR_THREAD",files:["FOCR"]),online,now).JobId!;
+            var follower=s.Accept(Mention("EV-OCR-ORDER-2",now.AddSeconds(1),"OCR_THREAD"),online,now.AddSeconds(1)).JobId!;
+            Ack(s);var head=s.ClaimNext()!;Check(head.Id==image,"image turn starts before same-session follow-up");
+            s.WaitForOcr(head.Id);Check(s.ClaimNext() is null&&s.HasPendingJobs(),"waiting OCR turn blocks same-session follow-up");
+            s.OcrReady(head.Id);Check(s.ClaimNext()!.Id==image,"OCR completion resumes session head");
+            s.Finish(image,"public OCR",true,true);Check(s.ClaimNext()!.Id==follower,"OCR follow-up waits for image turn completion");
+        }
+        using(var s=new SlackStore(Options(Path.Combine(root,"cross-session-priority")))){
+            var text=s.Accept(Mention("EV-PRIORITY-TEXT",now,"TEXT_THREAD"),online,now).JobId!;
+            var file=s.Accept(Mention("EV-PRIORITY-FILE",now.AddSeconds(1),"FILE_THREAD",files:["FPRIORITY"]),online,now.AddSeconds(1)).JobId!;
+            Ack(s);Check(s.ClaimNext()!.Id==file&&s.GetJob(text).Phase=="queued","file priority remains across independent sessions");
+        }
         var opts=Options(root);
         JsonElement Event(string type="app_mention",string text="<@UBOT> hello",string channel="CTEST",string user="UALICE",string team="TTEST")=>JsonSerializer.SerializeToElement(new{type="event_callback",event_id="EV-PARSE",team_id=team,@event=new{type,text,channel,user,ts=now.ToUnixTimeSeconds()+".000000"}});
         Check(SlackMention.Parse(Event(),opts,now) is not null,"real user id mention");
