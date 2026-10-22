@@ -33,6 +33,10 @@ class BoundedLayoutTests(unittest.TestCase):
   klass=type('RuntimeException',(Exception,),{'__module__':'onnxruntime.capi.onnxruntime_pybind11_state'})
   self.assertEqual(w.failure_code(klass('failed to allocate memory PRIVATE')),'ONNX_MEMORY_ALLOCATION')
   self.assertEqual(w.failure_code(klass('PRIVATE invalid node')),'ONNX_EXECUTION_FAILED')
+  wrapped=type('ONNXRuntimeError',(Exception,),{'__module__':'rapidocr.inference_engine.onnxruntime.main'})
+  self.assertEqual(w.failure_code(wrapped('Traceback: Failed to allocate memory PRIVATE')),'ONNX_MEMORY_ALLOCATION')
+  self.assertEqual(w.failure_code(wrapped('PRIVATE invalid node')),'ONNX_EXECUTION_FAILED')
+  self.assertEqual(w.failure_code(wrapped('std::bad allocation')),'ONNX_MEMORY_ALLOCATION')
   self.assertEqual(w.failure_code(MemoryError('PRIVATE')),'WORKER_MEMORY_LIMIT')
   self.assertEqual(w.failure_code(ValueError('PRIVATE')),'WORKER_FAILURE')
  def test_japanese_shared_han_not_removed(self):

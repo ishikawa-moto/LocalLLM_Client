@@ -378,9 +378,9 @@ def failure_code(error):
     name=type(error).__name__
     # Classify locally; never persist the exception text, path or OCR content.
     if name in ('MemoryError','_ArrayMemoryError'):return 'WORKER_MEMORY_LIMIT'
-    if type(error).__module__.startswith('onnxruntime'):
+    if type(error).__module__.startswith('onnxruntime') or (type(error).__module__.startswith('rapidocr.inference_engine.onnxruntime') and name=='ONNXRuntimeError'):
         message=str(error).lower()
-        return 'ONNX_MEMORY_ALLOCATION' if any(v in message for v in ('allocate memory','memory allocation','bad_alloc','out of memory','failed to allocate')) else 'ONNX_EXECUTION_FAILED'
+        return 'ONNX_MEMORY_ALLOCATION' if any(v in message for v in ('allocate memory','memory allocation','bad_alloc','bad allocation','out of memory','failed to allocate')) else 'ONNX_EXECUTION_FAILED'
     return {'UnidentifiedImageError':'IMAGE_DECODE_FAILED','DecompressionBombError':'PIXEL_LIMIT','DecompressionBombWarning':'PIXEL_LIMIT','PdfReadError':'PDF_CORRUPT','PdfiumError':'PDF_CORRUPT'}.get(name,'WORKER_FAILURE')
 
 def main():
