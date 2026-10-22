@@ -7,7 +7,7 @@ namespace LocalBrain.ClientHost.Ocr;
 
 internal static class OcrWorkerProcess
 {
-    internal sealed record Outcome(string State,string? ErrorCode,JsonElement? Result,long ElapsedMs,long PeakWorkingSet,long PeakPrivateCommit,double CpuSeconds,int? ExitCode,string StdoutHash,string StderrHash,string? ResultHash,long PreparationMs=0);
+    internal sealed record Outcome(string State,string? ErrorCode,JsonElement? Result,long ElapsedMs,long PeakWorkingSet,long PeakPrivateCommit,double CpuSeconds,int? ExitCode,string StdoutHash,string StderrHash,string? ResultHash,long PreparationMs=0,string? ErrorType=null);
     private static async Task<string> ReadBounded(StreamReader reader,int limit,CancellationTokenSource overBudget){
         var text=new StringBuilder();var buffer=new char[1024];int n;
         while((n=await reader.ReadAsync(buffer))>0){if(text.Length+n>limit){overBudget.Cancel();return text.ToString();}text.Append(buffer,0,n);}
@@ -59,9 +59,10 @@ internal static class OcrWorkerProcess
         if(reason is null&&budget.IsCancellationRequested)reason="OUTPUT_LIMIT";
         var outHash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(output));var errHash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(error));
         var exit=child.Process.ExitCode;
+        string? diagnosticType=null;
         if(reason is null&&(exit!=0||!File.Exists(resultPath))){
             reason="WORKER_FAILED";
-            try{using var diagnostic=JsonDocument.Parse(output.Trim());var code=diagnostic.RootElement.GetProperty("error_code").GetString();if(code is not null&&System.Text.RegularExpressions.Regex.IsMatch(code,"^[A-Z_]{1,80}$"))reason=code;}catch(Exception e)when(e is JsonException or KeyNotFoundException){}
+            try{using var diagnostic=JsonDocument.Parse(output.Trim());var code=diagnostic.RootElement.GetProperty("error_code").GetString();if(code is not null&&System.Text.RegularExpressions.Regex.IsMatch(code,"^[A-Z_]{1,80}$"))reason=code;diagnosticType=DiagnosticType(diagnostic.RootElement);}catch(Exception e)when(e is JsonException or KeyNotFoundException){}
         }
         JsonElement? result=null;
         if(reason is null){
@@ -73,10 +74,14 @@ internal static class OcrWorkerProcess
                 else result=value.Clone();
             }
         }
-        var receipt=new Outcome(reason is null?"complete":reason is "PRIORITY_WORK_ACTIVE" or "RAM_PRESSURE" or "COMMIT_PRESSURE" or "CPU_PRESSURE"?"paused":reason=="CANCELLED"?"cancelled":"failed",reason,result,watch.ElapsedMilliseconds,peakWorking,peakPrivate,cpu,exit,outHash,errHash,result is null?null:OcrJobStore.HashFile(resultPath),preparationMs);
+        var receipt=new Outcome(reason is null?"complete":reason is "PRIORITY_WORK_ACTIVE" or "RAM_PRESSURE" or "COMMIT_PRESSURE" or "CPU_PRESSURE"?"paused":reason=="CANCELLED"?"cancelled":"failed",reason,result,watch.ElapsedMilliseconds,peakWorking,peakPrivate,cpu,exit,outHash,errHash,result is null?null:OcrJobStore.HashFile(resultPath),preparationMs,diagnosticType);
         // Receipt excludes the private OCR body. Host separately commits validated page bytes.
         OcrJobStore.New(Path.Combine(attempt,"receipt.json"),receipt with{Result=null});
         return receipt;
+    }
+    internal static string? DiagnosticType(JsonElement diagnostic){
+        if(!diagnostic.TryGetProperty("error_type",out var type)||type.ValueKind!=JsonValueKind.String)return null;
+        return type.GetString() is "OnnxMemory" or "OnnxExecution" or "Memory" or "ImageDecode" or "Other"?type.GetString():"Other";
     }
     internal static string? Pressure(OcrConfig config,OcrResources.Sample sample)=>sample.AvailableRam<Math.Max(64L*1024*1024,config.RamAdmissionBytes-config.WorkerMemoryBytes)?"RAM_PRESSURE":sample.CommitHeadroom<Math.Max(64L*1024*1024,config.CommitAdmissionBytes-config.WorkerMemoryBytes)?"COMMIT_PRESSURE":null;
 }
