@@ -3,8 +3,20 @@ from pathlib import Path
 from PIL import Image,ImageDraw,ImageFont
 import json,sys
 out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
+if len(sys.argv)>2 and sys.argv[2]=='--exif-upright-only':
+ with Image.open(out/'financial.png') as original:
+  rotated=original.transpose(Image.Transpose.ROTATE_90);exif=rotated.getexif();exif[274]=6;rotated.save(out/'financial-exif-upright.jpg',quality=95,exif=exif)
+ sys.exit(0)
 font=ImageFont.truetype(r'C:\Windows\Fonts\meiryo.ttc',34)
 truth=[['科目','金額（円）','構成比'],['売上高','1,234,567','60.5%'],['営業利益','345,678','16.9%'],['当期利益','98,765','4.8%']]
+# Separate public unruled case; this flag preserves previously hashed fixtures.
+unruled=Image.new('RGB',(1250,650),'white');ud=ImageDraw.Draw(unruled)
+ud.text((50,20),'公開合成：罫線なし財務表',font=font,fill='black')
+for row,values in enumerate(truth):
+ for col,value in enumerate(values):ud.text(([70,500,900][col],110+row*100),value,font=font,fill='black')
+ud.text((50,570),'注記：公開試験用の架空値です。',font=font,fill='black')
+unruled.save(out/'financial-unruled.png')
+if len(sys.argv)>2 and sys.argv[2]=='--unruled-only':sys.exit(0)
 def table(draw,x,y,scale=1,merged=False):
  xs=[x,x+400*scale,x+780*scale,x+1080*scale];ys=[y+i*95*scale for i in range(5)]
  for yy in ys:draw.line((xs[0],yy,xs[-1],yy),fill='black',width=2*scale)
@@ -21,5 +33,6 @@ small=image.resize((990,825));small.save(out/'financial-small.jpg',quality=95)
 large=Image.new('RGB',(3060,4080),'white');large.paste(image,(100,100));large.paste(image,(1600,2200));large.save(out/'financial-large.jpg',quality=95)
 exif=image.getexif();exif[274]=6;image.save(out/'financial-exif.jpg',quality=95,exif=exif)
 image.save(out/'financial.pdf',resolution=100)
+rotated=image.transpose(Image.Transpose.ROTATE_90);correct_exif=rotated.getexif();correct_exif[274]=6;rotated.save(out/'financial-exif-upright.jpg',quality=95,exif=correct_exif)
 (out/'truth.json').write_text(json.dumps({'private_data':False,'tables_per_image':2,'rows':4,'columns':3,'simple_table':truth,'merged_cell':{'row':0,'column':0,'colspan':2},'large_tables':4},ensure_ascii=False,indent=2),encoding='utf8')
-print(json.dumps({'public_fixtures':6,'private_data':False}))
+print(json.dumps({'public_fixtures':8,'private_data':False}))

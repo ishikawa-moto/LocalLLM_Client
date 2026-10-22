@@ -235,6 +235,56 @@ def grid_cells(image):
         return cells,Image.fromarray(clean)
     return cells,image
 
+def aligned_cells(spans):
+    """Conservative unruled alignment hypothesis, never a verified table structure.
+
+    Require three consecutive data rows and at least one stable numeric right
+    edge. Text is copied from evidence; no totals, labels, or merged cells guessed.
+    """
+    import statistics,re,unicodedata
+    if len(spans)<6:return []
+    boxes=[s['recognition_raster_box'] for s in spans]
+    height=statistics.median(b[3]-b[1] for b in boxes)
+    if height<=0:return []
+    rows=[]
+    for span in sorted(spans,key=lambda s:(s['recognition_raster_box'][1],s['recognition_raster_box'][0])):
+        b=span['recognition_raster_box'];cy=(b[1]+b[3])/2
+        if rows and abs(rows[-1][0]-cy)<height*.65:rows[-1][1].append(span)
+        else:rows.append([cy,[span]])
+    numeric=lambda text:re.fullmatch(r'[\s¥￥$€+−\-()0-9,.%円]+',unicodedata.normalize('NFKC',text)) is not None
+    candidates=[row for row in rows if len(row[1])>=2 and any(numeric(s['text']) for s in row[1])]
+    groups=[]
+    for row in candidates:
+        if groups and row[0]-groups[-1][-1][0]<height*5:groups[-1].append(row)
+        else:groups.append([row])
+    cells=[];table_index=0
+    for group in groups:
+        if len(group)<3:continue
+        # Restrict inference to rows with a consistent number of separated spans.
+        counts=[len(r[1]) for r in group];columns=max(set(counts),key=counts.count)
+        if not 2<=columns<=12 or any(n!=columns for n in counts):continue
+        data=[sorted(row[1],key=lambda s:s['recognition_raster_box'][0]) for row in group]
+        lefts=[];rights=[];consistent=True
+        for col in range(columns):
+            column=[row[col] for row in data];bs=[v['recognition_raster_box'] for v in column]
+            anchors=[b[2] if numeric(v['text']) else b[0] for v,b in zip(column,bs)]
+            if max(anchors)-min(anchors)>height*1.5:consistent=False;break
+            lefts.append(min(b[0] for b in bs));rights.append(max(b[2] for b in bs))
+        if not consistent or any(lefts[i+1]-rights[i]<height for i in range(columns-1)):continue
+        boundaries=[lefts[0]-height*.25]+[(rights[i]+lefts[i+1])/2 for i in range(columns-1)]+[rights[-1]+height*.25]
+        selected=group[:]
+        above=[row for row in rows if 0<group[0][0]-row[0]<height*5 and len(row[1])==columns]
+        if above:
+            header=max(above,key=lambda row:row[0]);parts=sorted(header[1],key=lambda z:z['recognition_raster_box'][0])
+            if all(boundaries[c]<=sum(z['recognition_raster_box'][::2])/2<=boundaries[c+1] for c,z in enumerate(parts)):selected.insert(0,header)
+        ys=[min(s['recognition_raster_box'][1] for s in selected[0][1])-height*.25]+[(selected[i][0]+selected[i+1][0])/2 for i in range(len(selected)-1)]+[max(s['recognition_raster_box'][3] for s in selected[-1][1])+height*.25]
+        for row_index,row in enumerate(selected):
+            for col,span in enumerate(sorted(row[1],key=lambda z:z['recognition_raster_box'][0])):
+                table_id=f'table_{table_index}';span.update(table_id=table_id,row_index=row_index,column_index=col)
+                cells.append(dict(table_id=table_id,row_index=row_index,column_index=col,row_span=1,column_span=1,bounding_box=[max(0,boundaries[col]),max(0,ys[row_index]),boundaries[col+1],ys[row_index+1]],text='',confidence=None,structure_confidence=None,needs_review=True,unreadable=span['unreadable'],structure_method='experimental_aligned_text_not_verified_layout'))
+        table_index+=1
+    return cells
+
 def recognition_regions(image):
     """Half-open ownership cores prevent overlap duplicates; halos preserve edge glyphs.
 
@@ -265,8 +315,10 @@ def process_page(path,index,profile,models,variant='v5'):
         result=engine(cv2.cvtColor(np.asarray(tile),cv2.COLOR_RGB2BGR))
         if result.txts is None:continue
         for box,candidate,confidence in zip(result.boxes,result.txts,result.scores):
-            raw=[[float(x)+left,float(y)+top] for x,y in box]
-            if not all(math.isfinite(v) for point in raw for v in point):raise OcrError('INVALID_COORDINATES')
+            if len(box)!=4:raise OcrError('INVALID_COORDINATES')
+            local=[[float(x),float(y)] for x,y in box]
+            if not all(math.isfinite(v) for point in local for v in point) or any(x < -2 or y < -2 or x > tile.width+2 or y > tile.height+2 for x,y in local):raise OcrError('INVALID_COORDINATES')
+            raw=[[min(tile.width,max(0,x))+left,min(tile.height,max(0,y))+top] for x,y in local]
             center=[sum(p[0] for p in raw)/4,sum(p[1] for p in raw)/4]
             if not(core[0]<=center[0]<core[2] and core[1]<=center[1]<core[3]):continue
             confidence=float(confidence)
@@ -281,7 +333,7 @@ def process_page(path,index,profile,models,variant='v5'):
             seam=(left>0 and min(p[0] for p in raw)<=left+2) or (top>0 and min(p[1] for p in raw)<=top+2) or (left+tile.width<image.width and max(p[0] for p in raw)>=left+tile.width-2) or (top+tile.height<image.height and max(p[1] for p in raw)>=top+tile.height-2)
             uncertain=confidence<0.85 or vertical or EXCLUDED_MARKER in candidate or seam;unreadable=confidence<0.50
             i=len(spans)
-            span=dict(page=index,block=None,paragraph=None,line=i,span_id=f'p{index}_s{i}',text='[判読不能]' if unreadable else candidate,hypothesis=candidate if unreadable else None,polygon=poly,bounding_box=bbox,confidence=confidence,confidence_kind='uncalibrated_recognizer_score_not_probability_of_correctness',needs_review=uncertain,unreadable=unreadable,table_id=None,row_index=None,column_index=None)
+            span=dict(recognition_raster_box=[min(p[0] for p in raw),min(p[1] for p in raw),max(p[0] for p in raw),max(p[1] for p in raw)],page=index,block=None,paragraph=None,line=i,span_id=f'p{index}_s{i}',text='[判読不能]' if unreadable else candidate,hypothesis=candidate if unreadable else None,polygon=poly,bounding_box=bbox,confidence=confidence,confidence_kind='uncalibrated_recognizer_score_not_probability_of_correctness',needs_review=uncertain,unreadable=unreadable,table_id=None,row_index=None,column_index=None)
             matching=[cell for cell in tables if cell['bounding_box'][0]<=center[0]<=cell['bounding_box'][2] and cell['bounding_box'][1]<=center[1]<=cell['bounding_box'][3]]
             if len(matching)==1:
                 cell=matching[0];cell['text']+=(' ' if cell['text'] else '')+span['text'];cell['unreadable']|=unreadable
@@ -291,7 +343,11 @@ def process_page(path,index,profile,models,variant='v5'):
         if tile is not image:tile.close()
     if engine.text_rec.postprocess_op.excluded_steps:warnings_out.append('NON_JAPANESE_CANDIDATE_EXCLUDED_VERIFY_SOURCE')
     spans.sort(key=lambda s:(s['bounding_box'][1],s['bounding_box'][0]))
+    if not tables and profile in ('AUTO','TABLE_LAYOUT','PDF_DOCUMENT'):
+        tables=aligned_cells(spans)
+        if tables:warnings_out.append('EXPERIMENTAL_UNRULED_ALIGNMENT_REQUIRES_SOURCE_VERIFICATION')
     for cell in tables:
+        x,y,x2,y2=cell['bounding_box'];cell['bounding_box']=[max(0,x),max(0,y),min(image.width,x2),min(image.height,y2)]
         members=[s for s in spans if s['table_id']==cell['table_id'] and s['row_index']==cell['row_index'] and s['column_index']==cell['column_index']]
         cell['text']=' '.join(s['text'] for s in members)
         cell['confidence']=min((s['confidence'] for s in members),default=None)
@@ -310,8 +366,8 @@ def process_page(path,index,profile,models,variant='v5'):
         lines=['| '+' | '.join(v.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('|','\\|').replace('\n',' ') for v in row)+' |' for row in matrix]
         lines.insert(1,'| '+' | '.join(['---']*cols)+' |')
         box=[min(c['bounding_box'][0] for c in cells),min(c['bounding_box'][1] for c in cells),max(c['bounding_box'][2] for c in cells),max(c['bounding_box'][3] for c in cells)]
-        table_output.append(dict(table_id=table_id,page=index,rows=rows,columns=cols,bounding_box=box,cells=cells,csv=buf.getvalue(),csv_formula_escaped=True,markdown='\n'.join(lines),needs_review=True,structure_confidence=None,structure_status='ruled_grid_detected_verify_before_use'))
-    if tables:warnings_out.append('RULED_TABLE_STRUCTURE_REQUIRES_VERIFICATION')
+        table_output.append(dict(table_id=table_id,page=index,rows=rows,columns=cols,bounding_box=box,cells=cells,csv=buf.getvalue(),csv_formula_escaped=True,markdown='\n'.join(lines),needs_review=True,structure_confidence=None,structure_status='aligned_text_inferred_verify_before_use' if cells[0]['structure_method'].startswith('experimental') else 'ruled_grid_detected_verify_before_use'))
+    if any(not c['structure_method'].startswith('experimental') for c in tables):warnings_out.append('RULED_TABLE_STRUCTURE_REQUIRES_VERIFICATION')
     if profile=='HANDWRITING':warnings_out.append('EXPERIMENTAL_HANDWRITING_NOT_QUALIFIED_FOR_NAMES_ADDRESSES_OR_FORMS')
     if not spans:warnings_out.append('NO_TEXT_DETECTED_NOT_PROOF_OF_BLANK_PAGE')
     space['recognition_mapping']=dict(method='source_raster_tiles_v1',tile_core=TILE_CORE,tile_halo=TILE_HALO,tiles=tiles,scaling=1)

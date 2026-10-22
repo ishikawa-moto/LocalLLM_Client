@@ -20,6 +20,15 @@ class BoundedLayoutTests(unittest.TestCase):
   cells,_=w.grid_cells(image)
   self.assertEqual(len(set(c['table_id'] for c in cells)),2)
   self.assertEqual(len(cells),7);self.assertTrue(any(c['column_span']==2 for c in cells))
+ def test_unruled_alignment_is_a_reviewable_hypothesis(self):
+  spans=[]
+  for row in range(4):
+   for col,text in enumerate(['科目','金額','比率'] if row==0 else ['売上高','1,234','60.5%']):
+    x=[30,400,800][col];y=50+row*80;spans.append(dict(text=text,recognition_raster_box=[x,y,x+100,y+30],unreadable=False))
+  cells=w.aligned_cells(spans)
+  self.assertEqual(len(cells),12);self.assertTrue(all(c['needs_review'] and c['structure_confidence'] is None for c in cells))
+  self.assertTrue(all(c['row_span']==c['column_span']==1 for c in cells))
+  self.assertEqual(w.aligned_cells(spans[:3]),[])
  def test_onnx_failure_classification_never_exports_message(self):
   klass=type('RuntimeException',(Exception,),{'__module__':'onnxruntime.capi.onnxruntime_pybind11_state'})
   self.assertEqual(w.failure_code(klass('failed to allocate memory PRIVATE')),'ONNX_MEMORY_ALLOCATION')
