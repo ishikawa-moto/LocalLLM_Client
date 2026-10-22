@@ -21,14 +21,20 @@ internal sealed partial class SlackStore
         """;
     private void QueueResultFile(Job job,string kind,string text,SqliteTransaction tx)
     {
-        if(kind is not("ocr" or "analysis"))throw new InvalidDataException("SLACK_RESULT_KIND");
+        if(kind is not("ocr" or "analysis" or "ocr-json" or "ocr-html" or "ocr-csv"))throw new InvalidDataException("SLACK_RESULT_KIND");
         var session=GetSession(job.SessionId,tx);if(session.Channel!=options.ChannelId)throw new UnauthorizedAccessException("SLACK_RESULT_CHANNEL");
         var id=job.Id+"-"+kind+"-text";
         var bytes=SlackResultText.Utf8(text);var hash=SlackHash.Of(bytes);
         var existing=Scalar("SELECT hash FROM result_files WHERE id=$id;",tx,("$id",id)) as string;
         if(existing is not null){if(existing!=hash)throw new InvalidDataException("SLACK_RESULT_FILE_CHANGED");ValidateFrozenResult(id,hash,tx);return;}
         if(StoredBytes(tx)+bytes.Length>512L*1024*1024)throw new IOException("SLACK_STORAGE_ADMISSION");
-        Execute("INSERT INTO result_files VALUES($id,$job,$channel,$thread,$filename,$bytes,$hash,'ticket','pending',NULL,NULL,0);",tx,("$id",id),("$job",job.Id),("$channel",session.Channel),("$thread",session.Thread),("$filename",kind+"-"+job.Id+(kind=="ocr"?".md":".txt")),("$bytes",bytes),("$hash",hash));
+        Execute("INSERT INTO result_files VALUES($id,$job,$channel,$thread,$filename,$bytes,$hash,'ticket','pending',NULL,NULL,0);",tx,("$id",id),("$job",job.Id),("$channel",session.Channel),("$thread",session.Thread),("$filename",kind+"-"+job.Id+(kind switch{"ocr"=>".md","ocr-json"=>".json","ocr-html"=>".html","ocr-csv"=>".csv",_=>".txt"})),("$bytes",bytes),("$hash",hash));
+    }
+    private void QueueArtifact(Job job,string kind,Func<string> render,SqliteTransaction tx){
+        try{var text=render();if(Encoding.UTF8.GetByteCount(text)>1024*1024)throw new InvalidDataException("SLACK_RESULT_FILE_SIZE");QueueResultFile(job,kind,text,tx);}
+        catch(InvalidDataException e)when(e.Message=="SLACK_RESULT_FILE_SIZE"){
+            var session=GetSession(job.SessionId,tx);QueueReply(job.Id+"-artifact-size",job.Id,session.Channel,session.Thread,"構造化成果物が添付サイズ上限を超えました。Markdownを確認し、必要な表・ページを分けて依頼してください。処理ID："+job.Id,"progress",tx);Audit("artifact_export_size_limit",job.Id,DateTimeOffset.UtcNow,tx);
+        }
     }
     private void ValidateFrozenResult(string id,string expected,SqliteTransaction tx)
     {
@@ -74,6 +80,12 @@ internal sealed partial class SlackStore
     {
         if(job.FileIds.Length>0){
             QueueOcrFile(job,tx);
+            var evidence=job.FileIds.Select(file=>GetAttachment(job.Id,file,tx)?.Result??throw new InvalidDataException("SLACK_OCR_NOT_READY")).ToArray();
+            // Default remains readable Markdown. Table jobs additionally retain a portable JSON attachment.
+            // Frozen IDs/bytes of older pending or uncertain deliveries are never changed.
+            if(SlackOcrArtifacts.HasTables(evidence)||System.Text.RegularExpressions.Regex.IsMatch(job.Text,@"\bjson\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))QueueArtifact(job,"ocr-json",()=>SlackOcrArtifacts.Json(evidence),tx);
+            if(System.Text.RegularExpressions.Regex.IsMatch(job.Text,@"\bhtml\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))QueueArtifact(job,"ocr-html",()=>SlackOcrArtifacts.Html(evidence),tx);
+            if(System.Text.RegularExpressions.Regex.IsMatch(job.Text,@"\bcsv\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase)&&SlackOcrArtifacts.HasTables(evidence))QueueArtifact(job,"ocr-csv",()=>SlackOcrArtifacts.Csv(evidence),tx);
             if(!SlackResultText.OcrOnly(job.Text)){
                 using var value=JsonDocument.Parse(localResult);
                 var interpretation=value.RootElement.GetProperty("interpretation").GetString()??"";
