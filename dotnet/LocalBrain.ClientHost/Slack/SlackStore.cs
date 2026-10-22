@@ -10,7 +10,7 @@ internal sealed partial class SlackStore : IDisposable
     private readonly object gate = new();
     private readonly SqliteConnection db;
     private readonly SlackOptions options;
-    // Owner remains the initiating user for persisted-schema compatibility only.
+    // The initiating user is stable metadata and the optional creator-only policy authority.
     internal sealed record Session(string Id,string Team,string Channel,string Thread,string Owner,long LastMention,string? Summary,string? SummaryHash){public SlackRestriction Restriction=>SlackRestriction.Instance;}
     internal sealed record Job(string Id,string EventId,string SessionId,string User,string Text,string[] FileIds,string Phase,string? Result,long Created){public SlackRestriction Restriction=>SlackRestriction.Instance;}
     internal sealed record Reply(string Id,string JobId,string Channel,string Thread,string Text,string Kind,string State,int Attempts,long RetryAfter);
@@ -45,7 +45,9 @@ internal sealed partial class SlackStore : IDisposable
                 DeleteSession(session.Id,"expired",now,tx);
                 if(FindSession(m.TeamId,m.ChannelId,m.RootTs,tx) is not null){tx.Commit();return new("session_pending_approval",null);}session=null;
             }
-            // Team/channel/thread define the shared conversation. Owner is creator metadata, not an ACL.
+            // Preserve deployed shared-thread behavior unless an operator explicitly selects creator-only mode.
+            if(session is not null&&!options.AllowSharedThreads&&session.Owner!=m.UserId){tx.Commit();return new("session_owner_only",null);}
+            // Team/channel/thread define the shared conversation; creator metadata remains stable.
             var count=Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE phase NOT IN ('complete','failed');",tx));
             if(count>=options.MaxQueue){
                 var refusalPending=Convert.ToInt32(Scalar("SELECT count(*) FROM replies WHERE kind='error' AND job_id='' AND state IN ('pending','sending','uncertain');",tx))>0;
@@ -159,6 +161,7 @@ internal sealed partial class SlackStore : IDisposable
         var bytes=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs WHERE session_id=$id;",tx,("$id",id)));
         // Formal knowledge is owned by ServerPC. Erase expired local candidate content; retain hash-only audit.
         bytes+=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id);",tx,("$id",id)));
+        bytes+=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM inference_progress WHERE session_id=$id;",tx,("$id",id)));
         Execute("DELETE FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM jobs WHERE session_id=$id; DELETE FROM analysis WHERE session_id=$id; DELETE FROM inference_progress WHERE session_id=$id; DELETE FROM inference WHERE session_id=$id; DELETE FROM remote_proposals WHERE id IN(SELECT id FROM proposals WHERE session_id=$id); DELETE FROM applications WHERE session_id=$id; DELETE FROM proposals WHERE session_id=$id; DELETE FROM summary_checkpoints WHERE session_id=$id; DELETE FROM sessions WHERE id=$id;",tx,("$id",id));
         Execute("INSERT INTO audit(at,code,object_hash,bytes) VALUES($at,$reason,$hash,$bytes);",tx,("$at",Ms(now)),("$reason",reason),("$hash",SlackHash.Of(id)),("$bytes",bytes));
     }
@@ -189,7 +192,7 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void BindOcr(string job,string file,string ocr){lock(gate){var a=GetAttachment(job,file)??throw new KeyNotFoundException();if(a.OcrJob is not null&&a.OcrJob!=ocr)throw new InvalidDataException("SLACK_OCR_CHANGED");Execute("UPDATE attachments SET ocr_job=$o WHERE job_id=$j AND file_id=$f;",null,("$o",ocr),("$j",job),("$f",file));}}
     internal void SaveOcrResult(string job,string file,string result){lock(gate){if(result.Length>8*1024*1024)throw new InvalidDataException("SLACK_OCR_RESULT_SIZE");var a=GetAttachment(job,file)??throw new KeyNotFoundException();if(a.Result is not null&&a.Result!=result)throw new InvalidDataException("SLACK_OCR_RESULT_CHANGED");Execute("UPDATE attachments SET result=$r WHERE job_id=$j AND file_id=$f;",null,("$r",result),("$j",job),("$f",file));}}
-    internal long StoredBytes(SqliteTransaction? tx=null){lock(gate)return Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM summary_checkpoints;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM sessions;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)),0) FROM result_files;",tx))+ Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM inference;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM proposals;",tx));}
+    internal long StoredBytes(SqliteTransaction? tx=null){lock(gate)return Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM inference_progress;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM summary_checkpoints;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(summary AS BLOB))),0) FROM sessions;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)),0) FROM result_files;",tx))+ Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM inference;",tx))+Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(json AS BLOB))),0) FROM proposals;",tx));}
     internal bool HasPendingJobs(){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM jobs j WHERE (j.phase IN('running','waiting_ocr') OR (j.phase='queued' AND EXISTS(SELECT 1 FROM replies a WHERE a.job_id=j.id AND a.kind='accepted' AND a.state='sent'))) AND NOT EXISTS(SELECT 1 FROM jobs p WHERE p.session_id=j.session_id AND p.phase NOT IN('complete','failed') AND (p.created<j.created OR (p.created=j.created AND p.rowid<j.rowid)));"))>0;}
     internal Session[] Sessions(){lock(gate){using var c=Command("SELECT * FROM sessions ORDER BY last_mention;");using var r=c.ExecuteReader();var list=new List<Session>();while(r.Read())list.Add(ReadSession(r));return list.ToArray();}}
     internal bool ExtractionDone(string session,string hash){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM analysis WHERE session_id=$s AND source_hash=$h;",null,("$s",session),("$h",hash)))>0;}

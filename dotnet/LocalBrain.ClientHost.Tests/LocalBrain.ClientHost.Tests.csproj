@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../LocalBrain.ClientHost/LocalBrain.ClientHost.csproj" />
+    <None Update="Fixtures/slack-recovery-contract.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/slack-retire.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/slack-server-contract.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/decision-protocol-v1.json" CopyToOutputDirectory="PreserveNewest" />

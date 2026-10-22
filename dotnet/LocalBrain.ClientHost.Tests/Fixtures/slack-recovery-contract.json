@@ -1,0 +1,20 @@
+{
+  "schema": "localbrain.slack-recovery-contract.v1",
+  "request": {
+    "request_id": "PUBLIC_RECOVERY_ROOT_001",
+    "session_id": "PUBLIC_SESSION_001",
+    "context": "公開fixture：金額 1,234 円",
+    "prompt": "内容を説明",
+    "max_tokens": 1024,
+    "timeout_seconds": 120,
+    "restriction": {
+      "origin": "slack",
+      "dataClass": "slack_restricted",
+      "externalAi": "deny",
+      "cloudFallback": false
+    }
+  },
+  "request_hash": "f19e65efcac0ba56efb5fc2bafae4d8d63a1d6aef895e75c94e3ea4553179534",
+  "contract": "quiescent-attempt-v1",
+  "max_attempts": 3
+}
