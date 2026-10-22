@@ -24,7 +24,7 @@ internal sealed partial class SlackStore {
   if(Execute("UPDATE inference_progress SET state='probing',next_check=$next WHERE root_id=$id AND state='ready' AND attempt=$attempt;",null,("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(5))),("$id",plan.Root),("$attempt",plan.Attempt))!=1)throw new SlackDeferred();return plan;
  }}
  internal void ChatAwaiting(string root,string cause){lock(gate){
-  var safe=cause is "transport_disconnected" or "cancellation_pending" or "server_interrupted"?cause:"cancellation_pending";
+  var safe=cause is "transport_disconnected" or "cancellation_pending" or "server_interrupted" or "server_nonterminal"?cause:"cancellation_pending";
   Execute("UPDATE inference_progress SET state='probing',cause=CASE WHEN cause LIKE 'priority_yield_%' THEN cause ELSE $cause END,next_check=$next WHERE root_id=$id AND state NOT IN('complete','legacy_hold','held');",null,("$cause",safe),("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(5))),("$id",root));
  }}
  internal void SuspendChat(string root,string cause){

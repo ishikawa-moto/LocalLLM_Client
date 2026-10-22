@@ -58,6 +58,7 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         if(response.Length>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");
         var json=JsonSerializer.Deserialize<JsonElement>(response);
         var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True){if(plan is not null)store.ChatDeferred(plan);throw new SlackDeferred();}
+        if(state is "running" or "unresolved"){if(plan is not null){store.ChatAwaiting(root,"server_nonterminal");throw new SlackDeferred();}throw new SlackInterrupted();}
         if(state=="interrupted"){if(plan is not null){store.ChatAwaiting(root,"server_interrupted");throw new SlackDeferred();}throw new SlackInterrupted();}
         if(state=="complete"&&plan is not null)store.ChatCompleted(plan,response);
         if(state!="complete")throw new InvalidDataException("SLACK_LOCAL_RESULT_INVALID");return json;

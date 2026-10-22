@@ -19,7 +19,7 @@ ClientPCの監査開始時mainは `aaa7877c66a62c4392f8442fdd8fe96e359e0695`、S
 
 稼働Slack DLLのSHA256は `3d1c0c454b86493ae4591623199b003650d54e633ebb8ffe665e240419cf26c8`。公開PDB identityとDLLの対応、PDB内102ソースのチェックサム一致、52配備ファイルのmanifest一致を確認しました。外部AIのパッチは改行が壊れていたため、実ビルド用ソースと全Git追跡ファイルの比較から5対象を取り込みました。再配備はしていません。新しいディレクトリでのビルドと既存バイナリのバイト同一性は別の検証です。
 
-ServerPCは認証済みcapabilities/control statusを読み取り確認しました。今回の新しい監査について、ServerPCの現PID・稼働ソース全hash・DB全行との現地照合は未完了です。過去のチャット記録や古いreceiptを現在の配備identityの証明には使用しません。
+ServerPCは認証済みcapabilities/control statusを読み取り確認しました。承認済みの新しい現地監査では、ServerPCのGateway PID/birthと配備receipt、追跡103ファイル・設定23ファイル・設定上の依存59ファイルを照合しました。出力長を考慮した4ファイルの未コミット差分を保全しています。ただし通常権限でSYSTEMの実行image/command lineは読めず、新規loaded-image照合やServer全DB全行照合、実機統合は未確認です。cryptographyの宣言50.0.1とインストール50.0.2の差も報告し、本番依存は変更しません。
 
 ## 問題と修正
 
@@ -84,3 +84,10 @@ assetsのprovisioningは別作業です。推論中にmodel/依存をダウン�
 Reproducible packaging: on a clean checkout, use `tools/Build-ReproducibleClient.ps1 -OutputDirectory NEW_EXTERNAL_DIRECTORY` after the explicit restore step. It requires the recorded SDK, maps source paths, refuses dirty/source drift/existing output, and emits a hash manifest without production configuration. Compare two independent output manifests; qualification of deployed bytes still requires running the test harness against that exact published DLL.
 
 追加の公開故障試験では、旧大画像経路で生じたRapidOCRのラッパー例外を実測し、`ONNX_MEMORY_ALLOCATION` / `OnnxMemory` がHost receiptまで保存されることを確認しました。例外本文・tracebackは一般ログへ出していません。再開候補の状態照会だけでなく、入場拒否の再照会も30秒間隔・20回を上限にし、推論Attemptは最大3回です。
+
+## 現地監査後の実行状態契約の統合
+
+Serverの取消受理と終端確定を直列化し、終端の上書きを禁止しました。登録は終端保存まで保持し、処理中または所有不明の予約をrunning/unresolvedとして返します。制御statusのrestricted_activityは件数だけの観測で、新規受付を止める保守ロックではありません。既存のquiescent-attempt-v1とソケット取消保護を維持したServer全187公開回帰が成功しました。
+
+Clientは直接応答のrunning/unresolvedも失敗扱いせず、既存の永続progressにserver_nonterminalを固定記録し、同じrequest/hash/Sessionのstatus照会へ移ります。新規ID再送は行いません。公開インメモリGatewayの26確認で、保留・再照会・一度だけの送信・完了結果回収と保存済み結果の再利用を検証しました。実Gateway/実Slackの新契約は未資格です。
+追加の実行状態契約を含むClient通常harness全体も終了コード0で成功しました。独自harnessのためVSTest件数とは扱いません。
