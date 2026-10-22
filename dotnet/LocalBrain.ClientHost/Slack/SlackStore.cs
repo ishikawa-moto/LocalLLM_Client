@@ -22,7 +22,7 @@ internal sealed partial class SlackStore : IDisposable
         this.options=options;options.Validate();CanonicalStore.GuardPath(options.Root);Directory.CreateDirectory(options.Root);
         var path=Path.Combine(options.Root,"slack.db");CanonicalStore.GuardPath(path);
         db=new(new SqliteConnectionStringBuilder{DataSource=path,Pooling=false}.ToString());db.Open();
-        Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000;"+Schema+AdoptionSchema+ResultFileSchema+SummaryCheckpointSchema);
+        Execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000;"+Schema+AdoptionSchema+ResultFileSchema+SummaryCheckpointSchema+InferenceProgressSchema);
         Execute("DELETE FROM replies WHERE kind='error' AND job_id='' AND state='sent';");
     }
     private int Execute(string sql,SqliteTransaction? tx=null,params (string,object?)[] args) {using var c=Command(sql,tx,args);return c.ExecuteNonQuery();}
@@ -73,9 +73,9 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void Recover(){lock(gate){using var tx=db.BeginTransaction();Execute("UPDATE jobs SET phase='queued' WHERE phase='running'; UPDATE replies SET state='uncertain' WHERE state='sending'; UPDATE proposals SET state='apply_uncertain' WHERE state='applying'; UPDATE result_files SET state='uncertain' WHERE state='sending';",tx);tx.Commit();}}
     internal void Defer(string id){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",null,("$id",id));}
-    private static readonly System.Text.RegularExpressions.Regex DeferralCode=new("^priority_[a-z_]{1,48}$",System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    internal static readonly HashSet<string> YieldCodes=new(StringComparer.Ordinal){"priority_yield_lease","priority_yield_probe_failed","priority_yield_legacy_blocked","priority_yield_legacy_unreadable","priority_yield_caller","priority_outer_deadline"};
     internal void Defer(string id,string code){
-        if(!DeferralCode.IsMatch(code))throw new InvalidDataException("SLACK_DEFERRAL_CODE_INVALID");
+        if(!YieldCodes.Contains(code))throw new InvalidDataException("SLACK_DEFERRAL_CODE_INVALID");
         lock(gate){using var tx=db.BeginTransaction();if(Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",tx,("$id",id))==1)Audit(code,id,DateTimeOffset.UtcNow,tx);tx.Commit();}
     }
     internal void WaitForSummary(string id,int maxBytes=SlackConversation.SummaryBytes){lock(gate){
@@ -159,7 +159,7 @@ internal sealed partial class SlackStore : IDisposable
         var bytes=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(CAST(text AS BLOB))+length(CAST(coalesce(result,'') AS BLOB))),0) FROM jobs WHERE session_id=$id;",tx,("$id",id)));
         // Formal knowledge is owned by ServerPC. Erase expired local candidate content; retain hash-only audit.
         bytes+=Convert.ToInt64(Scalar("SELECT coalesce(sum(length(bytes)+length(CAST(coalesce(result,'') AS BLOB))),0) FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id);",tx,("$id",id)));
-        Execute("DELETE FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM jobs WHERE session_id=$id; DELETE FROM analysis WHERE session_id=$id; DELETE FROM inference WHERE session_id=$id; DELETE FROM remote_proposals WHERE id IN(SELECT id FROM proposals WHERE session_id=$id); DELETE FROM applications WHERE session_id=$id; DELETE FROM proposals WHERE session_id=$id; DELETE FROM summary_checkpoints WHERE session_id=$id; DELETE FROM sessions WHERE id=$id;",tx,("$id",id));
+        Execute("DELETE FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM attachments WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id); DELETE FROM jobs WHERE session_id=$id; DELETE FROM analysis WHERE session_id=$id; DELETE FROM inference_progress WHERE session_id=$id; DELETE FROM inference WHERE session_id=$id; DELETE FROM remote_proposals WHERE id IN(SELECT id FROM proposals WHERE session_id=$id); DELETE FROM applications WHERE session_id=$id; DELETE FROM proposals WHERE session_id=$id; DELETE FROM summary_checkpoints WHERE session_id=$id; DELETE FROM sessions WHERE id=$id;",tx,("$id",id));
         Execute("INSERT INTO audit(at,code,object_hash,bytes) VALUES($at,$reason,$hash,$bytes);",tx,("$at",Ms(now)),("$reason",reason),("$hash",SlackHash.Of(id)),("$bytes",bytes));
     }
     internal int Cleanup(DateTimeOffset now,bool sessionStoragePressure,Func<bool>? stillPressured=null){lock(gate){var candidates=new List<Session>();using(var c=Command("SELECT * FROM sessions ORDER BY last_mention;"))using(var r=c.ExecuteReader())while(r.Read())candidates.Add(ReadSession(r));var removed=0;

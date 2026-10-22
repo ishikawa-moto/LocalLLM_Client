@@ -44,6 +44,7 @@ internal static class SlackPriorityYieldTests
             catch(OperationCanceledException e){Check(e is not SlackPriorityYield,"host stop remains a plain cancellation");}
         }
         Check(caller.ForegroundReason() is null,"idle fixture has no foreground reason");
+        Check(SlackPriority.ForFixture(ocr,Idle,()=>throw new UnauthorizedAccessException("PUBLIC")).ForegroundReason()=="probe_failed","probe exception has fixed fail-closed reason");
 
         // Processor: the yield is deferred (not failed) and audited with only the fixed code and job hash.
         var processorOptions=options with{Root=Path.Combine(root,"processor")};string id;

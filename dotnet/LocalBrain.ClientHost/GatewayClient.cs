@@ -34,9 +34,9 @@ internal sealed class GatewayClient : IDisposable
     internal GatewayClient(Uri baseAddress,HttpMessageHandler fixtureHandler){client=new(fixtureHandler){BaseAddress=baseAddress,Timeout=Timeout.InfiniteTimeSpan};slackClient=new(()=>client);}
     internal async Task<string> SlackJsonAsync(string path,string json,CancellationToken token)
     {
-        if(!Slack.RestrictedExecution.Active||path is not("/v1/slack/chat" or "/v1/slack/review" or "/v1/slack/proposal" or "/v1/slack/apply" or "/v1/slack/status" or "/v1/slack/retire" or "/v1/slack/cancel"))throw new UnauthorizedAccessException("SLACK_PRIVATE_ROUTE_DENIED");
+        if(!Slack.RestrictedExecution.Active||path is not("/v1/slack/chat" or "/v1/slack/review" or "/v1/slack/proposal" or "/v1/slack/apply" or "/v1/slack/status" or "/v1/slack/retire" or "/v1/slack/cancel" or "/v1/slack/retry"))throw new UnauthorizedAccessException("SLACK_PRIVATE_ROUTE_DENIED");
         var bytes=System.Text.Encoding.UTF8.GetBytes(json);if(bytes.Length>65536)throw new InvalidDataException("SLACK_LOCAL_INPUT_SIZE");
-        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(path=="/v1/slack/chat"?125:90));
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(path is "/v1/slack/chat" or "/v1/slack/retry"?125:90));
         using var request=new HttpRequestMessage(HttpMethod.Post,path){Content=new ByteArrayContent(bytes)};request.Content.Headers.ContentType=new("application/json");
         request.Headers.TryAddWithoutValidation("X-LocalBrain-Request-Id",Guid.NewGuid().ToString());
         request.Headers.TryAddWithoutValidation("X-LocalBrain-Approval-Owner",DecisionProtocol.Owner);
