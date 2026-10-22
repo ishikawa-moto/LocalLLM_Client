@@ -73,6 +73,11 @@ internal sealed partial class SlackStore : IDisposable
     }}
     internal void Recover(){lock(gate){using var tx=db.BeginTransaction();Execute("UPDATE jobs SET phase='queued' WHERE phase='running'; UPDATE replies SET state='uncertain' WHERE state='sending'; UPDATE proposals SET state='apply_uncertain' WHERE state='applying'; UPDATE result_files SET state='uncertain' WHERE state='sending';",tx);tx.Commit();}}
     internal void Defer(string id){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",null,("$id",id));}
+    private static readonly System.Text.RegularExpressions.Regex DeferralCode=new("^priority_[a-z_]{1,48}$",System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    internal void Defer(string id,string code){
+        if(!DeferralCode.IsMatch(code))throw new InvalidDataException("SLACK_DEFERRAL_CODE_INVALID");
+        lock(gate){using var tx=db.BeginTransaction();if(Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='running';",tx,("$id",id))==1)Audit(code,id,DateTimeOffset.UtcNow,tx);tx.Commit();}
+    }
     internal void WaitForSummary(string id,int maxBytes=SlackConversation.SummaryBytes){lock(gate){
         var job=GetJob(id);var session=GetSession(job.SessionId);
         var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)&&SlackConversation.EncodedBytes(session.Summary)<=maxBytes?"queued":"waiting_summary";

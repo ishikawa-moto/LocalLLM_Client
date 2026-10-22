@@ -38,12 +38,14 @@ internal static class OcrPriority
             probe.WriteByte(1);probe.Flush();return true;
         }catch(Exception e)when(e is IOException or UnauthorizedAccessException){return false;}
     }
-    internal static bool LegacyConsumerActive(OcrConfig config){
-        if(config.BlockedConsumerImages is null or {Length:0})return false;
+    internal static bool LegacyConsumerActive(OcrConfig config)=>LegacyConsumerReason(config) is not null;
+    // Fixed codes only; process paths are never returned.
+    internal static string? LegacyConsumerReason(OcrConfig config){
+        if(config.BlockedConsumerImages is null or {Length:0})return null;
         foreach(var process in Process.GetProcessesByName("localbrain"))using(process){
-            try{if(config.BlockedConsumerImages.Contains(process.MainModule?.FileName??"",StringComparer.OrdinalIgnoreCase))return true;}
-            catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){return true;}
+            try{if(config.BlockedConsumerImages.Contains(process.MainModule?.FileName??"",StringComparer.OrdinalIgnoreCase))return "legacy_blocked";}
+            catch(InvalidOperationException){}catch(System.ComponentModel.Win32Exception){return "legacy_unreadable";}
         }
-        return false;
+        return null;
     }
 }

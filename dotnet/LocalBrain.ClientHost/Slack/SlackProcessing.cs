@@ -6,6 +6,8 @@ namespace LocalBrain.ClientHost.Slack;
 
 internal sealed class SlackDeferred : Exception { }
 internal sealed class SlackInterrupted : Exception { }
+// Remains an OperationCanceledException so existing deferral handling is unchanged; Code is a fixed identifier.
+internal sealed class SlackPriorityYield(string code,CancellationToken token):OperationCanceledException("SLACK_PRIORITY_YIELD",null,token){internal string Code{get;}=code;}
 internal sealed record SlackReviewedCandidate(string RequestId,string ReviewJson);
 internal interface ISlackLocalInference
 {
@@ -64,12 +66,14 @@ internal sealed class SlackPriority
 {
     private readonly OcrConfig ocr;
     private readonly Func<OcrResources.Sample>? sample;
+    private readonly Func<string?>? foreground;
     internal SlackPriority(OcrConfig ocr){this.ocr=ocr;}
-    private SlackPriority(OcrConfig ocr,Func<OcrResources.Sample> sample){this.ocr=ocr;this.sample=sample;}
-    internal static SlackPriority ForFixture(OcrConfig ocr,Func<OcrResources.Sample> sample)=>new(ocr,sample);
+    private SlackPriority(OcrConfig ocr,Func<OcrResources.Sample> sample,Func<string?>? foreground){this.ocr=ocr;this.sample=sample;this.foreground=foreground;}
+    internal static SlackPriority ForFixture(OcrConfig ocr,Func<OcrResources.Sample> sample,Func<string?>? foreground=null)=>new(ocr,sample,foreground);
     private readonly OcrResources resources=new();
     private long quietAfter;
-    internal bool ForegroundActive()=>OcrPriority.Active(ocr)||!OcrPriority.Healthy(ocr)||OcrPriority.LegacyConsumerActive(ocr);
+    internal string? ForegroundReason()=>foreground?.Invoke()??(OcrPriority.Active(ocr)?"lease":!OcrPriority.Healthy(ocr)?"probe_failed":OcrPriority.LegacyConsumerReason(ocr));
+    internal bool ForegroundActive()=>ForegroundReason() is not null;
     internal bool Admission()
     {
         if(ForegroundActive()){quietAfter=Environment.TickCount64+5000;return false;}
@@ -80,9 +84,13 @@ internal sealed class SlackPriority
     {
         if(!Admission())throw new SlackDeferred();
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);stop.CancelAfter(TimeSpan.FromSeconds(seconds));
-        using var watcherStop=new CancellationTokenSource();
-        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);if(ForegroundActive()||shouldYield?.Invoke()==true){stop.Cancel();return;}}}catch(OperationCanceledException){}});
-        try{return await work(stop.Token);}finally{watcherStop.Cancel();await watcher;}
+        using var watcherStop=new CancellationTokenSource();string? reason=null;
+        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);var found=ForegroundReason()??(shouldYield?.Invoke()==true?"caller":null);if(found is not null){Interlocked.CompareExchange(ref reason,"priority_yield_"+found,null);stop.Cancel();return;}}}catch(OperationCanceledException){}});
+        try{return await work(stop.Token);}
+        catch(OperationCanceledException e)when(e is not SlackPriorityYield&&!token.IsCancellationRequested&&stop.IsCancellationRequested){
+            throw new SlackPriorityYield(Volatile.Read(ref reason)??"priority_outer_deadline",stop.Token);
+        }
+        finally{watcherStop.Cancel();await watcher;}
     }
 }
 
@@ -180,6 +188,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                         var sensitive=history.Any(x=>x.FileIds.Length>0);store.Finish(job.Id,result,true,sensitive);
                     }
                 }catch(SlackDeferred){store.Defer(job.Id);}
+                catch(SlackPriorityYield yielded)when(!token.IsCancellationRequested){store.Defer(job.Id,yielded.Code);}
                 catch(OperationCanceledException)when(!token.IsCancellationRequested){store.Defer(job.Id);}
                 catch(SlackRateLimit rate){store.Defer(job.Id);await Task.Delay(TimeSpan.FromSeconds(rate.Seconds),token);}
                 catch(Exception e)when(e is SlackRejected or SlackInterrupted or IOException or JsonException or HttpRequestException or InvalidDataException or UnauthorizedAccessException or OcrException){

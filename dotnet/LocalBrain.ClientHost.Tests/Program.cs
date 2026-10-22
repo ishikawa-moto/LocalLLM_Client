@@ -2,8 +2,8 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
-if(args.Length==1&&args[0]=="--slack-summary-admission-proof"){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();return;}
-if(args.Length==0){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();}
+if(args.Length==1&&args[0]=="--slack-summary-admission-proof"){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();await SlackPriorityYieldTests.RunAsync();return;}
+if(args.Length==0){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();await SlackPriorityYieldTests.RunAsync();}
 if(args.Length is 1 or 2&&args[0]=="--slack-markdown-proof"){await SlackMarkdownTests.RunAsync(args.Length==2?args[1]:null);return;}
 if(args.Length==0)await SlackMarkdownTests.RunAsync();
 if(args.Length==1&&args[0]=="--slack-file-proof"){await SlackFileTests.RunAsync();return;}
