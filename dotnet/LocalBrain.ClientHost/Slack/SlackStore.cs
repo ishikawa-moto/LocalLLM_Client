@@ -152,7 +152,14 @@ internal sealed partial class SlackStore : IDisposable
         using var tx=db.BeginTransaction();using var c=Command("SELECT route,session_id,json,hash FROM inference WHERE request_id=$id;",tx,("$id",request));
         string? old=null;using(var r=c.ExecuteReader()){if(r.Read()){if(r.GetString(0)!=route||r.GetString(1)!=session||DecisionProtocol.Digest(DecisionProtocol.Parse(r.GetString(2)))!=r.GetString(3))throw new InvalidDataException("SLACK_INFERENCE_RESERVATION_DRIFT");old=r.GetString(2);}}
         if(old is not null){tx.Commit();return old;}
-        var canonical=DecisionProtocol.Utf8.GetString(DecisionProtocol.Canonical(value));Execute("INSERT INTO inference VALUES($id,$route,$session,$json,$hash);",tx,("$id",request),("$route",route),("$session",session),("$json",canonical),("$hash",DecisionProtocol.Digest(value)));tx.Commit();return canonical;
+        var canonical=DecisionProtocol.Utf8.GetString(DecisionProtocol.Canonical(value));Execute("INSERT INTO inference VALUES($id,$route,$session,$json,$hash);",tx,("$id",request),("$route",route),("$session",session),("$json",canonical),("$hash",DecisionProtocol.Digest(value)));
+        // New chat freeze and unsent progress form one durable boundary; a crash between them
+        // must not make a newly accepted request indistinguishable from a legacy frozen row.
+        if(route=="/v1/slack/chat"){
+            if(StoredBytes(tx)+System.Text.Encoding.UTF8.GetByteCount(canonical)>512L*1024*1024)throw new IOException("SLACK_STORAGE_ADMISSION");
+            Execute("INSERT INTO inference_progress VALUES($id,$session,'ready',0,$json,$hash,'none',NULL,0,0);",tx,("$id",request),("$session",session),("$json",canonical),("$hash",ChatHash(canonical)));
+        }
+        tx.Commit();return canonical;
     }}
     internal bool SaveSummary(string id,string summary,string expectedHistory){lock(gate){if(summary.Length>16000||HistoryHash(id)!=expectedHistory)return false;using var tx=db.BeginTransaction();Execute("UPDATE sessions SET summary=$s,summary_hash=$h WHERE id=$id; UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",tx,("$s",summary),("$h",expectedHistory),("$id",id));tx.Commit();return true;}}
     private bool HasActive(string id,SqliteTransaction? tx)=>Convert.ToInt32(Scalar("SELECT count(*) FROM result_files WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id) AND state!='sent';",tx,("$id",id)))>0 || Convert.ToInt32(Scalar("SELECT count(*) FROM applications WHERE session_id=$id AND state IN ('reserved','sending','uncertain','unresolved');",tx,("$id",id)))>0 || Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE session_id=$id AND phase NOT IN ('complete','failed');",tx,("$id",id)))>0 || Convert.ToInt32(Scalar("SELECT count(*) FROM replies WHERE job_id IN(SELECT id FROM jobs WHERE session_id=$id) AND state!='sent';",tx,("$id",id)))>0;

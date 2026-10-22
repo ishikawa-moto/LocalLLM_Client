@@ -23,7 +23,10 @@ internal static class SlackRecoveryTests {
     store.ChatAwaiting(id,"server_interrupted");
    }
    plan=store.ChatProgress(id,session,frozen,true);store.ObserveChat(plan,JsonSerializer.SerializeToElement(new{state="interrupted",request_hash=plan.Hash,reason="explicit_cancel",recovery_contract="quiescent-attempt-v1"}));Check(store.ChatProgress(id,session,frozen,true).State=="held","three total attempts then hold");
-   var legacy="PUBLIC_LEGACY_001";var old=Freeze(legacy);Check(store.ChatProgress(legacy,session,old,true).State=="legacy_hold","old frozen request never replayed");
+   var legacy="PUBLIC_LEGACY_001";var old=Freeze(legacy);
+   Check(store.ChatProgress(legacy,session,old,true).State=="ready","new freeze already has atomic unsent progress");
+   using(var legacyDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+Path.Combine(root,"slack.db"))){legacyDb.Open();using var command=legacyDb.CreateCommand();command.CommandText="DELETE FROM inference_progress WHERE root_id=$id";command.Parameters.AddWithValue("$id",legacy);command.ExecuteNonQuery();}
+   Check(store.ChatProgress(legacy,session,old,true).State=="legacy_hold","old frozen request never replayed");
    var unknown="PUBLIC_UNKNOWN_001";var raw=Freeze(unknown);var u=store.ChatProgress(unknown,session,raw,false);store.MarkChatSending(u);for(var check=0;check<20;check++)store.ObserveChat(u,JsonSerializer.SerializeToElement(new{state="unknown",retry_safe=false}));Check(store.ChatProgress(unknown,session,raw,true).State=="held","unknown state never inferred safe");
    var recovered="PUBLIC_COMPLETE_001";var text=Freeze(recovered);var p=store.ChatProgress(recovered,session,text,false);store.MarkChatSending(p);store.ObserveChat(p,JsonSerializer.SerializeToElement(new{state="complete",request_hash=p.Hash,result=new{status="complete",text="PUBLIC recovered result"}}));Check(store.ChatProgress(recovered,session,text,true).Result!.Contains("PUBLIC recovered result"),"lost response recovered by exact status");
    var admissionId="PUBLIC_ADMISSION_001";var admissionRaw=Freeze(admissionId);var admission=store.ChatProgress(admissionId,session,admissionRaw,false);
