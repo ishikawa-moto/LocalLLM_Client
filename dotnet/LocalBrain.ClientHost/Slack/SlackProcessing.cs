@@ -76,12 +76,12 @@ internal sealed class SlackPriority
         if(Environment.TickCount64<quietAfter)return false;
         var r=sample?.Invoke()??resources.Read();return OcrResources.Refusal(ocr,r,false) is null;
     }
-    internal async Task<T> Run<T>(Func<CancellationToken,Task<T>> work,int seconds,CancellationToken token)
+    internal async Task<T> Run<T>(Func<CancellationToken,Task<T>> work,int seconds,CancellationToken token,Func<bool>? shouldYield=null)
     {
         if(!Admission())throw new SlackDeferred();
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);stop.CancelAfter(TimeSpan.FromSeconds(seconds));
         using var watcherStop=new CancellationTokenSource();
-        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);if(ForegroundActive()){stop.Cancel();return;}}}catch(OperationCanceledException){}});
+        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);if(ForegroundActive()||shouldYield?.Invoke()==true){stop.Cancel();return;}}}catch(OperationCanceledException){}});
         try{return await work(stop.Token);}finally{watcherStop.Cancel();await watcher;}
     }
 }
@@ -129,6 +129,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     internal async Task Run(CancellationToken token)
     {
         while(!token.IsCancellationRequested){
+            store.ResumeReadySummaryWaiters(options.CompressionThreshold);
             SlackResultReturnRequests.Step(options,store);
             foreach(var waiting in store.WaitingForOcr()){
                 if(waiting.FileIds.All(f=>store.GetAttachment(waiting.Id,f) is {OcrJob: {} id} && new OcrJobStore(ocr).GetState(id).Status is "complete" or "failed" or "cancelled" or "expired"))store.OcrReady(waiting.Id);
@@ -192,14 +193,18 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     {
         if(!priority.Admission())return;
         await using var memory=new TaskMemoryQ8(CanonicalStore.DefaultRoot,background:true);
-        if(!memory.Enabled){store.FailWaitingSummary(sessionId);return;}
+        if(!memory.Enabled){store.SummaryState(sessionId,"summary_unavailable");store.FailWaitingSummary(sessionId);return;}
         try{
-            await SlackConversation.Compress(store,sessionId,store.WaitingSummaryBudget(sessionId),
-                (source,budget,t)=>priority.Run(ct=>memory.SummarizeSlackAsync(source,ct,budget),120,t),
+            store.SummaryState(sessionId,"summary_started");
+            var completed=await SlackConversation.Compress(store,sessionId,store.WaitingSummaryBudget(sessionId),
+                (source,budget,t)=>priority.Run(ct=>memory.SummarizeSlackAsync(source,ct,budget),TaskMemoryQ8.SlackSummaryOperationSeconds,t,()=>store.HasPendingJobs()),
                 ()=>priority.Admission()&&!store.HasPendingJobs(),token);
-        }catch(IOException){/* Another TaskMemory owner keeps its lease; the checkpoint remains resumable. */}
-        catch(Exception e)when(e is InvalidDataException or JsonException or UnauthorizedAccessException){store.FailWaitingSummary(sessionId);}
+            store.SummaryState(sessionId,completed?"summary_ready":"summary_deferred");
+        }catch(IOException){store.SummaryState(sessionId,"summary_deferred");/* Preserve another owner and the existing checkpoint. */}
+        catch(OperationCanceledException)when(!token.IsCancellationRequested){store.SummaryState(sessionId,"summary_deferred");}
+        catch(Exception e)when(e is InvalidDataException or JsonException or UnauthorizedAccessException){store.SummaryState(sessionId,"summary_unavailable");store.FailWaitingSummary(sessionId);}
     }
+    internal static SlackStore.Session[] MaintenanceOrder(SlackStore store)=>store.Sessions().OrderByDescending(s=>store.HasSummaryWaiter(s.Id)).ToArray();
     internal async Task Maintenance(CancellationToken token)
     {
         var nextCleanup=DateTimeOffset.MinValue;
@@ -210,7 +215,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
             // Release derived cache before any early deletion. CPU load alone never deletes a session.
             if(store.StoredBytes()>384L*1024*1024){store.DropSummaryCache();store.Cleanup(now,true,()=>store.StoredBytes()>384L*1024*1024);}
             if(!store.HasPendingJobs()&&priority.Admission()){
-                foreach(var s in store.Sessions()){
+                foreach(var s in MaintenanceOrder(store)){
                     if(!priority.Admission()||store.HasPendingJobs())break;
                     var history=store.History(s.Id).Where(x=>x.Phase=="complete").ToArray();
                     try{

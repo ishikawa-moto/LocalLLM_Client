@@ -35,12 +35,19 @@ internal static class SlackReviewRegressionTests
             Check(store.HasPendingJobs(),"waiting OCR still blocks competing maintenance");
         }
         using(var store=new SlackStore(Options("ocr-threshold"))){
-            var id=Accept(store,"EV-LARGE-OCR",files:["FPREVIOUS"]);Ack(store);store.ClaimNext();Ocr(store,id,"FPREVIOUS",new string('x',14000));store.Finish(id,"PUBLIC OCR references",true,true);Ack(store);
+            var id=Accept(store,"EV-LARGE-OCR",files:["FPREVIOUS"]);Ack(store);store.ClaimNext();Ocr(store,id,"FPREVIOUS",new string('x',18000));store.Finish(id,"PUBLIC OCR references",true,true);Ack(store);
             var follow=Accept(store,"EV-FOLLOW");Ack(store);var job=store.ClaimNext()!;var session=store.GetSession(job.SessionId);
             Check(SlackConversation.Bytes(JsonSerializer.Serialize(store.History(session.Id)))<8000,"large OCR has short job metadata");
             Check(SlackConversation.Context(store,session,store.Snapshot(session.Id).Jobs.Where(x=>x.Phase=="complete").ToArray(),job.Text,8000) is null,"retained OCR requires summary");
-            store.WaitForSummary(follow);Check(SlackConversation.NeedsCompression(store,store.GetSession(session.Id),8000),"14KB transcription follow-up cannot remain behind threshold gate");
+            store.WaitForSummary(follow);Check(SlackConversation.NeedsCompression(store,store.GetSession(session.Id),8000),"18KB transcription follow-up requires a real hard-limit summary");
             Check(store.FailWaitingSummary(session.Id)==1&&store.GetJob(follow).Phase=="failed","unavailable compressor can now finish this waiter explicitly");
+        }
+        using(var store=new SlackStore(Options("ocr-within-hard-limit"))){
+            var id=Accept(store,"EV-FITTING-OCR",files:["FPREVIOUS"]);Ack(store);store.ClaimNext();Ocr(store,id,"FPREVIOUS",new string('x',14000));store.Finish(id,"PUBLIC OCR references",true,true);Ack(store);
+            var next=Accept(store,"EV-FITTING-FOLLOW");Ack(store);var job=store.ClaimNext()!;var session=store.GetSession(job.SessionId);
+            var context=SlackConversation.Context(store,session,store.Snapshot(session.Id).Jobs.Where(x=>x.Phase=="complete").ToArray(),job.Text,8000);
+            Check(context is not null&&SlackConversation.Fits(context,job.Text),"14KB OCR inside hard budget must not wait for soft-threshold summary");
+            using var parsed=JsonDocument.Parse(context!);Check(parsed.RootElement.GetProperty("latest_ocr")[0].GetProperty("ocr_text").GetString()!.Length==14000,"direct context retains every OCR character");
         }
         var options=Options("document-history");using(var store=new SlackStore(options)){
             var old=Accept(store,"EV-PREVIOUS",prompt:"PUBLIC preserve the stated comparison constraint",files:["FPREVIOUS"]);Ack(store);store.ClaimNext();Ocr(store,old,"FPREVIOUS","PUBLIC previous document");store.Finish(old,"PUBLIC earlier answer",true,true);Ack(store);

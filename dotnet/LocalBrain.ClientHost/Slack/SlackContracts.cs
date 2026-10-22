@@ -29,7 +29,7 @@ internal static class RestrictedExecution
 
 internal sealed record SlackOptions(bool Enabled, string Root, string TeamId, string ChannelId, string BotUserId,
     string AppTokenFile, string BotTokenFile, int MaxQueue = 100, int MaxFileBytes = 4 * 1024 * 1024,
-    int MaxFiles = 4, int OutputTokens = 1024, int InferenceSeconds = 30, int CompressionThreshold = 8000,
+    int MaxFiles = 4, int OutputTokens = 1024, int InferenceSeconds = 120, int CompressionThreshold = 8000,
     bool ReturnFileResults = false)
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -46,7 +46,7 @@ internal sealed record SlackOptions(bool Enabled, string Root, string TeamId, st
         if (!Regex.IsMatch(TeamId, "^T[A-Z0-9]{2,32}$") || !Regex.IsMatch(ChannelId, "^C[A-Z0-9]{2,32}$") ||
             !Regex.IsMatch(BotUserId, "^U[A-Z0-9]{2,32}$") || MaxQueue is <1 or >1000 ||
             MaxFileBytes is <1024 or >4*1024*1024 || MaxFiles is <1 or >4 || OutputTokens is <64 or >1024 ||
-            InferenceSeconds is <5 or >30 || CompressionThreshold is <1024 or >12000)
+            InferenceSeconds is <5 or >120 || CompressionThreshold is <1024 or >12000)
             throw new InvalidDataException("SLACK_CONFIG_INVALID");
         foreach (var path in new[] { Root, AppTokenFile, BotTokenFile }) {
             if (!Path.IsPathFullyQualified(path) || path.StartsWith("\\\\")) throw new InvalidDataException("SLACK_PATH_INVALID");

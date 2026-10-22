@@ -102,7 +102,7 @@ Use the actual configured Host owner and Host mTLS certificate fingerprint in th
 
 ### Text file results
 
-`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches the exact UTF-8 transcription as `ocr-<job-id>.txt` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
+`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches a local Markdown reconstruction as `ocr-<job-id>.md` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
 
 The durable file outbox freezes content and destination before obtaining a Slack upload ticket, uploading bytes, and completing the share. Known rate limits defer; ambiguous network/completion outcomes remain held without automatic resend. Pending/uncertain files protect their Session from retention cleanup. Private upload capabilities and text are never logged or published.
 
@@ -125,3 +125,22 @@ The approved installation also enables human-bound restricted knowledge and enum
 All site-specific task, firewall, certificate, credential and activation changes remain local operator records. They are not copied into Git. Public templates remain disabled and contain placeholders; private configuration, original messages, OCR results and generated answers are not publication artifacts.
 
 An operator may use `slack retry-ocr-ticket --config <private-config> --job <job-id>` after correcting a known API rejection before upload. It only resets a held ticket with no remote file ID or upload URL and unchanged OCR bytes. It cannot reset uncertain uploads or completed/ambiguous shares.
+
+### Default OCR Markdown attachments
+
+New image/PDF results are attached as UTF-8 Markdown. Page/attachment boundaries, detected ruled-table cells and estimated spatial reading order are retained. Synthetic column labels show position, not inferred headers. Standard Markdown cannot merge cells: content is anchored at the top-left and the row/column span is noted. Text with no usable geometry falls back to escaped line text. Original page images, colors, fonts and exact document layout are not recreated.
+
+Uncertain regions remain marked. A retained local OCR hypothesis for an unreadable span is included with `[推測]`; without a usable hypothesis `[判読不能]` remains. No model is invoked to invent missing text or layout. General unruled/complex/handwritten layout remains unqualified. Document markup is escaped so OCR content cannot activate HTML or remote image links. Output has the existing 1 MiB attachment limit and never silently truncates.
+
+Frozen legacy `.txt` uploads keep their filename, bytes and delivery state. A default-format change never resends already-sent or uncertain uploads. Known rejected pre-upload tickets remain recoverable under their original format. Analysis attachments remain separate `.txt` files. No DB schema, OCR model, credential, Cloud AI or storage-policy change is required.
+
+### Summary-wait recovery
+
+CPU admission now reuses a measurement over a 250ms window instead of interpreting zero-duration/single-tick samples as 100% load. RAM/commit and foreground leases are still checked on every call, and sample updates are synchronized. Sessions with accepted requests waiting for a summary precede optional knowledge-candidate extraction. The original request and original history are preserved.
+
+Summary attempts record only hashed session identity and fixed progress codes. One deduplicated progress message tells the original requester that local history summarization is underway. Its operation deadline is bounded at 900 seconds, including cold startup; foreground cancellation remains immediate. Native completion uses the existing token-count-dependent deadline instead of a fixed 120-second cutoff. No CPU/RAM limit, model context, credential or Cloud AI policy is relaxed.
+The compression threshold is a background-work hint, not a reply gate: a complete context inside the existing hard 16,000-byte contract is sent directly. Old unnecessary summary waiters are reconsidered by the single owning Host without changing input identity. True over-budget requests still wait for a bound summary. A running background summary yields when runnable user work appears.
+
+### Slack応答の期限（候補・切替前）
+
+新規設定の推論許容は最大120秒、Clientの外側期限は指定値+5秒、Chat通信期限は125秒です。Serverは入力量に応じて30〜120秒に制限し、呼出し側の指定を超えません。既存の30秒設定や固定済みrequestは書き換えず、設定移行は別途切替時に行います。foreground優先・中断後の再送禁止・外部AI禁止は維持します。

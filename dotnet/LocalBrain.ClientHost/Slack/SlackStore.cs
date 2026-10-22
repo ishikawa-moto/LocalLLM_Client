@@ -78,6 +78,25 @@ internal sealed partial class SlackStore : IDisposable
         var phase=session.Summary is not null&&session.SummaryHash==HistoryHash(session.Id)&&SlackConversation.EncodedBytes(session.Summary)<=maxBytes?"queued":"waiting_summary";
         Execute("UPDATE jobs SET phase=$phase WHERE id=$id AND phase='running';",null,("$phase",phase),("$id",id));
     }}
+    internal int ResumeReadySummaryWaiters(int threshold)
+    {
+        lock(gate){
+            var waiting=new List<Job>();
+            using(var c=Command("SELECT j.* FROM jobs j WHERE j.phase='waiting_summary' AND NOT EXISTS(SELECT 1 FROM jobs p WHERE p.session_id=j.session_id AND p.phase NOT IN('complete','failed') AND (p.created<j.created OR (p.created=j.created AND p.rowid<j.rowid)));"))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));
+            var resumed=0;
+            foreach(var job in waiting){
+                var session=GetSession(job.SessionId);var history=History(job.SessionId).Where(j=>j.Phase=="complete").ToArray();
+                try{
+                    var document=job.FileIds.Length==0?null:SlackConversation.CurrentDocument(this,job);
+                    if(SlackConversation.Context(this,session,history,job.Text,threshold,document) is null)continue;
+                }catch(InvalidDataException){continue;}
+                using var tx=db.BeginTransaction();
+                if(Execute("UPDATE jobs SET phase='queued' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==1){Audit("summary_not_required",job.Id,DateTimeOffset.UtcNow,tx);resumed++;}
+                tx.Commit();
+            }
+            return resumed;
+        }
+    }
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
     internal int FailWaitingSummary(string session){lock(gate){using var tx=db.BeginTransaction();var waiting=new List<Job>();using(var c=Command("SELECT * FROM jobs WHERE session_id=$id AND phase='waiting_summary';",tx,("$id",session)))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));var failed=0;
         foreach(var job in waiting){if(Execute("UPDATE jobs SET phase='failed',result='LOCAL_COMPRESSION_UNAVAILABLE' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==0)continue;
@@ -179,6 +198,19 @@ internal sealed partial class SlackStore : IDisposable
     private const string SummaryCheckpointSchema="CREATE TABLE IF NOT EXISTS summary_checkpoints(session_id TEXT PRIMARY KEY,count INTEGER NOT NULL,prefix_hash TEXT NOT NULL,summary TEXT NOT NULL);";
     internal Checkpoint? SummaryCheckpoint(string session){lock(gate){using var c=Command("SELECT count,prefix_hash,summary FROM summary_checkpoints WHERE session_id=$id;",null,("$id",session));using var r=c.ExecuteReader();return r.Read()?new(r.GetInt32(0),r.GetString(1),r.GetString(2)):null;}}
     internal bool SaveSummaryCheckpoint(string session,int count,string hash,string summary,string history){lock(gate){if(HistoryHash(session)!=history)return false;Execute("INSERT INTO summary_checkpoints VALUES($id,$n,$h,$s) ON CONFLICT(session_id) DO UPDATE SET count=$n,prefix_hash=$h,summary=$s;",null,("$id",session),("$n",count),("$h",hash),("$s",summary));return true;}}
+    internal void SummaryState(string session,string code)
+    {
+        if(code is not("summary_started" or "summary_deferred" or "summary_ready" or "summary_unavailable"))throw new ArgumentException("SLACK_SUMMARY_STATE");
+        lock(gate){using var tx=db.BeginTransaction();
+            Audit(code,session,DateTimeOffset.UtcNow,tx);
+            if(code=="summary_started"){
+                var ids=new List<string>();using(var c=Command("SELECT id FROM jobs WHERE session_id=$s AND phase='waiting_summary';",tx,("$s",session)))using(var r=c.ExecuteReader())while(r.Read())ids.Add(r.GetString(0));
+                var destination=GetSession(session,tx);
+                foreach(var id in ids){var job=GetJob(id,tx);QueueReply(id+"-summary-progress",id,destination.Channel,destination.Thread,$"<@{job.User}> 会話履歴をローカルで要約しています。処理を継続します。処理ID：{id}","progress",tx);}
+            }
+            tx.Commit();
+        }
+    }
     internal bool HasSummaryWaiter(string session){lock(gate)return Convert.ToInt32(Scalar("SELECT count(*) FROM jobs WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session)))>0;}
     internal int WaitingSummaryBudget(string session){lock(gate){using var c=Command("SELECT id FROM jobs WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));using var r=c.ExecuteReader();var budget=SlackConversation.SummaryBytes;while(r.Read())budget=Math.Min(budget,SlackConversation.JobBudget(this,GetJob(r.GetString(0))));return budget;}}
     private const string Schema="""

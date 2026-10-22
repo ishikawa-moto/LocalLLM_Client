@@ -63,7 +63,7 @@ internal sealed class SlackApi : IDisposable
     }
     internal async Task<(string Id,string Url)> ResultUploadTicket(string filename,int length,CancellationToken token)
     {
-        if(!System.Text.RegularExpressions.Regex.IsMatch(filename,@"^(ocr|analysis)-[a-f0-9]{32}\.txt$")||length is <1 or >1024*1024)throw new InvalidDataException("SLACK_RESULT_UPLOAD_ARGUMENT");
+        if(!System.Text.RegularExpressions.Regex.IsMatch(filename,@"^(ocr-[a-f0-9]{32}\.(?:txt|md)|analysis-[a-f0-9]{32}\.txt)$")||length is <1 or >1024*1024)throw new InvalidDataException("SLACK_RESULT_UPLOAD_ARGUMENT");
         var response=await Call("files.getUploadURLExternal",new{filename,length},false,token);
         var id=response.GetProperty("file_id").GetString()!;var url=response.GetProperty("upload_url").GetString()!;
         ValidateResultUploadUrl(url);
