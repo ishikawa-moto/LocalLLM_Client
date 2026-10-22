@@ -112,3 +112,11 @@ Rollback first disables OCR, cancels/observes its existing worker, and verifies 
 Slack/Continue adapters should call these same fixed OCR operations with a validated owned local input reference, exact SHA256 and idempotent request ID. Adapters must bind authenticated origin and force `external_ai=deny` at the Host boundary. Difficulty routing is independent of data-egress permission. They must not accept a request-body instruction as permission to send an image/text to an external AI, alter the policy or invoke a generic shell. This change implements no adapter, no Slack return-message permission and no SecondBrain adoption path.
 
 Upstream references: [RapidOCR](https://github.com/RapidAI/RapidOCR), [PaddleOCR PP-OCRv5](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/algorithm/PP-OCRv5/PP-OCRv5.md), [Tesseract](https://github.com/tesseract-ocr/tesseract), [KMNIST](https://github.com/rois-codh/kmnist), [Windows AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer), [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+
+### 統合監査候補：大画像と表構造
+
+モデル、CPU2、同時1、AppContainerの通信遮断、Windows Jobの704MiB上限、ページ60秒を維持します。大画像の認識は原画素の960px core＋128px haloで逐次実行し、罫線検出は最大1600pxのプレビューに制限します。座標はEXIF／PDFの元座標へ戻します。タイル継ぎ目や小文字は要確認です。
+
+構造化JSONを正本とし、複数罫線表、結合セル、cell ID、座標、認識信頼度、判読不能・候補文字を保持します。罫線なしは3行以上の安定した列配置だけを推定し、`aligned_text_inferred_verify_before_use` と明記します。構造信頼度は未校正の数値を作らずnullと要確認情報で表します。HTMLは静的・エスケープ済みで、JavaScriptや外部リソースを含みません。Markdownで表現できない結合はJSONと注記へ保持します。
+
+公開合成fixtureの限定資格であり、一般の財務資料、小さすぎる文字、歪み・複雑な結合、任意の回転、手書きの品質を保証しません。XLSXは追加依存とセル型・数式対策の独立検証が必要なため今回追加しません。CSVは補助出力です。
