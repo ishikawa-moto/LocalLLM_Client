@@ -30,6 +30,17 @@ internal static class OcrStoreTests {
         Assert(OcrResources.Refusal(c,new(long.MaxValue,long.MaxValue,90),false)=="CPU_ADMISSION");
         Assert(OcrWorkerProcess.Pressure(c,new(0,long.MaxValue,0))=="RAM_PRESSURE");
         Assert(OcrWorkerProcess.Pressure(c,new(long.MaxValue,0,0))=="COMMIT_PRESSURE");
+        var paused=store.GetState(s.JobId) with{Status="paused",ErrorCode="CPU_PRESSURE",UpdatedAt=DateTimeOffset.UtcNow};
+        var pauseFile=Path.Combine(root,"public-pause.json");OcrJobStore.Atomic(pauseFile,paused);
+        var persistedPause=OcrJobStore.Read<OcrJobStore.State>(pauseFile);
+        foreach(var cause in new[]{"CPU_PRESSURE","RAM_PRESSURE","COMMIT_PRESSURE"}){
+            var held=persistedPause with{ErrorCode=cause};
+            Assert(!OcrScheduler.ResourceRetryDue(held,held.UpdatedAt.AddSeconds(29)));
+            Assert(OcrScheduler.ResourceRetryDue(held,held.UpdatedAt.AddSeconds(30)));
+        }
+        Assert(OcrScheduler.ResourceRetryDue(persistedPause with{ErrorCode="PRIORITY_WORK_ACTIVE"},paused.UpdatedAt));
+        Assert(OcrScheduler.ResourceRetryDue(persistedPause with{Status="queued"},paused.UpdatedAt));
+        Assert(OcrScheduler.ResourceRetryDue(persistedPause,paused.UpdatedAt.AddSeconds(-1)));
         Assert(File.Exists(input));
         using(var held=store.Lock()){
             var cancel=Task.Run(()=>store.Cancel(s.JobId));Thread.Sleep(80);Assert(!cancel.IsCompleted);Assert(store.GetState(s.JobId).JobId==s.JobId);

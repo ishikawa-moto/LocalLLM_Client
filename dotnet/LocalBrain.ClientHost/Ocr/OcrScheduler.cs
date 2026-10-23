@@ -31,6 +31,10 @@ internal sealed class OcrScheduler(OcrConfig config)
         }
         return configDrift;
     }
+    // Use the persisted pause timestamp: a Host restart must not trigger a hot retry loop.
+    internal static bool ResourceRetryDue(OcrJobStore.State state,DateTimeOffset now)=>
+        state.Status!="paused" || state.ErrorCode is not("CPU_PRESSURE" or "RAM_PRESSURE" or "COMMIT_PRESSURE") ||
+        now<state.UpdatedAt || now>=state.UpdatedAt.AddSeconds(30);
     internal async Task RunAsync(CancellationToken token){
         config.Validate();Directory.CreateDirectory(config.Root);Directory.CreateDirectory(store.Jobs);
         FileStream owner;
@@ -54,6 +58,7 @@ internal sealed class OcrScheduler(OcrConfig config)
                         if(state.Status=="failed")continue;
                         var manifest=store.GetManifest(id);store.VerifyPages(manifest,state);store.RecoverPageCommits(manifest);state=store.GetState(id);
                         if(Cancelled(id)){CancelTerminal(manifest);continue;}
+                        if(!ResourceRetryDue(state,DateTimeOffset.UtcNow))continue;
                         var reason=OcrResources.Refusal(config,resources.Read(),Priority());
                         if(reason is not null){if(state.Status!="paused"||state.ErrorCode!=reason)store.Transition(id,"paused",reason);continue;}
                         // Every critical-operation lease is rechecked after admission and throughout the worker lifetime.

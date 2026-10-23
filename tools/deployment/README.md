@@ -11,3 +11,5 @@
 7. Remove obsolete releases, worktrees and temporary outputs only after no launch configuration, active process or required dependency refers to them. Keep the current source, required models/dependencies/authentication and a small final installation/validation receipt. Do not treat a pull or successful process launch as a completed deployment.
 
 Staging never activates code, modifies configuration or a database, or deletes previous releases. It rejects undeclared files, private client settings, path traversal and reparse points. Unknown deployment failures require inspection and forward repair; an older binary must not be automatically restored against a newer schema.
+
+The tracked Start-ClientHost.ps1 and Run-SlackHost.ps1 replace installation-specific launcher copies. Their installation receipt binds the release manifest and external private configuration. The latter preserves the existing exclusive launcher lease, PID/birth receipt and uncertain-launch hold. It needs client_config, client_config_sha256 and ocr_config paths in the private receiver receipt; no token, certificate or private source belongs in Git.
