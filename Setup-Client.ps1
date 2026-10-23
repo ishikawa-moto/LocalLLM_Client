@@ -50,10 +50,7 @@ if(-not $SkipExtensionInstall){
 New-Item -ItemType Directory -Path $appRoot -Force | Out-Null
 & $dotnet.Source publish (Join-Path $packageRoot 'dotnet\LocalBrain.ClientHost\LocalBrain.ClientHost.csproj') -c Release -r win-x64 --self-contained false -o $appRoot
 if($LASTEXITCODE -ne 0){ throw 'LocalBrain client publish failed.' }
-$taskGrantScript=Join-Path $appRoot 'Confirm-TaskCommands.ps1'
-if(-not (Test-Path -LiteralPath $taskGrantScript)){throw 'Published task command confirmation script is missing.'}
-$taskGrantCode=@{script_sha256=(Get-FileHash -LiteralPath $taskGrantScript -Algorithm SHA256).Hash.ToLowerInvariant()}
-[IO.File]::WriteAllText((Join-Path $appRoot 'task-command-native-code.json'),($taskGrantCode|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+& (Join-Path $packageRoot 'tools\deployment\Initialize-NativeConfirmationBindings.ps1') -PublishDirectory $appRoot
 
 if($null -eq $CertificatePassword){ $CertificatePassword=Read-Host 'Client certificate password' -AsSecureString }
 $certificate=Import-PfxCertificate -FilePath ([IO.Path]::GetFullPath($CertificatePfx)) -CertStoreLocation 'Cert:\CurrentUser\My' -Password $CertificatePassword -Exportable:$false
