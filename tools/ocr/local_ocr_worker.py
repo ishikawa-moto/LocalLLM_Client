@@ -169,7 +169,7 @@ def load_engine(model_root,variant):
         item=manifest['files'].get(name)
         if not item or not (model_root/name).is_file() or digest(model_root/name)!=item['sha256']:raise OcrError('MODEL_HASH_MISMATCH')
     version=OCRVersion.PPOCRV5 if variant=='v5' else OCRVersion.PPOCRV4
-    params={'Global.log_level':'critical','Global.text_score':0.0,'Global.max_side_len':2400,'Global.return_word_box':False,
+    params={'Global.log_level':'critical','Global.text_score':0.0,'Global.max_side_len':1280,'Global.return_word_box':False,
       'EngineConfig.onnxruntime.intra_op_num_threads':2,'EngineConfig.onnxruntime.inter_op_num_threads':1,
       'EngineConfig.onnxruntime.use_cuda':False,'EngineConfig.onnxruntime.use_dml':False,
       'Det.model_path':str(model_root/det),'Det.ocr_version':version,'Det.model_type':ModelType.MOBILE,
@@ -180,86 +180,209 @@ def load_engine(model_root,variant):
     providers={name:getattr(engine,name).session.session.get_providers() for name in ('text_det','text_rec','text_cls')}
     if any(p!=['CPUExecutionProvider'] for p in providers.values()):raise OcrError('CPU_PROVIDER_REQUIRED')
     return engine,dict(engine='RapidOCR',version=importlib.metadata.version('rapidocr'),recognition_model=rec,detection_model=det,model_hashes={name:manifest['files'][name]['sha256'] for name in [det,rec,cls]},runtime='onnxruntime',runtime_version=importlib.metadata.version('onnxruntime'),requested_providers=['CPUExecutionProvider'],actual_providers=providers,threads=2,language_policy=LANGUAGE_POLICY)
+
+# Geometry uses a bounded preview; recognition keeps original pixels in bounded tiles.
+# No page-wide OpenCV masks or ONNX tensors are created for a large photograph.
+TILE_CORE=960
+TILE_HALO=128
+LAYOUT_SIDE=1600
+
 def grid_cells(image):
     import cv2,numpy as np
-    gray=cv2.cvtColor(np.array(image),cv2.COLOR_RGB2GRAY)
+    from PIL import Image
+    preview=image.copy();preview.thumbnail((LAYOUT_SIDE,LAYOUT_SIDE))
+    sx=image.width/preview.width;sy=image.height/preview.height
+    gray=cv2.cvtColor(np.asarray(preview),cv2.COLOR_RGB2GRAY)
     binary=cv2.threshold(gray,0,255,cv2.THRESH_BINARY_INV|cv2.THRESH_OTSU)[1]
     height,width=gray.shape
-    horizontal=cv2.morphologyEx(binary,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(max(25,width//15),1)))
-    vertical=cv2.morphologyEx(binary,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(25,height//15))))
+    horizontal=cv2.morphologyEx(binary,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(max(25,width//30),1)))
+    vertical=cv2.morphologyEx(binary,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(25,height//30))))
+    grid=cv2.bitwise_or(horizontal,vertical)
+    count,labels,stats,_=cv2.connectedComponentsWithStats(cv2.dilate(grid,np.ones((3,3),np.uint8)))
     def clusters(values):
         groups=[]
         for value in values:
-            if groups and value-groups[-1][-1]<5:groups[-1].append(value)
+            if groups and value-groups[-1][-1]<4:groups[-1].append(value)
             else:groups.append([value])
-        return [int(sum(g)/len(g)) for g in groups]
-    ys=clusters(np.flatnonzero((horizontal>0).sum(axis=1)>width*.30).tolist())
-    xs=clusters(np.flatnonzero((vertical>0).sum(axis=0)>height*.20).tolist())
-    if len(xs)<3 or len(ys)<3 or len(xs)*len(ys)>1000:return [],image
-    grid=cv2.bitwise_or(horizontal,vertical)
-    contours,_=cv2.findContours(255-grid,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
-    cells=[]
-    for contour in contours:
-        x,y,w,h=cv2.boundingRect(contour)
-        if w<12 or h<12 or w*h>width*height*.85:continue
-        edges=[min(range(len(xs)),key=lambda i:abs(xs[i]-x)),min(range(len(ys)),key=lambda i:abs(ys[i]-y)),min(range(len(xs)),key=lambda i:abs(xs[i]-(x+w))),min(range(len(ys)),key=lambda i:abs(ys[i]-(y+h)))]
-        c,r,c2,r2=edges
-        if c2<=c or r2<=r or max(abs(xs[c]-x),abs(xs[c2]-(x+w)),abs(ys[r]-y),abs(ys[r2]-(y+h)))>8:continue
-        cells.append(dict(table_id='table_0',row_index=r,column_index=c,row_span=r2-r,column_span=c2-c,bounding_box=[xs[c],ys[r],xs[c2],ys[r2]],text='',confidence=None,structure_method='detected_ruled_grid_not_general_layout_model'))
-    cells.sort(key=lambda c:(c['row_index'],c['column_index']))
+        return [int(round(sum(g)/len(g))) for g in groups]
+    cells=[];table_number=0
+    for region in sorted(stats[1:].tolist(),key=lambda z:(z[1],z[0])):
+        x,y,w,h,area=region
+        if w<60 or h<40 or area<80:continue
+        xs=clusters((np.flatnonzero((vertical[y:y+h,x:x+w]>0).sum(axis=0)>h*.35)+x).tolist())
+        ys=clusters((np.flatnonzero((horizontal[y:y+h,x:x+w]>0).sum(axis=1)>w*.35)+y).tolist())
+        if len(xs)<2 or len(ys)<2 or len(xs)*len(ys)>1000:continue
+        # Closed spaces bounded by detected ruling; disconnected tables get separate axes.
+        contours,_=cv2.findContours(255-grid[y:y+h,x:x+w],cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
+        found=[];occupied=set()
+        for contour in contours:
+            cx,cy,cw,ch=cv2.boundingRect(contour);cx+=x;cy+=y
+            if cw<8 or ch<8:continue
+            c=min(range(len(xs)),key=lambda i:abs(xs[i]-cx));r=min(range(len(ys)),key=lambda i:abs(ys[i]-cy))
+            c2=min(range(len(xs)),key=lambda i:abs(xs[i]-(cx+cw)));r2=min(range(len(ys)),key=lambda i:abs(ys[i]-(cy+ch)))
+            if c2<=c or r2<=r or max(abs(xs[c]-cx),abs(xs[c2]-(cx+cw)),abs(ys[r]-cy),abs(ys[r2]-(cy+ch)))>5:continue
+            if cx<xs[0]-2 or cy<ys[0]-2 or cx+cw>xs[-1]+3 or cy+ch>ys[-1]+3:continue
+            cover={(a,b) for a in range(r,r2) for b in range(c,c2)}
+            if occupied.intersection(cover):continue
+            occupied.update(cover)
+            found.append(dict(table_id=f'table_{table_number}',cell_id=f'p_cell_{table_number}_{r}_{c}',row_index=r,column_index=c,row_span=r2-r,column_span=c2-c,bounding_box=[xs[c]*sx,ys[r]*sy,xs[c2]*sx,ys[r2]*sy],text='',confidence=None,structure_confidence=None,needs_review=True,unreadable=False,structure_method='bounded_ruled_grid_not_general_layout_model'))
+        if found:
+            cells.extend(sorted(found,key=lambda c:(c['row_index'],c['column_index'])));table_number+=1
+        if table_number>32 or len(cells)>4096:raise OcrError('TABLE_LIMIT')
     if not cells:return [],image
-    clean=np.array(image).copy();clean[cv2.dilate(grid,np.ones((3,3),np.uint8))>0]=255
-    from PIL import Image
-    return cells,Image.fromarray(clean)
+    if sx==sy==1:
+        clean=np.asarray(image).copy();clean[cv2.dilate(grid,np.ones((3,3),np.uint8))>0]=255
+        return cells,Image.fromarray(clean)
+    return cells,image
+
+def aligned_cells(spans):
+    """Conservative unruled alignment hypothesis, never a verified table structure.
+
+    Require three consecutive data rows and at least one stable numeric right
+    edge. Text is copied from evidence; no totals, labels, or merged cells guessed.
+    """
+    import statistics,re,unicodedata
+    if len(spans)<6:return []
+    boxes=[s['recognition_raster_box'] for s in spans]
+    height=statistics.median(b[3]-b[1] for b in boxes)
+    if height<=0:return []
+    rows=[]
+    for span in sorted(spans,key=lambda s:(s['recognition_raster_box'][1],s['recognition_raster_box'][0])):
+        b=span['recognition_raster_box'];cy=(b[1]+b[3])/2
+        if rows and abs(rows[-1][0]-cy)<height*.65:rows[-1][1].append(span)
+        else:rows.append([cy,[span]])
+    numeric=lambda text:re.fullmatch(r'[\s¥￥$€+−\-()0-9,.%円]+',unicodedata.normalize('NFKC',text)) is not None
+    candidates=[row for row in rows if len(row[1])>=2 and any(numeric(s['text']) for s in row[1])]
+    groups=[]
+    for row in candidates:
+        if groups and row[0]-groups[-1][-1][0]<height*5:groups[-1].append(row)
+        else:groups.append([row])
+    cells=[];table_index=0
+    for group in groups:
+        if len(group)<3:continue
+        # Restrict inference to rows with a consistent number of separated spans.
+        counts=[len(r[1]) for r in group];columns=max(set(counts),key=counts.count)
+        if not 2<=columns<=12 or any(n!=columns for n in counts):continue
+        data=[sorted(row[1],key=lambda s:s['recognition_raster_box'][0]) for row in group]
+        lefts=[];rights=[];consistent=True
+        for col in range(columns):
+            column=[row[col] for row in data];bs=[v['recognition_raster_box'] for v in column]
+            anchors=[b[2] if numeric(v['text']) else b[0] for v,b in zip(column,bs)]
+            if max(anchors)-min(anchors)>height*1.5:consistent=False;break
+            lefts.append(min(b[0] for b in bs));rights.append(max(b[2] for b in bs))
+        if not consistent or any(lefts[i+1]-rights[i]<height for i in range(columns-1)):continue
+        boundaries=[lefts[0]-height*.25]+[(rights[i]+lefts[i+1])/2 for i in range(columns-1)]+[rights[-1]+height*.25]
+        selected=group[:]
+        above=[row for row in rows if 0<group[0][0]-row[0]<height*5 and len(row[1])==columns]
+        if above:
+            header=max(above,key=lambda row:row[0]);parts=sorted(header[1],key=lambda z:z['recognition_raster_box'][0])
+            if all(boundaries[c]<=sum(z['recognition_raster_box'][::2])/2<=boundaries[c+1] for c,z in enumerate(parts)):selected.insert(0,header)
+        ys=[min(s['recognition_raster_box'][1] for s in selected[0][1])-height*.25]+[(selected[i][0]+selected[i+1][0])/2 for i in range(len(selected)-1)]+[max(s['recognition_raster_box'][3] for s in selected[-1][1])+height*.25]
+        for row_index,row in enumerate(selected):
+            for col,span in enumerate(sorted(row[1],key=lambda z:z['recognition_raster_box'][0])):
+                table_id=f'table_{table_index}';span.update(table_id=table_id,row_index=row_index,column_index=col)
+                cells.append(dict(table_id=table_id,row_index=row_index,column_index=col,row_span=1,column_span=1,bounding_box=[max(0,boundaries[col]),max(0,ys[row_index]),boundaries[col+1],ys[row_index+1]],text='',confidence=None,structure_confidence=None,needs_review=True,unreadable=span['unreadable'],structure_method='experimental_aligned_text_not_verified_layout'))
+        table_index+=1
+    return cells
+
+def recognition_regions(image):
+    """Half-open ownership cores prevent overlap duplicates; halos preserve edge glyphs.
+
+    Wide lines may cross a core. They are retained as separate OCR spans, never
+    asserted to be an exact paragraph. Coordinates always refer to source raster.
+    """
+    if image.width<=1280 and image.height<=1280:
+        yield image,(0,0),(0,0,image.width,image.height);return
+    for y in range(0,image.height,TILE_CORE):
+        for x in range(0,image.width,TILE_CORE):
+            left=max(0,x-TILE_HALO);top=max(0,y-TILE_HALO)
+            right=min(image.width,x+TILE_CORE+TILE_HALO);bottom=min(image.height,y+TILE_CORE+TILE_HALO)
+            yield image.crop((left,top,right,bottom)),(left,top),(x,y,min(x+TILE_CORE,image.width),min(y+TILE_CORE,image.height))
+
 def process_page(path,index,profile,models,variant='v5'):
     import cv2,numpy as np
     cv2.setNumThreads(1)
     image,space,transform=load_page(path,index)
     tables=[];warnings_out=[]
-    if profile in ('TABLE_LAYOUT','AUTO'):
+    if profile in ('TABLE_LAYOUT','AUTO','PDF_DOCUMENT'):
         tables,image=grid_cells(image)
         if profile=='TABLE_LAYOUT' and not tables:warnings_out.append('NO_CONFIDENT_RULED_GRID_UNRULED_LAYOUT_UNQUALIFIED')
     engine,identity=load_engine(models,variant)
-    result=engine(cv2.cvtColor(np.array(image),cv2.COLOR_RGB2BGR))
-    if engine.text_rec.postprocess_op.excluded_steps:
-        warnings_out.append('NON_JAPANESE_CANDIDATE_EXCLUDED_VERIFY_SOURCE')
-    spans=[]
-    if result.txts is not None:
-        if len(result.txts)>2500:raise OcrError('SPAN_LIMIT')
-        for i,(box,candidate,confidence) in enumerate(zip(result.boxes,result.txts,result.scores)):
+    spans=[];tiles=0
+    if image.width>1280 or image.height>1280:warnings_out.append('TILED_RECOGNITION_VERIFY_SMALL_TEXT_AND_SEAMS')
+    for tile,(left,top),core in recognition_regions(image):
+        tiles+=1
+        result=engine(cv2.cvtColor(np.asarray(tile),cv2.COLOR_RGB2BGR))
+        if result.txts is None:continue
+        for box,candidate,confidence in zip(result.boxes,result.txts,result.scores):
+            if len(box)!=4:raise OcrError('INVALID_COORDINATES')
+            local=[[float(x),float(y)] for x,y in box]
+            if not all(math.isfinite(v) for point in local for v in point) or any(x < -2 or y < -2 or x > tile.width+2 or y > tile.height+2 for x,y in local):raise OcrError('INVALID_COORDINATES')
+            raw=[[min(tile.width,max(0,x))+left,min(tile.height,max(0,y))+top] for x,y in local]
+            center=[sum(p[0] for p in raw)/4,sum(p[1] for p in raw)/4]
+            if not(core[0]<=center[0]<core[2] and core[1]<=center[1]<core[3]):continue
             confidence=float(confidence)
-            if not math.isfinite(confidence):raise OcrError('INVALID_CONFIDENCE')
+            if not math.isfinite(confidence) or not 0<=confidence<=1:raise OcrError('INVALID_CONFIDENCE')
             if len(candidate)>4096:raise OcrError('SPAN_TEXT_LIMIT')
-            raw=[[float(x),float(y)] for x,y in box];poly=[list(transform(x,y)) for x,y in raw]
+            if len(spans)>=2500:raise OcrError('SPAN_LIMIT')
+            poly=[list(transform(x,y)) for x,y in raw]
             bbox=[min(p[0] for p in poly),min(p[1] for p in poly),max(p[0] for p in poly),max(p[1] for p in poly)]
             raw_width=max(p[0] for p in raw)-min(p[0] for p in raw);raw_height=max(p[1] for p in raw)-min(p[1] for p in raw)
             vertical=raw_height>max(1,raw_width)*2
             if vertical and 'VERTICAL_TEXT_UNQUALIFIED' not in warnings_out:warnings_out.append('VERTICAL_TEXT_UNQUALIFIED')
-            uncertain=confidence<0.85 or vertical or EXCLUDED_MARKER in candidate;unreadable=confidence<0.50
-            span=dict(page=index,block=None,paragraph=None,line=i,span_id=f'p{index}_s{i}',text='[判読不能]' if unreadable else candidate,hypothesis=candidate if unreadable else None,polygon=poly,bounding_box=bbox,confidence=confidence,confidence_kind='uncalibrated_recognizer_score_not_probability_of_correctness',needs_review=uncertain,unreadable=unreadable,table_id=None,row_index=None,column_index=None)
-            center=[sum(p[0] for p in raw)/4,sum(p[1] for p in raw)/4]
+            seam=(left>0 and min(p[0] for p in raw)<=left+2) or (top>0 and min(p[1] for p in raw)<=top+2) or (left+tile.width<image.width and max(p[0] for p in raw)>=left+tile.width-2) or (top+tile.height<image.height and max(p[1] for p in raw)>=top+tile.height-2)
+            uncertain=confidence<0.85 or vertical or EXCLUDED_MARKER in candidate or seam;unreadable=confidence<0.50
+            i=len(spans)
+            span=dict(recognition_raster_box=[min(p[0] for p in raw),min(p[1] for p in raw),max(p[0] for p in raw),max(p[1] for p in raw)],page=index,block=None,paragraph=None,line=i,span_id=f'p{index}_s{i}',text='[判読不能]' if unreadable else candidate,hypothesis=candidate if unreadable else None,polygon=poly,bounding_box=bbox,confidence=confidence,confidence_kind='uncalibrated_recognizer_score_not_probability_of_correctness',needs_review=uncertain,unreadable=unreadable,table_id=None,row_index=None,column_index=None)
             matching=[cell for cell in tables if cell['bounding_box'][0]<=center[0]<=cell['bounding_box'][2] and cell['bounding_box'][1]<=center[1]<=cell['bounding_box'][3]]
             if len(matching)==1:
-                cell=matching[0];cell['text']+=(' ' if cell['text'] else '')+span['text']
+                cell=matching[0];cell['text']+=(' ' if cell['text'] else '')+span['text'];cell['unreadable']|=unreadable
                 span.update(table_id=cell['table_id'],row_index=cell['row_index'],column_index=cell['column_index'])
             spans.append(span)
+        del result
+        if tile is not image:tile.close()
+    if engine.text_rec.postprocess_op.excluded_steps:warnings_out.append('NON_JAPANESE_CANDIDATE_EXCLUDED_VERIFY_SOURCE')
+    spans.sort(key=lambda s:(s['bounding_box'][1],s['bounding_box'][0]))
+    if not tables and profile in ('AUTO','TABLE_LAYOUT','PDF_DOCUMENT'):
+        tables=aligned_cells(spans)
+        if tables:warnings_out.append('EXPERIMENTAL_UNRULED_ALIGNMENT_REQUIRES_SOURCE_VERIFICATION')
     for cell in tables:
+        x,y,x2,y2=cell['bounding_box'];cell['bounding_box']=[max(0,x),max(0,y),min(image.width,x2),min(image.height,y2)]
+        members=[s for s in spans if s['table_id']==cell['table_id'] and s['row_index']==cell['row_index'] and s['column_index']==cell['column_index']]
+        cell['text']=' '.join(s['text'] for s in members)
+        cell['confidence']=min((s['confidence'] for s in members),default=None)
+        cell['hypotheses']=[s['hypothesis'] for s in members if s['hypothesis']]
+        cell['cell_id']=f"p{index}_{cell['table_id']}_r{cell['row_index']}_c{cell['column_index']}"
         x,y,x2,y2=cell['bounding_box'];poly=[list(transform(px,py)) for px,py in [(x,y),(x2,y),(x2,y2),(x,y2)]]
         cell['polygon']=poly;cell['bounding_box']=[min(p[0] for p in poly),min(p[1] for p in poly),max(p[0] for p in poly),max(p[1] for p in poly)]
     table_output=[]
-    if tables:
-        warnings_out.append('RULED_TABLE_STRUCTURE_REQUIRES_VERIFICATION')
-        rows=max(c['row_index']+c['row_span'] for c in tables);cols=max(c['column_index']+c['column_span'] for c in tables)
+    for table_id in dict.fromkeys(c['table_id'] for c in tables):
+        cells=[c for c in tables if c['table_id']==table_id]
+        rows=max(c['row_index']+c['row_span'] for c in cells);cols=max(c['column_index']+c['column_span'] for c in cells)
         matrix=[['']*cols for _ in range(rows)]
-        for cell in tables:matrix[cell['row_index']][cell['column_index']]=cell['text']
+        for cell in cells:matrix[cell['row_index']][cell['column_index']]=cell['text']
         buf=io.StringIO();writer=csv.writer(buf)
-        for row in matrix:writer.writerow(["'"+s if s.lstrip().startswith(('=','+','-','@')) or s.startswith(('\t','\r')) else s for s in row])
-        lines=['| '+' | '.join(s.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('|','\\|').replace('\n',' ') for s in row)+' |' for row in matrix]
-        lines.insert(1,'| '+' | '.join(['---']*cols)+' |');markdown='\n'.join(lines)
-        table_output=[dict(table_id='table_0',rows=rows,columns=cols,cells=tables,csv=buf.getvalue(),csv_formula_escaped=True,markdown=markdown,structure_status='ruled_grid_detected_verify_before_use')]
+        for row in matrix:writer.writerow(["'"+v if v.lstrip().startswith(('=','+','-','@')) or v.startswith(('\t','\r')) else v for v in row])
+        lines=['| '+' | '.join(v.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('|','\\|').replace('\n',' ') for v in row)+' |' for row in matrix]
+        lines.insert(1,'| '+' | '.join(['---']*cols)+' |')
+        box=[min(c['bounding_box'][0] for c in cells),min(c['bounding_box'][1] for c in cells),max(c['bounding_box'][2] for c in cells),max(c['bounding_box'][3] for c in cells)]
+        table_output.append(dict(table_id=table_id,page=index,rows=rows,columns=cols,bounding_box=box,cells=cells,csv=buf.getvalue(),csv_formula_escaped=True,markdown='\n'.join(lines),needs_review=True,structure_confidence=None,structure_status='aligned_text_inferred_verify_before_use' if cells[0]['structure_method'].startswith('experimental') else 'ruled_grid_detected_verify_before_use'))
+    if any(not c['structure_method'].startswith('experimental') for c in tables):warnings_out.append('RULED_TABLE_STRUCTURE_REQUIRES_VERIFICATION')
     if profile=='HANDWRITING':warnings_out.append('EXPERIMENTAL_HANDWRITING_NOT_QUALIFIED_FOR_NAMES_ADDRESSES_OR_FORMS')
     if not spans:warnings_out.append('NO_TEXT_DETECTED_NOT_PROOF_OF_BLANK_PAGE')
+    space['recognition_mapping']=dict(method='source_raster_tiles_v1',tile_core=TILE_CORE,tile_halo=TILE_HALO,tiles=tiles,scaling=1)
     return dict(page=index,source_method='ocr',coordinate_system=space,spans=spans,tables=table_output,text='\n'.join(s['text'] for s in spans),needs_review=not spans or any(s['needs_review'] for s in spans) or bool(warnings_out),warnings=warnings_out,engine=identity)
+
+def failure_code(error):
+    if isinstance(error,OcrError):return error.code
+    name=type(error).__name__
+    # Classify locally; never persist the exception text, path or OCR content.
+    if name in ('MemoryError','_ArrayMemoryError'):return 'WORKER_MEMORY_LIMIT'
+    if type(error).__module__.startswith('onnxruntime') or (type(error).__module__.startswith('rapidocr.inference_engine.onnxruntime') and name=='ONNXRuntimeError'):
+        message=str(error).lower()
+        return 'ONNX_MEMORY_ALLOCATION' if any(v in message for v in ('allocate memory','memory allocation','bad_alloc','bad allocation','out of memory','failed to allocate')) else 'ONNX_EXECUTION_FAILED'
+    return {'UnidentifiedImageError':'IMAGE_DECODE_FAILED','DecompressionBombError':'PIXEL_LIMIT','DecompressionBombWarning':'PIXEL_LIMIT','PdfReadError':'PDF_CORRUPT','PdfiumError':'PDF_CORRUPT'}.get(name,'WORKER_FAILURE')
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--request',required=True);args=parser.parse_args()
     request=json.loads(Path(args.request).read_text(encoding='utf-8-sig'))
@@ -277,7 +400,7 @@ def main():
         print(json.dumps(dict(status='complete',network_attempts=len(NETWORK_ATTEMPTS),elapsed_ms=result['elapsed_ms'])))
     except Exception as error:
         # Never include parser messages, input names, document text or traceback.
-        code=error.code if isinstance(error,OcrError) else {'MemoryError':'WORKER_MEMORY_LIMIT','UnidentifiedImageError':'IMAGE_CORRUPT','DecompressionBombError':'PIXEL_LIMIT','DecompressionBombWarning':'PIXEL_LIMIT','PdfReadError':'PDF_CORRUPT','PdfiumError':'PDF_CORRUPT'}.get(type(error).__name__,'WORKER_FAILURE')
-        print(json.dumps(dict(status='failed',error_code=code,error_type=type(error).__name__,network_attempts=len(NETWORK_ATTEMPTS))))
+        code=failure_code(error)
+        print(json.dumps(dict(status='failed',error_code=code,error_type={'ONNX_MEMORY_ALLOCATION':'OnnxMemory','ONNX_EXECUTION_FAILED':'OnnxExecution','WORKER_MEMORY_LIMIT':'Memory','IMAGE_DECODE_FAILED':'ImageDecode'}.get(code,'Other'),network_attempts=len(NETWORK_ATTEMPTS))))
         sys.exit(2)
 if __name__=='__main__':main()

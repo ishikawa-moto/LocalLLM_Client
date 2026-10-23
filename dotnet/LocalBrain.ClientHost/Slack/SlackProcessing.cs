@@ -6,6 +6,8 @@ namespace LocalBrain.ClientHost.Slack;
 
 internal sealed class SlackDeferred : Exception { }
 internal sealed class SlackInterrupted : Exception { }
+// Remains an OperationCanceledException so existing deferral handling is unchanged; Code is a fixed identifier.
+internal sealed class SlackPriorityYield(string code,CancellationToken token):OperationCanceledException("SLACK_PRIORITY_YIELD",null,token){internal string Code{get;}=code;}
 internal sealed record SlackReviewedCandidate(string RequestId,string ReviewJson);
 internal interface ISlackLocalInference
 {
@@ -22,11 +24,30 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         if(!RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_HOST_CONTEXT_REQUIRED");
         var supplied=JsonSerializer.SerializeToElement(body,SlackOptions.Json);
         ValidateInput(route,supplied);
+        var existed=store.HasFrozenInference(supplied.GetProperty("request_id").GetString()!);
         var frozen=store.FreezeInference(route,supplied.GetProperty("request_id").GetString()!,supplied.GetProperty("session_id").GetString()!,supplied.GetRawText());
+        var root=supplied.GetProperty("request_id").GetString()!;
+        SlackStore.ChatPlan? plan=null;
+        if(route=="/v1/slack/chat"){
+            plan=store.ChatProgress(root,supplied.GetProperty("session_id").GetString()!,frozen,existed);
+            if(plan.State=="complete")return DecisionProtocol.Parse(plan.Result!);
+            if(plan.State=="probing"&&plan.NextCheck<=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()){
+                string status;
+                try{status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance}),token);}
+                catch(Exception e)when(e is HttpRequestException or IOException){store.ChatProbeFailed(plan);throw new SlackDeferred();}
+                store.ObserveChat(plan,DecisionProtocol.Parse(status));
+                plan=store.ChatProgress(root,plan.Session,frozen,true);
+                if(plan.State=="complete")return DecisionProtocol.Parse(plan.Result!);
+            }
+            plan=store.MarkChatSending(plan);frozen=plan.Json;
+        }
         var actual=DecisionProtocol.Parse(frozen);ValidateInput(route,actual);
         string response;
-        try{response=await gateway.SlackJsonAsync(route,frozen,token);}
+        try{response=await gateway.SlackJsonAsync(plan?.Attempt>0?"/v1/slack/retry":route,plan?.Attempt>0?store.RetryBody(plan):frozen,token);}
+        catch(HttpRequestException)when(plan is not null){store.ChatAwaiting(root,"transport_disconnected");throw new SlackDeferred();}
+        catch(IOException)when(plan is not null){store.ChatAwaiting(root,"transport_disconnected");throw new SlackDeferred();}
         catch(OperationCanceledException){
+            if(plan is not null)store.ChatAwaiting(root,"cancellation_pending");
             // Closing a Client HTTP request alone does not prove the Server model stopped.
             // Cancel only this immutable Session/request using the existing authenticated local route.
             using var cancelDeadline=new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -36,8 +57,10 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         }
         if(response.Length>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");
         var json=JsonSerializer.Deserialize<JsonElement>(response);
-        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True)throw new SlackDeferred();
-        if(state=="interrupted")throw new SlackInterrupted();
+        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True){if(plan is not null)store.ChatDeferred(plan);throw new SlackDeferred();}
+        if(state is "running" or "unresolved"){if(plan is not null){store.ChatAwaiting(root,"server_nonterminal");throw new SlackDeferred();}throw new SlackInterrupted();}
+        if(state=="interrupted"){if(plan is not null){store.ChatAwaiting(root,"server_interrupted");throw new SlackDeferred();}throw new SlackInterrupted();}
+        if(state=="complete"&&plan is not null)store.ChatCompleted(plan,response);
         if(state!="complete")throw new InvalidDataException("SLACK_LOCAL_RESULT_INVALID");return json;
     }
     private static void ValidateInput(string route,JsonElement value){
@@ -64,12 +87,17 @@ internal sealed class SlackPriority
 {
     private readonly OcrConfig ocr;
     private readonly Func<OcrResources.Sample>? sample;
+    private readonly Func<string?>? foreground;
     internal SlackPriority(OcrConfig ocr){this.ocr=ocr;}
-    private SlackPriority(OcrConfig ocr,Func<OcrResources.Sample> sample){this.ocr=ocr;this.sample=sample;}
-    internal static SlackPriority ForFixture(OcrConfig ocr,Func<OcrResources.Sample> sample)=>new(ocr,sample);
+    private SlackPriority(OcrConfig ocr,Func<OcrResources.Sample> sample,Func<string?>? foreground){this.ocr=ocr;this.sample=sample;this.foreground=foreground;}
+    internal static SlackPriority ForFixture(OcrConfig ocr,Func<OcrResources.Sample> sample,Func<string?>? foreground=null)=>new(ocr,sample,foreground);
     private readonly OcrResources resources=new();
     private long quietAfter;
-    internal bool ForegroundActive()=>OcrPriority.Active(ocr)||!OcrPriority.Healthy(ocr)||OcrPriority.LegacyConsumerActive(ocr);
+    internal string? ForegroundReason(){
+        try{return foreground is not null?foreground():(OcrPriority.Active(ocr)?"lease":!OcrPriority.Healthy(ocr)?"probe_failed":OcrPriority.LegacyConsumerReason(ocr));}
+        catch(Exception e)when(e is IOException or UnauthorizedAccessException or OcrException or System.ComponentModel.Win32Exception){return "probe_failed";}
+    }
+    internal bool ForegroundActive()=>ForegroundReason() is not null;
     internal bool Admission()
     {
         if(ForegroundActive()){quietAfter=Environment.TickCount64+5000;return false;}
@@ -80,9 +108,15 @@ internal sealed class SlackPriority
     {
         if(!Admission())throw new SlackDeferred();
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);stop.CancelAfter(TimeSpan.FromSeconds(seconds));
-        using var watcherStop=new CancellationTokenSource();
-        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);if(ForegroundActive()||shouldYield?.Invoke()==true){stop.Cancel();return;}}}catch(OperationCanceledException){}});
-        try{return await work(stop.Token);}finally{watcherStop.Cancel();await watcher;}
+        using var watcherStop=new CancellationTokenSource();string? reason=null;
+        var watcher=Task.Run(async()=>{try{while(!watcherStop.IsCancellationRequested){await Task.Delay(50,watcherStop.Token);string? found;
+                try{found=ForegroundReason()??(shouldYield?.Invoke()==true?"caller":null);}
+                catch(Exception e)when(e is IOException or UnauthorizedAccessException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException){found="probe_failed";}if(found is not null){Interlocked.CompareExchange(ref reason,"priority_yield_"+found,null);stop.Cancel();return;}}}catch(OperationCanceledException){}});
+        try{return await work(stop.Token);}
+        catch(OperationCanceledException e)when(e is not SlackPriorityYield&&!token.IsCancellationRequested&&stop.IsCancellationRequested){
+            throw new SlackPriorityYield(Volatile.Read(ref reason)??"priority_outer_deadline",stop.Token);
+        }
+        finally{watcherStop.Cancel();await watcher;}
     }
 }
 
@@ -180,6 +214,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                         var sensitive=history.Any(x=>x.FileIds.Length>0);store.Finish(job.Id,result,true,sensitive);
                     }
                 }catch(SlackDeferred){store.Defer(job.Id);}
+                catch(SlackPriorityYield yielded)when(!token.IsCancellationRequested){store.SuspendChat(job.Id,yielded.Code);store.Defer(job.Id,yielded.Code);}
                 catch(OperationCanceledException)when(!token.IsCancellationRequested){store.Defer(job.Id);}
                 catch(SlackRateLimit rate){store.Defer(job.Id);await Task.Delay(TimeSpan.FromSeconds(rate.Seconds),token);}
                 catch(Exception e)when(e is SlackRejected or SlackInterrupted or IOException or JsonException or HttpRequestException or InvalidDataException or UnauthorizedAccessException or OcrException){

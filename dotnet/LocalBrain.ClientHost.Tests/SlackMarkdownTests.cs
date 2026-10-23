@@ -49,12 +49,17 @@ internal static class SlackMarkdownTests
             var file=store.ClaimResultFile(now)!;
             Check(file.Filename=="ocr-"+job+".md"&&Encoding.UTF8.GetString(file.Bytes)==md,"structured result delivered as exact default Markdown bytes");
             store.HoldResultFile(file,true);
+            var structured=store.ClaimResultFile(now)!;
+            Check(structured.Filename=="ocr-json-"+job+".json"&&structured.Channel==file.Channel&&structured.Thread==file.Thread,"new table JSON artifact bound to original destination");
+            store.AdvanceResultFile(structured,"upload","FJSONPUBLIC","https://files.slack.com/upload/v1/PUBLIC");
+            store.AdvanceResultFile(store.ClaimResultFile(now)!,"complete");
+            store.AdvanceResultFile(store.ClaimResultFile(now)!,"sent");
             store.QueueSavedOcrText(job);
             Check(store.ClaimResultFile(now) is null,"uncertain Markdown never requeued");
         }
         // Simulate an older runtime's frozen txt result in the isolated public database.
         var oldBytes=Encoding.UTF8.GetBytes("原文");
-        using(var db=new SqliteConnection("Data Source="+Path.Combine(root,"slack.db"))){db.Open();using var c=db.CreateCommand();c.CommandText="UPDATE result_files SET filename=$f,bytes=$b,hash=$h,stage='ticket',state='held',remote_id=NULL,upload_url=NULL WHERE job_id=$j";c.Parameters.AddWithValue("$f","ocr-"+job+".txt");c.Parameters.AddWithValue("$b",oldBytes);c.Parameters.AddWithValue("$h",SlackHash.Of(oldBytes));c.Parameters.AddWithValue("$j",job);Check(c.ExecuteNonQuery()==1,"one legacy upload fixture");}
+        using(var db=new SqliteConnection("Data Source="+Path.Combine(root,"slack.db"))){db.Open();using var c=db.CreateCommand();c.CommandText="UPDATE result_files SET filename=$f,bytes=$b,hash=$h,stage='ticket',state='held',remote_id=NULL,upload_url=NULL WHERE job_id=$j AND id=$j || '-ocr-text'";c.Parameters.AddWithValue("$f","ocr-"+job+".txt");c.Parameters.AddWithValue("$b",oldBytes);c.Parameters.AddWithValue("$h",SlackHash.Of(oldBytes));c.Parameters.AddWithValue("$j",job);Check(c.ExecuteNonQuery()==1,"one legacy upload fixture");}
         using(var store=new SlackStore(options)){
             store.QueueSavedOcrText(job);Check(store.ClaimResultFile(now) is null,"legacy held file not overwritten or requeued by format default");
             Check(store.RetryRejectedOcrTicket(job)=="queued","legacy known-rejected ticket remains recoverable");

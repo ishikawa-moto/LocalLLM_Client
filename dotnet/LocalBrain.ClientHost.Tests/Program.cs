@@ -2,8 +2,14 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
-if(args.Length==1&&args[0]=="--slack-summary-admission-proof"){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();return;}
-if(args.Length==0){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();}
+if(args.Length==5&&args[0]=="--ocr-bounded-case"){await OcrBoundedTests.RunAsync(args[1],args[2],args[3],args[4]);return;}
+if(args.Length==1&&args[0]=="--slack-recovery-proof"){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();return;}
+if(args.Length==0){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();}
+if(args.Length is 1 or 3&&args[0]=="--ocr-artifacts-proof"){OcrArtifactTests.Run(args.Length==3?args[1]:null,args.Length==3?args[2]:null);return;}
+if(args.Length==0)OcrArtifactTests.Run();
+if(args.Length==4&&args[0]=="--ocr-bounded-proof"){await OcrBoundedTests.RunAsync(args[1],args[2],args[3]);return;}
+if(args.Length==1&&args[0]=="--slack-summary-admission-proof"){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();await SlackPriorityYieldTests.RunAsync();return;}
+if(args.Length==0){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();await SlackPriorityYieldTests.RunAsync();}
 if(args.Length is 1 or 2&&args[0]=="--slack-markdown-proof"){await SlackMarkdownTests.RunAsync(args.Length==2?args[1]:null);return;}
 if(args.Length==0)await SlackMarkdownTests.RunAsync();
 if(args.Length==1&&args[0]=="--slack-file-proof"){await SlackFileTests.RunAsync();return;}
