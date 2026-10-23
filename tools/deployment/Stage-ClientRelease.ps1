@@ -29,6 +29,16 @@ foreach($entry in Get-ChildItem -LiteralPath $source -Recurse -Force){
     $null=Assert-LocalPath $entry.FullName
     if(-not $entry.PSIsContainer){$relative=[IO.Path]::GetRelativePath($source,$entry.FullName).Replace('\','/');if($relative -cne 'build-manifest.json' -and -not $inventory.Contains($relative)){throw 'UNDECLARED_BUILD_FILE'}}
 }
+foreach($binding in @(
+    @{script='Confirm-TaskCommands.ps1';metadata='task-command-native-code.json'},
+    @{script='Confirm-DecisionReaffirmation.ps1';metadata='decision-native-code.json'}
+)){
+    if($inventory.Contains($binding.script) -or $inventory.Contains($binding.metadata)){
+        if(-not $inventory.Contains($binding.script) -or -not $inventory.Contains($binding.metadata)){throw 'NATIVE_CONFIRMATION_BINDING_REQUIRED'}
+        $code=Get-Content -LiteralPath (Join-Path $source $binding.metadata) -Raw | ConvertFrom-Json
+        if($code.script_sha256 -cne $manifest.files.PSObject.Properties[$binding.script].Value){throw 'NATIVE_CONFIRMATION_BINDING_MISMATCH'}
+    }
+}
 # Every input is validated before creating the target. A failed copy stays staged for inspection;
 # this tool neither activates a release, runs a process, changes a DB, nor removes old files.
 New-Item -ItemType Directory -Path $target | Out-Null

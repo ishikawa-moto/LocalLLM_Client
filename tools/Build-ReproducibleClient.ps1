@@ -12,6 +12,7 @@ $actual=(& dotnet --version);if($LASTEXITCODE -or $actual.Trim() -cne $SdkVersio
 & dotnet publish (Join-Path $repo 'dotnet/LocalBrain.ClientHost') -c Release --no-restore -o $output -p:ContinuousIntegrationBuild=true -p:Deterministic=true "-p:PathMap=$repo=/_/localbrain"
 if($LASTEXITCODE){throw 'PUBLISH_FAILED_PRESERVE_OUTPUT_FOR_INSPECTION'}
 if((& git -C $repo rev-parse HEAD) -cne $head -or @(& git -C $repo status --porcelain=v1).Count){throw 'SOURCE_DRIFT_PRESERVE_OUTPUT'}
+& (Join-Path $PSScriptRoot 'deployment/Initialize-NativeConfirmationBindings.ps1') -PublishDirectory $output
 $files=[ordered]@{}
 foreach($file in Get-ChildItem -LiteralPath $output -File -Recurse){$relative=[IO.Path]::GetRelativePath($output,$file.FullName).Replace('\','/');$files[$relative]=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 [ordered]@{schema='localbrain.reproducible-build.v1';source_head=$head;sdk=$actual.Trim();configuration='Release';path_map='/_/localbrain';private_configuration_copied=$false;files=$files}|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $output 'build-manifest.json') -Encoding utf8NoBOM
