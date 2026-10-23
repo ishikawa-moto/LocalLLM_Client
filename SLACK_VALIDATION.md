@@ -92,3 +92,12 @@ Only queued jobs with confirmed acceptance delivery block maintenance. Running a
 The added public regressions cover actual document-follow-up processing with prior OCR/constraints, a 14KB transcription with sub-threshold job metadata, document-aware summary budgets, escaped suffix preservation, destination changes, uncertain acceptance scheduling and password setup version admission. No real model, Slack, OCR, password entry or production service is used by these regressions. This follow-up is a source/PR change, not a deployment.
 
 Final follow-up validation: normal Client regression exit 0; all Slack suites passed 370 checks (80 protocol, 27 processing, 7 retries, 95 conversation, 27 review regressions, 28 files, 67 adoption, 39 HTTPS). Build: 9 existing warnings, 0 errors. Password script parsed with 0 syntax errors and a 7.2 requirement; no password UI was opened.
+
+
+## Structured artifact upload contract
+
+The final public Slack image test exposed a mismatch: the store queued JSON/HTML/CSV names, but the upload-ticket validator accepted only OCR TXT/MD and analysis TXT. The legacy validator rejected these additional names before any HTTP call, while delivery conservatively recorded an uncertain ticket. The validator now accepts only each generated prefix paired with its exact extension and a 32-character lowercase hexadecimal job ID. Absolute matching rejects trailing newlines and paths.
+
+`dotnet run --project dotnet/LocalBrain.ClientHost.Tests -c Release -- --slack-file-proof` covers all six supported names and invalid cross-format/path names. A public in-memory pipeline queues a table, creates tickets, uploads frozen bytes, and completes MD/JSON/HTML/CSV in the original thread exactly once; a repeated return and restart do not resend. Existing lost-response and rate-limit tests remain in this proof. The new test fails on the previous ticket validator before its HTTP handler is called. Local argument rejection is held with a fixed diagnostic code; network/response ambiguity remains uncertain and is never automatically retried.
+
+Existing uncertain rows are not reset by deployment. Any one-time repair must prove the exact original binary/source validation failure occurred before dispatch, bind the specific job/input/artifact hashes and original destination, require ticket stage with no remote ID or upload URL, and preserve all other jobs and sent files. Unknown or genuinely ambiguous dispatch remains held for reconciliation. Stub tests are separate from real Slack delivery qualification.

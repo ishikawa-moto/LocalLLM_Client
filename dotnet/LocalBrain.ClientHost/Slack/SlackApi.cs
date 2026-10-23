@@ -61,9 +61,11 @@ internal sealed class SlackApi : IDisposable
         var response=await Call("chat.postMessage",new{channel=reply.Channel,thread_ts=reply.Thread,text=reply.Text,reply_broadcast=false,mrkdwn=false,parse="none",link_names=false,unfurl_links=false,unfurl_media=false,client_msg_id=Guid.ParseExact(SlackHash.Of(reply.Id)[..32],"N").ToString()},false,token);
         return response.GetProperty("ts").GetString()!;
     }
+    internal static bool ValidResultUploadArgument(string filename,int length)=>length is >=1 and <=1024*1024 &&
+        System.Text.RegularExpressions.Regex.IsMatch(filename,@"\A(?:ocr-[a-f0-9]{32}\.(?:txt|md)|analysis-[a-f0-9]{32}\.txt|ocr-json-[a-f0-9]{32}\.json|ocr-html-[a-f0-9]{32}\.html|ocr-csv-[a-f0-9]{32}\.csv)\z");
     internal async Task<(string Id,string Url)> ResultUploadTicket(string filename,int length,CancellationToken token)
     {
-        if(!System.Text.RegularExpressions.Regex.IsMatch(filename,@"^(ocr-[a-f0-9]{32}\.(?:txt|md)|analysis-[a-f0-9]{32}\.txt)$")||length is <1 or >1024*1024)throw new InvalidDataException("SLACK_RESULT_UPLOAD_ARGUMENT");
+        if(!ValidResultUploadArgument(filename,length))throw new InvalidDataException("SLACK_RESULT_UPLOAD_ARGUMENT");
         var response=await Call("files.getUploadURLExternal",new{filename,length},false,token);
         var id=response.GetProperty("file_id").GetString()!;var url=response.GetProperty("upload_url").GetString()!;
         ValidateResultUploadUrl(url);
