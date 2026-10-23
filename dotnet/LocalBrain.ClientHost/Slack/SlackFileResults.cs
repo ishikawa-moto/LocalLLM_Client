@@ -116,6 +116,10 @@ internal static class SlackFileDelivery
     {
         if(store.ClaimResultFile(DateTimeOffset.UtcNow) is not{} file)return;
         using var restricted=RestrictedExecution.EnterSlack();
+        // Local validation cannot have allocated a Slack ticket; distinguish it from a lost response.
+        if(file.Stage=="ticket"&&!SlackApi.ValidResultUploadArgument(file.Filename,file.Bytes.Length)){
+            store.HoldResultFile(file,false,"local_upload_argument");return;
+        }
         try{
             if(file.Stage=="ticket"){
                 var ticket=await api.ResultUploadTicket(file.Filename,file.Bytes.Length,token);
