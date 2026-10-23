@@ -13,3 +13,5 @@
 Staging never activates code, modifies configuration or a database, or deletes previous releases. It rejects undeclared files, private client settings, path traversal and reparse points. Unknown deployment failures require inspection and forward repair; an older binary must not be automatically restored against a newer schema.
 
 The tracked Start-ClientHost.ps1 and Run-SlackHost.ps1 replace installation-specific launcher copies. Their installation receipt binds the release manifest and external private configuration. The latter preserves the existing exclusive launcher lease, PID/birth receipt and uncertain-launch hold. It needs client_config, client_config_sha256 and ocr_config paths in the private receiver receipt; no token, certificate or private source belongs in Git.
+
+The OCR operator resolves its default Host from the installed receipt rather than a dated runtime path. Operator scripts and the .NET core have separate source identities: a tools-only main update does not require replacing an unchanged core DLL. Record the core build commit and the operator commit/hashes separately.

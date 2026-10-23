@@ -3,9 +3,24 @@ param(
     [string]$InputFile,[string]$RequestId,[string]$JobId,
     [ValidateSet('AUTO','PRINTED_TEXT','HANDWRITING','TABLE_LAYOUT','PDF_DOCUMENT')][string]$Profile='PRINTED_TEXT',
     [switch]$Experimental,[switch]$RetainOriginal,[string]$OutputFile,
-    [string]$HostExe=(Join-Path $env:LOCALAPPDATA 'LocalBrain\agent-v14-ocr-20261018\localbrain.exe')
+    [string]$HostExe
 )
 $ErrorActionPreference='Stop'
+if(-not $HostExe){
+    $base=Join-Path $env:LOCALAPPDATA 'LocalBrain'
+    $installation=Get-Content -LiteralPath (Join-Path $base 'control-plane\installation.json') -Raw|ConvertFrom-Json
+    if($installation.schema -ne 'localbrain.client-installation.v1'){throw 'Installed release receipt is required.'}
+    $release=[IO.Path]::GetFullPath($installation.release)
+    if(-not $release.StartsWith((Join-Path $base 'releases')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Installed release path differs.'}
+    $manifest=Join-Path $release 'build-manifest.json'
+    if((Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant() -ne $installation.manifest_sha256){throw 'Installed release manifest differs.'}
+    $build=Get-Content -LiteralPath $manifest -Raw|ConvertFrom-Json
+    $HostExe=Join-Path $release 'localbrain.exe'
+    if($build.source_head -ne $installation.source_commit -or (Get-FileHash -LiteralPath $HostExe).Hash.ToLowerInvariant() -ne $build.files.'localbrain.exe' -or (Get-FileHash -LiteralPath (Join-Path $release 'localbrain.dll')).Hash.ToLowerInvariant() -ne $installation.product_dll_sha256){throw 'Installed OCR Host differs.'}
+    $config=$installation.configs.host
+    if((Get-FileHash -LiteralPath $config).Hash.ToLowerInvariant() -ne $installation.installed_hashes.'clientsettings.json'){throw 'Installed client configuration differs.'}
+    $env:LOCALBRAIN_CLIENT_CONFIG=$config
+}
 if(-not (Test-Path -LiteralPath $HostExe -PathType Leaf)){throw 'Qualified OCR Host is not installed. Do not use a generic shell fallback.'}
 $arguments=@('ocr',$Operation)
 if($Operation -eq 'submit'){
