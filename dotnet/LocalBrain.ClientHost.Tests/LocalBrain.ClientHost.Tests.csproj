@@ -13,4 +13,5 @@
     <None Update="Fixtures/slack-server-contract.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/decision-protocol-v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup><None Update="Fixtures/chat_ocr_mailbox.py" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>

@@ -25,3 +25,9 @@ Source staging is deleted after the OCR-owned snapshot is registered. The existi
 ## Qualification
 
 `dotnet run --project dotnet/LocalBrain.ClientHost.Tests -c Release -- --chat-ocr-proof` checks source formats/hash/magic, unknown/path fields, source authority, external/agent denial, queue reuse, output defaults, complete formats, cancellation/restart/lost responses, corruption preservation, fixed route/auth binding and expiry using public fixtures and fake HTTP. Existing OCR store/artifact and Slack file-delivery proofs are also run. These are isolated contract tests; they do not qualify real Gateway interoperability, browser upload, deployment or real OCR performance.
+
+## Cross-language contract proof
+
+The test harness uses the actual Client DTO, processor, artifact renderers and Gateway HTTP serialization with the actual Server Python mailbox. Run `dotnet run --project dotnet/LocalBrain.ClientHost.Tests -c Release -- --chat-ocr-interop SERVER_SRC PYTHON NEW_PRIVATE_ROOT`. It qualifies 1/26/200-page progress/completion, default and explicit artifact hashes/downloads, frozen ACK replay and cancellation quiescence. `SERVER_SRC` must be a reviewed matching Server checkout or an exact exported `chat_ocr.py`; `PYTHON` is an already installed interpreter. A fresh Git-external root is required.
+
+`--chat-ocr-interop-preserved SERVER_SRC PYTHON NEW_PRIVATE_ROOT PUBLIC_PNG PUBLIC_PAGE_JSON` additionally reuses an existing public OCR page whose source hash must match the PNG. This does not rerun OCR. The fixture peer certificates and OCR pages are synthetic or preserved public evidence, and transport is a private subprocess pipe plus an HTTP handler. These checks do not qualify real mTLS, new OCR inference, deployed processes or live browser traffic. No production configuration, data or service is modified.
