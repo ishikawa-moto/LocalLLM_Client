@@ -1,3 +1,41 @@
+# Slack/OCR 統合・本番検証の到達点（2026-10-24）
+
+本番切替、必要な追加DB移行、GitHub/ローカルmain統合と、確認済みの不要実行環境の整理を実施しました。下部の「監査候補時点の記録」は履歴であり、現在の未配備・未承認を意味しません。
+
+| 機能 | ソース・隔離検証 | 本番反映・実動確認 | Git |
+|---|---|---|---|
+| 優先譲渡の固定原因コード | 実装・公開fixture検証済み | 既存配備版からソースへ正式統合 | 原因記録bfae367、Client PR8以降 |
+| 120秒上限・有限Attempt・安全な復旧 | 状態/hash/終端/排他・通常回帰PASS | 認証済みcapability120、実Qwenで前景割込み→旧Attempt終端確認→認証retry→完了を確認 | Server PR4/6/7/8、Client PR8/9 |
+| 大画像の逐次タイルOCR・固定エラー分類 | 本物のOCR/Windows Job/AppContainer、公開高解像度fixtureで完了 | 新worker配備済み。小JPEGは本番完了。高解像度の本番低負荷完了は未資格 | Client core c4aa6a58f9e9 |
+| 表構造・結合セル・安全な成果物 | JSON正本からHTML/Markdown/CSV、公開セル/座標検証 | 実Slack公開圧縮画像で2表と結合を保持。数値12/12、全セル21/23一致。日本語2セルの誤読あり | Client PR8/9/13 |
+| Slackのファイル配送 | MD/JSON/HTML/CSVのticket→upload→complete、再起動/重複/応答喪失fixture | 同じ元スレッドへMD/JSON/HTMLを各1回送信確認。新形式の古いファイル名validator拒否を実試験で発見し修正・本番反映 | PR13 source92db181、main統合1cd02e3 |
+| データと起動経路 | Canonical全20表、Slack schema・非対象行、task/source/hashを照合 | 必要な追加schemaだけを適用。旧DB復元・初期化なし。削除後も両DB論理hash・現用104製品hash不変 | 両repository main統合済み |
+| 機能を保った整理 | 現用の確認UI・採用operator・SQLite依存への代替を検証 | 旧モデル/重複asset約11.9GBと旧runtime38件1454ファイル約1.47GBを削除。現用モデル/認証/DB/小さい監査証跡は保持 | マージ済み作業branch/worktreeも整理 |
+
+## 実行版とGitの関係
+
+`git pull`はソースを更新します。稼働プロセスはmanifest付きの不変releaseから起動するため、マージやpullだけで置き換わりません。配備されたコードのcommit、Git main、後から変更した配備ツールや文書のcommitは分けて記録します。
+
+2026-10-24の確認時点で、Server application releaseはdcc046a、Server mainはdbe7343です。後者は配備・前進復旧helperの追加を含み、applicationコードの不一致を隠すものではありません。Client Bridge/Agent/OCRはc4aa6a58f9e9、Slack受付だけは新形式の配送修正92db18114464です。installation receiptのrole_releasesとSlack receiver receiptに両者を明示し、同じ製品DLLへの一括切替を装いません。Slack修正のために正常なBridgeやモデルを再起動していません。
+
+## 確認できた範囲と制限
+
+- 旧実行DLLを隔離ロードして、新形式2件がHTTP前のローカル検証で拒否されたことを直接確認しました。この公開ジョブの固定2成果物だけを排他内で復旧し、送信済みMD・無関係の依頼・真に通信結果不明の配送は再送していません。
+- 既存配送28チェック、追加の全形式配送41チェック、限定DB復旧11公開fixture、Client通常実行harness全体、Server通常239と復旧/配備guard20/37がPASSです。独自harnessをVSTest件数と誤記しません。
+- 最初の通常向き/EXIF正立7公開fixtureは173/173セル一致でした。実Slackの圧縮版では21/23セルに低下しました。全ての実資料への精度保証はできません。needs_reviewと未検証表示、判読不能/推測の区別を維持します。
+- 高解像度3060x4080 JPEGはCPU2/704MiB/通信0で隔離完了しましたが、この負荷試験のadmission50と本番25は異なります。本番の重要処理優先・30秒backoffを緩めず、高解像度の本番完了を偽って報告しません。
+- 横倒し90度、手書き、縦書き、歪み、複雑な帳票、極小文字、全てのタイル境界は未資格です。XLSXは今回追加していません。
+- 実複数人Slack往復・新しい私有財務画像・実際の私有SecondBrain採用を、この公開検証の結果に混同しません。現在の明示設定では共有スレッドを維持し、作成者限定は別設定として残します。
+- OCR単体の既定24時間とSlack Sessionの30日は別です。Slackの保存済み添付・成果物がSessionに残る場合は元OCRの期限後も参照可能ですが、全OCRを30日保存する変更はしていません。
+
+Host認証/TLS、Slack Token、パスワード方式、OCR AppContainer/通信遮断/CPU2/704MiB/60秒、本番CPU25、Qwen32768/KVq4、Saluki131072/CPU6/parallel1/GPU0/KVq8を保持しました。許可済み元Slackへの結果返却は正規機能です。Slack/OCR/私有知識をCloud AIや外部検索へ送信する経路は追加していません。
+
+再現手順は`tools/Build-ReproducibleClient.ps1`と`tools/deployment/README.md`を参照してください。正式配備・公開動作・整理・全hashの機械可読証跡は作業資料側の`output/audit/production-integration-20261023`、元の隔離検証は`output/audit/integrated-localbrain-20261023`に保持し、私有証跡や設定を公開Gitへ持ち込みません。
+
+---
+
+## 監査候補時点の記録（2026-10-23、以下は履歴）
+
 # Slack/OCR 統合監査候補（2026-10-23）
 
 この文書はGit上の候補と確認範囲を示します。本番切替・DB移行・認証変更・mainマージは実施していません。
