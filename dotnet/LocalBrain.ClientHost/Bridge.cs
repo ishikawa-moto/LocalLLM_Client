@@ -16,6 +16,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
         audit.Write("bridge_started", new { address = $"{IPAddress.Loopback}:{config.BridgePort}" });
         var heartbeat = HeartbeatAsync(cancellationToken);
         var ocr=Task.Run(()=>LocalBrain.ClientHost.Ocr.OcrScheduler.RunConfiguredAsync(cancellationToken),cancellationToken);
+        var chatOcr=Task.Run(()=>Chat.ChatOcrRelay.RunConfiguredAsync(gateway,cancellationToken),cancellationToken);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -25,7 +26,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
             }
         }
         catch (OperationCanceledException) { }
-        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await ocr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
+        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await ocr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await chatOcr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
     }
 
     private async Task ForwardAsync(HttpListenerContext context, CancellationToken cancellationToken)

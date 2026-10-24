@@ -46,6 +46,20 @@ internal sealed class GatewayClient : IDisposable
         while((count=await stream.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");output.Write(buffer,0,count);}
         return System.Text.Encoding.UTF8.GetString(output.ToArray());
     }
+    internal async Task<string> ChatOcrJsonAsync(string path,string json,CancellationToken token)
+    {
+        if(!Slack.RestrictedExecution.Active||path is not("/v1/chat-ocr/next" or "/v1/chat-ocr/update"))throw new UnauthorizedAccessException("CHAT_OCR_PRIVATE_ROUTE_DENIED");
+        var bytes=System.Text.Encoding.UTF8.GetBytes(json);if(bytes.Length>16*1024*1024)throw new InvalidDataException("CHAT_OCR_LOCAL_INPUT_SIZE");
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(35));
+        using var request=new HttpRequestMessage(HttpMethod.Post,path){Content=new ByteArrayContent(bytes)};request.Content.Headers.ContentType=new("application/json");
+        request.Headers.TryAddWithoutValidation("X-LocalBrain-Request-Id",Guid.NewGuid().ToString());
+        request.Headers.TryAddWithoutValidation("X-LocalBrain-Approval-Owner",DecisionProtocol.Owner);
+        using var response=await slackClient.Value.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
+        if(!response.IsSuccessStatusCode)throw new HttpRequestException("CHAT_OCR_GATEWAY_REJECTED",null,response.StatusCode);
+        await using var input=await response.Content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];int count;
+        while((count=await input.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>6*1024*1024)throw new InvalidDataException("CHAT_OCR_LOCAL_RESPONSE_SIZE");output.Write(buffer,0,count);}
+        return System.Text.Encoding.UTF8.GetString(output.ToArray());
+    }
     private bool HostOwnedPath(string path)
     {
         var normalized=Uri.UnescapeDataString(new Uri(client.BaseAddress!,path).AbsolutePath).TrimEnd('/');
@@ -57,6 +71,7 @@ internal sealed class GatewayClient : IDisposable
     {
         var normalizedPath=new Uri(client.BaseAddress!,path).AbsolutePath;
         var slackPath=normalizedPath.StartsWith("/v1/slack/",StringComparison.Ordinal);
+        if(Uri.UnescapeDataString(normalizedPath).StartsWith("/v1/chat-ocr/",StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("CHAT_OCR_ROUTE_REQUIRES_HOST_OWNER");
         if(slackPath||Slack.RestrictedExecution.Active)
             throw new UnauthorizedAccessException("SLACK_ROUTE_REQUIRES_RESTRICTED_HOST_OWNER");
         if(HostOwnedPath(path))throw new UnauthorizedAccessException("Decision adoption requires the owning Windows Host's durable approval dispatch");

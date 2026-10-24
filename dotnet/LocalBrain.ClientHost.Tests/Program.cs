@@ -2,6 +2,8 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
+if(args.Length==1&&args[0]=="--chat-ocr-proof"){await ChatOcrTests.RunAsync();return;}
+if(args.Length==0)await ChatOcrTests.RunAsync();
 if(args.Length==5&&args[0]=="--ocr-bounded-case"){await OcrBoundedTests.RunAsync(args[1],args[2],args[3],args[4]);return;}
 if(args.Length==1&&args[0]=="--slack-recovery-proof"){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();return;}
 if(args.Length==0){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();}
