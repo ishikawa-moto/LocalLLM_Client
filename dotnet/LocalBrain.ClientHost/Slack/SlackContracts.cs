@@ -23,6 +23,8 @@ internal static class RestrictedExecution
     internal static bool Active => depth.Value > 0;
     private sealed class Scope : IDisposable { public void Dispose() { depth.Value--; } }
     internal static IDisposable EnterSlack() { depth.Value++; return new Scope(); }
+    // Browser OCR shares the same deny-external/deny-agent boundary; source identity stays chat.
+    internal static IDisposable EnterChat() { depth.Value++; return new Scope(); }
     internal static void DenyExternal() { if (Active) throw new UnauthorizedAccessException("SLACK_EXTERNAL_AI_DENIED"); }
     internal static void DenyAgentTools() { if (Active) throw new UnauthorizedAccessException("SLACK_AGENT_TOOLS_DENIED"); }
 }

@@ -35,7 +35,7 @@ internal sealed class OcrJobStore(OcrConfig config)
         var path=Path.Combine(DirectoryFor(id),"manifest.json");
         if(Read<JsonElement>(path+".binding").GetProperty("sha256").GetString()!=HashFile(path))throw new OcrException("MANIFEST_EVIDENCE_CHANGED");
         var m=Read<Manifest>(path);
-        if(m.JobId!=id||m.ExternalAi!="deny"||m.Origin is not("local_file" or "slack")||m.InputExtension is not(".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("JOB_BINDING_MISMATCH");return m;
+        if(m.JobId!=id||m.ExternalAi!="deny"||m.Origin is not("local_file" or "slack" or "chat")||m.InputExtension is not(".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("JOB_BINDING_MISMATCH");return m;
     }
     internal State GetState(string id){
         var s=Read<State>(Path.Combine(DirectoryFor(id),"state.json"));
@@ -44,7 +44,7 @@ internal sealed class OcrJobStore(OcrConfig config)
     internal string Input(Manifest manifest)=>Path.Combine(DirectoryFor(manifest.JobId),"input","source"+manifest.InputExtension);
     internal static string ConfigHash(OcrConfig config)=>CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions));
     internal State Submit(string path,string expectedHash,string profile,string requestId,bool experimental=false,bool retainOriginal=false,string origin="local_file"){
-        if(origin is not("local_file" or "slack")||origin=="slack"&&!Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("OCR_ORIGIN_AUTHORITY");
+        if(origin is not("local_file" or "slack" or "chat")||origin!="local_file"&&!Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("OCR_ORIGIN_AUTHORITY");
         config.Validate();
         if(!Regex.IsMatch(requestId,@"^[A-Za-z0-9_-]{8,100}$")||!Regex.IsMatch(expectedHash,@"^[a-fA-F0-9]{64}$"))throw new OcrException("REQUEST_INVALID");
         if(!config.QualifiedProfiles.Contains(profile,StringComparer.Ordinal)&&!(experimental&&config.ExperimentalProfiles.Contains(profile,StringComparer.Ordinal)))throw new OcrException("PROFILE_UNQUALIFIED");
@@ -53,7 +53,7 @@ internal sealed class OcrJobStore(OcrConfig config)
         var ext=Path.GetExtension(path).ToLowerInvariant();if(ext is not (".png" or ".jpg" or ".jpeg" or ".webp" or ".pdf"))throw new OcrException("INPUT_FORMAT");
         if(new FileInfo(path).Length>config.MaxInputBytes)throw new OcrException("INPUT_TOO_LARGE");
         var binding=CanonicalStore.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new{requestId,expectedHash=expectedHash.ToLowerInvariant(),profile,experimental,retainOriginal,config=ConfigHash(config)})));
-        if(origin=="slack")binding=CanonicalStore.Hash(Encoding.UTF8.GetBytes(binding+":slack"));
+        if(origin!="local_file")binding=CanonicalStore.Hash(Encoding.UTF8.GetBytes(binding+":"+origin));
         var id=CanonicalStore.Hash(Encoding.UTF8.GetBytes(requestId))[..32];
         using var lease=Lock();var dir=DirectoryFor(id);
         if(Directory.Exists(dir)){

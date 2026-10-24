@@ -10,7 +10,7 @@
     "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "profile": {"enum": ["AUTO", "PRINTED_TEXT", "PDF_DOCUMENT", "TABLE_LAYOUT", "HANDWRITING"]},
     "experimental": {"type": "boolean"},
-    "origin": {"const": "local_file"},
+    "origin": {"enum": ["local_file", "slack", "chat"]},
     "external_ai": {"const": "deny"},
     "status": {"const": "complete"},
     "text": {"type": "string"},
