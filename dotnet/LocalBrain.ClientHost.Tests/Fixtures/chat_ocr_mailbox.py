@@ -10,6 +10,8 @@ import sys
 source, root = map(Path, sys.argv[1:3])
 root.mkdir(parents=True, exist_ok=False)
 (root / "runtime").mkdir()
+# Load sibling Server modules from the exact public source under test, even with -I.
+sys.path.insert(0, str(source))
 spec = importlib.util.spec_from_file_location("public_chat_ocr", source / "chat_ocr.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
