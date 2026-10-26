@@ -11,6 +11,7 @@
     <None Update="Fixtures/slack-recovery-contract.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/slack-retire.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/slack-server-contract.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures/slack-admission-v1.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Fixtures/decision-protocol-v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup><None Update="Fixtures/chat_ocr_mailbox.py" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>

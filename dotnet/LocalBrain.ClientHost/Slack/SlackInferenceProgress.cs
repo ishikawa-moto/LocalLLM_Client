@@ -7,6 +7,22 @@ internal sealed partial class SlackStore {
  internal static readonly TimeSpan HeldProbeInterval=TimeSpan.FromMinutes(5);
  internal static readonly TimeSpan MaxHeldAge=TimeSpan.FromHours(1);
  private long nextHeldDeadlineSweep;
+ private static readonly Dictionary<string,string> AdmissionReasons=new(StringComparer.Ordinal){
+  ["resource_limit_exceeded"]="リソースの空きが不足しています",
+  ["resource_probe_failed"]="リソース状態を確認できません",
+  ["foreground_busy"]="優先処理の完了待ちです",
+  ["background_busy"]="先行処理の完了待ちです",
+  ["base_starting"]="基盤サービスの起動待ちです",
+  ["base_services_unavailable"]="基盤サービスを利用できません",
+  ["base_start_failed"]="基盤サービスを起動できません",
+  ["model_starting"]="推論モデルの起動待ちです",
+  ["model_start_failed"]="推論モデルを起動できません",
+  ["model_not_ready"]="推論モデルの準備が完了していません",
+  ["model_start_disabled"]="モデルの自動起動が無効です",
+  ["activation_pending"]="Serverの切替確認待ちです",
+  ["inference_busy"]="推論処理の空き待ちです",
+  ["admission_unavailable"]="Serverが推論を受け付けられません"
+ };
  // SQL literal allowlist only; never derived from message/model text. Unknown status
  // may be observed again, but is never authority to replay a generation request.
  internal const string HeldProbeCauses="'none','transport_disconnected','cancellation_pending','server_interrupted','server_nonterminal','priority_yield_lease','priority_yield_probe_failed','priority_yield_legacy_blocked','priority_yield_legacy_unreadable','priority_yield_caller','priority_outer_deadline'";
@@ -28,7 +44,9 @@ internal sealed partial class SlackStore {
  }}
  internal ChatPlan MarkChatSending(ChatPlan plan){lock(gate){
   if(plan.State!="ready"||plan.NextCheck>Ms(DateTimeOffset.UtcNow))throw new SlackDeferred();
-  if(Execute("UPDATE inference_progress SET state='probing',next_check=$next WHERE root_id=$id AND state='ready' AND attempt=$attempt;",null,("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(5))),("$id",plan.Root),("$attempt",plan.Attempt))!=1)throw new SlackDeferred();return plan;
+  // A new transport can execute. A prior safe deferral is no longer proof that
+  // this dispatch was unstarted if the Host dies before observing its outcome.
+  if(Execute("UPDATE inference_progress SET state='probing',next_check=$next,cause=CASE WHEN cause LIKE 'admission_%' THEN 'none' ELSE cause END WHERE root_id=$id AND state='ready' AND attempt=$attempt;",null,("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(5))),("$id",plan.Root),("$attempt",plan.Attempt))!=1)throw new SlackDeferred();return plan;
  }}
  internal void ChatAwaiting(string root,string cause){lock(gate){
   var safe=cause is "transport_disconnected" or "cancellation_pending" or "server_interrupted" or "server_nonterminal"?cause:"cancellation_pending";
@@ -52,12 +70,17 @@ internal sealed partial class SlackStore {
   if(Execute("UPDATE inference_progress SET state='abandoned',next_check=$next WHERE root_id=$id AND state IN('held','legacy_hold');",tx,("$id",root),("$next",long.MaxValue))!=1)return;
   Audit("inference_recovery_abandoned",root,DateTimeOffset.UtcNow,tx);
   if(job is null||job.Phase=="failed")return;
-  Execute("UPDATE jobs SET phase='failed',result='RECOVERY_UNCONFIRMED' WHERE id=$id AND phase NOT IN('complete','failed');",tx,("$id",root));
+  var cause=Scalar("SELECT cause FROM inference_progress WHERE root_id=$id;",tx,("$id",root)) as string??"none";
+  var reason=cause.StartsWith("admission_",StringComparison.Ordinal)?cause[10..]:"";
+  var admission=AdmissionReasons.TryGetValue(reason,out var explanation);
+  Execute("UPDATE jobs SET phase='failed',result=$result WHERE id=$id AND phase NOT IN('complete','failed');",tx,("$id",root),("$result",admission?"INFERENCE_ADMISSION_EXHAUSTED":"RECOVERY_UNCONFIRMED"));
   // Only never-dispatched/retry-safe progress can be removed. Preserve sent,
   // sending and uncertain receipts; do not reset an ambiguous Slack delivery.
   Execute("DELETE FROM replies WHERE job_id=$id AND kind='progress' AND state='pending';",tx,("$id",root));
   var session=GetSession(job.SessionId,tx);
-  QueueReply(root+"-completed",root,session.Channel,session.Thread,$"<@{job.User}> 処理を完了できませんでした。この依頼の自動再開を終了しました。後ほど再度お試しください。処理ID：{root}","completed",tx);
+  var message=admission?$"推論を開始できませんでした。受付待ちの上限に達したため、この依頼を終了しました。理由：{explanation}。後ほど再度お試しください。":
+   "処理を完了できませんでした。この依頼の自動再開を終了しました。後ほど再度お試しください。";
+  QueueReply(root+"-completed",root,session.Channel,session.Thread,$"<@{job.User}> {message}処理ID：{root}","completed",tx);
   Audit("failed",root,DateTimeOffset.UtcNow,tx);
  }
  internal bool BeginHeldProbe(ChatPlan plan,DateTimeOffset now){lock(gate){
@@ -107,8 +130,10 @@ internal sealed partial class SlackStore {
   Execute("UPDATE inference_progress SET checks=checks+1,next_check=$next WHERE root_id=$id AND state='probing';",tx,("$id",plan.Root),("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(30))));
   if(Convert.ToInt32(Scalar("SELECT checks FROM inference_progress WHERE root_id=$id;",tx,("$id",plan.Root)))>=FastProbeLimit)HoldChat(plan.Root,tx,recheck:!missingRecord);tx.Commit();
  }}
- internal void ChatDeferred(ChatPlan plan){lock(gate){using var tx=db.BeginTransaction();
-  Execute("UPDATE inference_progress SET state='ready',checks=checks+1,next_check=$next WHERE root_id=$id AND attempt=$attempt AND state IN('ready','probing');",tx,("$id",plan.Root),("$attempt",plan.Attempt),("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(30))));
+ internal void ChatDeferred(ChatPlan plan,string? reason=null){lock(gate){using var tx=db.BeginTransaction();
+  var safe=reason is not null&&AdmissionReasons.ContainsKey(reason)?reason:"admission_unavailable";
+  if(Execute("UPDATE inference_progress SET state='ready',checks=checks+1,next_check=$next,cause=CASE WHEN cause LIKE 'priority_yield_%' THEN cause ELSE $cause END WHERE root_id=$id AND attempt=$attempt AND state IN('ready','probing');",tx,("$id",plan.Root),("$attempt",plan.Attempt),("$next",Ms(DateTimeOffset.UtcNow.AddSeconds(30))),("$cause","admission_"+safe))!=1){tx.Commit();return;}
+  Audit("inference_admission_"+safe,plan.Root,DateTimeOffset.UtcNow,tx);
   if(Convert.ToInt32(Scalar("SELECT checks FROM inference_progress WHERE root_id=$id;",tx,("$id",plan.Root)))>=FastProbeLimit)HoldChat(plan.Root,tx);tx.Commit();
  }}
  internal void ChatCompleted(ChatPlan plan,string result)=>ChatCompleted(plan,result,allowHeld:false);
