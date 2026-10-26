@@ -119,7 +119,7 @@ assetsのprovisioningは別作業です。推論中にmodel/依存をダウン�
 
 現時点の完了範囲は監査・隔離候補・公開検証・Git/PR整理です。本番の改善完了とは扱いません。未確認の現地照合・実Gateway/実Slack往復・私有財務表品質・Session方針決定は、必要な追加条件を満たしてから行います。証跡、バックアップ、公開出力は作業資料側の `output/audit/integrated-localbrain-20261023` に保全し、私有監査資料をGitへ混入しません。
 
-Reproducible packaging: on a clean checkout, use `tools/Build-ReproducibleClient.ps1 -OutputDirectory NEW_EXTERNAL_DIRECTORY` after the explicit restore step. It requires the recorded SDK, maps source paths, refuses dirty/source drift/existing output, and emits a hash manifest without production configuration. Compare two independent output manifests; qualification of deployed bytes still requires running the test harness against that exact published DLL.
+再現可能なパッケージ作成：クリーンなcheckoutで、明示的なrestore工程の後に`tools/Build-ReproducibleClient.ps1 -OutputDirectory NEW_EXTERNAL_DIRECTORY`を使います。記録済みSDKを要求し、ソースパスを対応付け、未保存変更・ソースのずれ・既存出力先を拒否し、本番設定を含まないハッシュmanifestを生成します。独立した2回の出力manifestを比較してください。配置バイト列の資格確認には、その正確な発行DLLを対象にテストハーネスを実行する必要があります。
 
 追加の公開故障試験では、旧大画像経路で生じたRapidOCRのラッパー例外を実測し、`ONNX_MEMORY_ALLOCATION` / `OnnxMemory` がHost receiptまで保存されることを確認しました。例外本文・tracebackは一般ログへ出していません。再開候補の状態照会だけでなく、入場拒否の再照会も30秒間隔・20回を上限にし、推論Attemptは最大3回です。
 

@@ -1,4 +1,4 @@
-# LocalBrain v2 context telemetry (ClientPC)
+# LocalBrain v2のコンテキスト計測（ClientPC）
 
 この機能はPiがQwenへ送る直前の `Context` と最終的なcompletions payloadを計測します。ServerPC、モデル、Gateway、Bridge、Continue UIは変更しません。自動的なCOMPACT、ツール削減、retrieval抑制は初期状態で無効です。
 

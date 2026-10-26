@@ -1,76 +1,31 @@
-# Local context continuation
+# ローカルでのコンテキスト引継ぎ
 
-The ServerPC inference engine remains at **32,768 tokens**. The ClientPC TaskMemory
-model and its native context/KV settings are read from the existing Host-owned
-manifest; this feature does not change them. Continue may retain a **65,536-token
-logical history**. That number is not the ServerPC inference context size.
+ServerPCの推論エンジンは**32,768トークン**を維持します。ClientPCのTaskMemoryモデルとネイティブのコンテキスト・KV設定は、既存のHost管理マニフェストから読み取り、この機能では変更しません。Continueは**65,536トークンの論理履歴**を保持できます。この値はServerPCの推論コンテキスト長ではありません。
 
 ## Agent v2
 
-The existing Agent path measures the final provider payload before mutation,
-checkpoints canonical task state before context exhaustion, rotates the Actor
-session, retrieves same-task source references through TaskMemory, and resumes
-with the same task identity, tests and approval gates. No KV snapshot is authority.
+既存のAgent経路は、変更前に最終プロバイダーペイロードを計測します。コンテキスト枯渇前にCanonicalのタスク状態を保存し、Actorセッションを切り替え、TaskMemoryから同一タスクの参照元を取得します。再開時もタスクの識別情報、テスト、承認条件を維持します。KVスナップショットを判断の正本にはしません。
 
-## Ordinary Continue conversations
+## 通常のContinue会話
 
-When `continue-context-memory.json` in the Windows Host control directory has
-`{"enabled":true}`, Bridge measures OpenAI chat payloads with the same qualified
-local Qwen tokenizer/template used by Agent v2. Requests at or below 24,576 prompt
-tokens pass unchanged. Above the threshold:
+Windows Hostの制御ディレクトリにある`continue-context-memory.json`が`{"enabled":true}`の場合、BridgeはAgent v2と同じ資格確認済みのローカルQwenトークナイザー・テンプレートでOpenAI形式のチャットペイロードを計測します。プロンプトが24,576トークン以下なら変更せず通します。閾値を超えた場合は次の処理を行います。
 
-1. Preserve the exact incoming request in Host-local, content-addressed storage.
-2. Keep system/developer messages, the original user request, the current user
-   request and the newest complete assistant/tool exchange exactly.
-3. Rank historical messages from **this exact request only**, using existing
-   full-text source retrieval. The ClientPC native TaskMemory selects up to eight
-   existing IDs from at most 16 source candidates. It cannot invent source text,
-   execute commands, approve changes or certify completion.
-4. Include bounded original source excerpts, retaining their unverified status.
-   Re-measure the final payload including tool schemas and chat framing.
-5. Forward once only after the prompt fits the admission threshold with output
-   and safety reserves. The ordinary ServerPC response/stream continues to the
-   same Continue conversation. Tool calls are not replayed.
+1. 受信した正確な要求を、Host内の内容ハッシュで管理する保存領域に保持します。
+2. system/developerメッセージ、元のユーザー依頼、現在のユーザー依頼、最新の完結したassistant/toolのやり取りを、そのまま保持します。
+3. 既存の全文検索で、**この正確な要求だけ**に含まれる過去メッセージを順位付けします。ClientPCのネイティブTaskMemoryは、最大16件の参照元候補から既存IDを最大8件選びます。参照元の文章の捏造、コマンド実行、変更承認、完了認定はできません。
+4. 上限付きの原文抜粋を、未検証という状態を維持して含めます。ツール定義やチャットの構成要素も含め、最終ペイロードを再計測します。
+5. 出力分と安全余裕を確保した受付閾値内に収まった場合だけ、1回転送します。通常のServerPCの応答・ストリームは同じContinue会話へ返します。ツール呼出しは再実行しません。
 
-This is retrieval from durable source data, not moving the ServerPC KV cache or
-concatenating all 32K+64K tokens into the ServerPC model. It is deliberately lossy
-selection with an immutable original archive, not a guarantee that every past
-detail is present in every turn. It cannot recover history that Continue removed
-before it reached Bridge, and it does not mix unrelated conversations or Agent
-tasks. The 64K client history setting reduces premature client-side pruning but
-does not make history unlimited. Search candidates are a bounded subset ranked
-from the complete current payload; native selection verifies identity, not truth.
+これは永続化した参照元データからの検索です。ServerPCのKVキャッシュを移動したり、32K+64K全体をServerPCモデルへ連結したりするものではありません。変更不可の原文保管を伴う、情報を選別する方式なので、すべての過去の詳細を毎ターン保持する保証はありません。Bridgeに到達する前にContinueが削除した履歴は復元できず、無関係な会話やAgentタスクも混在させません。Client側の64K履歴設定は早すぎる履歴削除を減らしますが、履歴を無制限にはしません。検索候補は現在の完全なペイロードから順位付けした有限の部分集合です。ネイティブの選択が検証するのは識別情報であり、内容の真実性ではありません。
 
-## Failure and operations
+## 失敗時の扱いと運用
 
-Each measurement has a30-second deadline including WSL mapping/startup; the
-complete local admission/retrieval phase has an18-minute absolute deadline.
-Native completion also retains its existing token-dependent deadline. A timeout
-returns an explicit nonretryable admission failure rather than looping indefinitely.
+各計測には、WSLの対応付け・起動を含め30秒の期限があります。ローカル受付・検索工程全体の絶対期限は18分です。ネイティブの完了処理には既存のトークン数依存の期限も適用します。期限切れは明示的な再試行不可の受付失敗として返し、無期限にループしません。
 
-An interrupted upstream response is an incomplete transport, not completion.
-Bridge logs whether response headers arrived, aborts an incomplete body/stream,
-and never synthesizes a successful SSE `[DONE]` or replays tool calls. The response
-header `X-LocalBrain-Response-Contract` states this contract. If dispatch may have
-occurred but no upstream response arrived, HTTP 422 `dispatch_outcome_unknown`
-requires observation of the existing request rather than an automatic resend.
+上流応答の中断は通信未完了であり、処理完了ではありません。Bridgeは応答ヘッダーの到着有無を記録し、不完全な本文・ストリームを打ち切ります。成功を装うSSEの`[DONE]`を生成したり、ツール呼出しを再実行したりしません。応答ヘッダー`X-LocalBrain-Response-Contract`がこの契約を示します。送信済みの可能性があるのに上流応答が届かなかった場合、HTTP 422の`dispatch_outcome_unknown`を返します。自動再送せず、既存の要求を観測する必要があります。
 
-If measurement, memory selection, native admission or storage fails, the chat
-request is not forwarded. Bridge returns HTTP 422 `context_handoff_unavailable`
-with `automatic_retry:false` (not a retryable 5xx/409) and logs
-only bounded metadata. It does not silently discard source data or retry a tool.
-If pinned current instructions/tools alone exceed the budget, the caller must
-reduce that input. Existing archives are not replaced or automatically deleted.
-Storage has a 256 MiB bound; housekeeping requires explicit retention decisions.
+計測、記憶の選択、ネイティブ受付、保存が失敗した場合、チャット要求は転送しません。Bridgeは`automatic_retry:false`を伴うHTTP 422の`context_handoff_unavailable`を返します。再試行可能な5xx/409にはしません。ログは上限付きのメタデータだけです。参照元データを黙って捨てたり、ツールを再実行したりしません。固定保持する現在の指示とツールだけで予算を超える場合は、呼出し側で入力を減らす必要があります。既存の保管データを置換・自動削除しません。保存上限は256MiBで、整理には明示的な保持方針が必要です。
 
-Originals and derived receipts are under the Host control directory's
-`continue-memory/` folder, outside the Git source checkout. Receipts bind source
-and forwarded hashes, measured token counts, selected IDs and native diagnostics.
-Identical input/profile/candidate sets may reuse previously validated source IDs;
-the actor payload is re-measured and reassembled from the exact source each time.
-This derived cache never reuses a tool execution or an approval. New requests or
-changed native profiles do not share selections.
-`X-LocalBrain-Context-Recall` and `X-LocalBrain-Actor-Prompt-Tokens` response headers
-identify a real recall and its measured forwarded size without exposing content.
-Existing authentication, execution confirmations, write/export scopes, SecondBrain
-adoption policy and ServerPC model configuration remain unchanged.
+原文と派生記録は、Gitソース外のHost制御ディレクトリにある`continue-memory/`へ置きます。記録には参照元・転送後のハッシュ、計測トークン数、選択ID、ネイティブ診断を結び付けます。入力・プロファイル・候補集合が同一なら、検証済みの参照元IDを再利用できます。ただしActorのペイロードは毎回、正確な参照元から再構成・再計測します。この派生キャッシュでツール実行や承認を再利用することはありません。新しい要求や変更されたネイティブプロファイルの間では選択結果を共用しません。
+
+`X-LocalBrain-Context-Recall`と`X-LocalBrain-Actor-Prompt-Tokens`応答ヘッダーで、内容を公開せずに、実際の記憶参照と転送後サイズを識別できます。既存の認証、実行確認、書込・外部出力の範囲、SecondBrain採用方針、ServerPCのモデル設定は変更しません。

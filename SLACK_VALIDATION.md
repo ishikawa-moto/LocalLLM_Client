@@ -1,103 +1,100 @@
-# Slack validation and remaining release gates
+# Slackの検証結果と残る公開条件
 
-The public implementation is ready for review against main, with disabled templates. A separately approved local installation has now completed the text-only Slack connection and reply qualification below. This does not qualify every Slack/OCR/approval/recovery operation or enable any other installation.
+> 記録した時点の候補・検証・配備状況を保持した日本語版です。過去の未確認事項や手順を、現在の残作業・実行指示と混同しないでください。現在の状態は実配置の記録・設定・プロセスと照合します。
 
-## Confirmed implementation checks
+公開実装はテンプレートを無効にした状態でmainに対するレビューが可能です。別途承認したローカル環境では、以下のテキストのみのSlack接続・返信の資格確認を完了しました。全Slack/OCR/承認/復旧操作の保証や、他環境の有効化を意味しません。
 
-| Area | Result | Scope |
+## 確認した実装
+
+| 項目 | 結果 | 範囲 |
 | --- | --- | --- |
-| Client build | PASS, 0 errors | Existing platform/nullability warnings retained |
-| Client normal regression | PASS, exit 0 | Existing canonical state, Agent, decision, TaskMemory and crash-recovery public fixtures |
-| Slack core | 80 checks PASS | Identity, channel/mention/owner, receipt-before-work, dedup, offline boundary, restart, retention, replies, summary wake-up and external-AI denial |
-| Protocol / priority / OCR registration | 27 checks PASS | Durable OCR registration, restricted origin, legacy staging recovery, unavailable compression and local admission/preemption |
-| HTTP failure / retry regression | 7 checks PASS | Metadata/download Retry-After, cancellable waiting, file rejection isolation and a stalled body after response headers |
-| HTTPS password approval | 39 checks PASS | Real loopback HTTPS, no browser client certificate, password matching, minimum4/no attempt lockout, one-hour expiry/logout/rotation, CSRF, exact hashes, pagination and replay |
-| File result outbox | 28 checks PASS | Exact UTF8 text, original thread, official form upload ticket, no bearer on upload capability, stage recovery, pre-upload rejection-only retry, uncertain HOLD and retention |
-| Adoption / retirement contract | 67 checks PASS | Canonical cross-language vectors, reservations, lost-response/restart reconciliation, older duplicate binding, unknown HOLD, cancellation and cleanup outbox |
-| Server complete public regression | 144 tests PASS, 0 failures/errors/skips | Includes SSE parser, restricted resource admission and opt-in authenticated cold-start lifecycle; test-bound loopback listeners, no production model/config |
-| Independent SSE review | No findings | Limited read-only review of the fixed parser and one-source deployment boundary; not a general security guarantee |
+| Clientビルド | PASS、エラー0 | 既存のプラットフォーム・null許容警告は維持 |
+| Client通常回帰 | PASS、終了0 | Canonical状態、Agent、decision、TaskMemory、障害復旧の既存公開fixture |
+| Slackコア | 80確認PASS | 識別情報、チャンネル/メンション/所有者、受付記録後の作業開始、重複排除、オフライン境界、再起動、保持期間、返信、要約待ち解除、外部AI拒否 |
+| プロトコル・優先度・OCR登録 | 27確認PASS | OCR永続登録、制限付き出所、旧入力準備の復旧、要約不能、ローカル受付・割込み |
+| HTTP失敗・再試行回帰 | 7確認PASS | メタデータ/取得のRetry-After、取消可能な待機、ファイル拒否の分離、ヘッダー後の本文停止 |
+| HTTPSパスワード承認 | 39確認PASS | 実ループバックHTTPS、ブラウザークライアント証明書不要、パスワード照合、最小4文字/試行ロックなし、1時間期限/ログアウト/変更、CSRF、正確なハッシュ、ページ分割、再利用防止 |
+| 結果ファイル送信キュー | 28確認PASS | 正確なUTF8、元スレッド、公式フォームのアップロードチケット、アップロード資格へのbearer不付与、段階復旧、アップロード前拒否だけの再試行、不明時HOLD、保持期間 |
+| 採用・終了処理契約 | 67確認PASS | Canonicalの言語横断ベクトル、予約、応答喪失・再起動照合、古い重複の結び付き、不明時HOLD、取消、整理キュー |
+| Server全公開回帰 | 144テストPASS、失敗/エラー/skip 0 | SSE解析、制限付きリソース受付、任意の認証済み低温起動。テスト用ループバック待受で、本番モデル・設定なし |
+| 独立SSEレビュー | 指摘なし | 固定パーサーと1ソース配備境界に限る読み取り専用レビュー。一般の安全保証ではありません |
 
-The five Client public commands total 248 checks; `--slack-process-proof` includes both protocol and HTTP retry groups. Run the Client test executable with `--slack-proof`, `--slack-process-proof`, `--slack-https-proof`, `--slack-file-proof` and `--slack-adoption-proof`; run without arguments for the normal suite. Server tests are in the paired Server repository. Test certificates do not enroll production trust.
+Clientの公開コマンド5つの合計は248確認です。`--slack-process-proof`にはプロトコルとHTTP再試行を含めます。Clientテスト実行ファイルを`--slack-proof`、`--slack-process-proof`、`--slack-https-proof`、`--slack-file-proof`、`--slack-adoption-proof`で実行し、通常スイートは引数なしで実行します。Server試験は対応Serverリポジトリにあります。試験証明書で本番の信頼は登録しません。
 
-### PR review follow-up, 2026-10-21
+### PRレビューの追加対応（2026-10-21）
 
-Metadata and private-file download rate limits now defer the accepted job and respect Slack's Retry-After interval. Owner cancellation interrupts the wait. Startup also reconciles legacy staging names using the retained job/file attachment, exact extension and content hash; unknown or modified originals are preserved. Human confirmation removes delivered queue-refusal rows in the same transaction while retaining uncertain deliveries and ordinary job receipts.
+メタデータと非公開ファイル取得のレート制限では、受理済みJobを延期してSlackのRetry-Afterへ従います。所有者の取消で待機を中断できます。起動時には保持したJob/添付・正確な拡張子・内容ハッシュで旧準備ファイル名も照合し、不明・変更済み原本は保持します。人間の確認により配送済みキュー拒否行を同じトランザクションで削除し、不明配送と通常Jobの記録は残します。
 
-Public regressions additionally cover a summary completing before its waiter transition, atomic wake-up across reopening, duplicate Server proposal binding beyond the first 100 items with terminal state preserved, and the response-body deadline after HTTP headers arrive. These PR follow-up commits have not been deployed to the running installation. The approved installation evidence below describes its separately qualified earlier revision.
+公開回帰には、要約完了が待機状態への移行より先行する場合、保存再開をまたぐ原子的な待機解除、最初の100件を超えるServer重複提案の結び付きと最終状態保持、HTTPヘッダー後の本文期限も含めます。この追加コミットは当時の稼働環境へ未配備です。以下の導入証跡は、別に資格確認した以前の版を示します。
 
-The initial restricted environment denied a fixture rename; the normal-user run passed. An earlier crash-test Windows dialog was resolved with test-process-local dialog suppression. These failures remain in the local audit history, rather than being counted as successful runs. The SSE follow-up reused unchanged qualifying tests instead of rerunning unrelated suites.
+最初の制限環境ではfixtureの名前変更を拒否されましたが、通常ユーザーで成功しました。以前の障害試験で出たWindows画面はテストプロセス内だけのダイアログ抑制で解消しました。失敗も成功として数えずローカル監査に保持します。SSE追加対応では無関係のスイートを再実行せず、変更していない該当試験を再利用しました。
 
-## Approved installation checks
+## 承認済み環境での確認
 
-- The App was installed, invited and configured through concealed local credential entry. Disabled identity/channel preflight passed without reading history, posting messages or opening Socket Mode. Channel/file metadata uses Slack's documented GET routes; required safety fields fail closed.
-- The tested Client runtime and compatible existing Host were placed through explicit operator approval. The original coding, model, authentication and OCR configuration were retained. The compiled runtime used the tested DLL. The optional single Slack receiver is online; its independent ownership does not replace the existing Host.
-- The earlier administrator-certificate gate is superseded by password authentication. Deployed HTTPS passed normal chain/name validation without a browser client certificate; the login page responds and unauthenticated proposal access is rejected. Password login, one-hour expiry, logout and rotation passed real public HTTPS fixtures. The existing limited LAN firewall rule changes only its executable target; address/subnet/port remain fixed. Physical phone use and an actual administrator login remain separately unqualified.
-- The Server was placed and enabled through separately approved, fixed deployment operations. Actual source, preserved model/authentication settings, owned Gateway identity and other-service boundaries were checked. A public priority probe confirmed foreground completion and interruption of owned background work. No model context/KV change or cloud fallback was made.
-- The original human-posted public message received acknowledgement but failed because the Server rejected a valid `content: null` role frame. That failed event is retained, without replay. The parser correction also handles finish metadata and empty-choices usage frames while malformed content, missing completion, oversize and cancellation remain rejected.
-- After the correction, one bounded public direct completion suite passed: two model submissions, nine HTTP calls, 10.669 seconds, normal and restricted markers matched, restricted state `complete`, owned session retired and final idle confirmed. No inference retry was made. This is a fixed-fixture smoke test, not general model quality or speed qualification.
-- A new human-posted public Slack message then completed end to end: one durable job, one acknowledgement, one completion reply, expected public marker matched and zero uncertain replies. One Socket connection remained online. This qualifies that text-only mention/reply path; it does not qualify attachments, reconnect or reboot recovery.
-- A separate public one-page local-file OCR check completed with expected text recognized. It was not a Slack upload/file-event check and does not extend existing handwriting, vertical-text or complex-form limits.
+- Appを導入・招待し、認証情報をローカルの隠し入力で設定しました。無効状態の識別情報・チャンネル事前確認は、履歴取得・投稿・Socket Mode接続なしに成功しました。メタデータは公式GETを使い、安全必須フィールドがなければ拒否します。
+- 試験済みClientと互換Hostを明示承認で配置しました。コーディング・モデル・認証・OCR設定を保持し、コンパイル済み環境には試験したDLLを使いました。単一の任意Slack受信Hostはオンラインで、独立した所有権は既存Hostを置換しません。
+- 旧管理者クライアント証明書方式はパスワード認証へ置き換えました。実HTTPSはブラウザークライアント証明書なしで通常のチェーン・名前検証に成功し、ログイン画面応答と未認証の提案アクセス拒否を確認しました。パスワードログイン・1時間期限・ログアウト・変更は実公開HTTPS fixtureで成功しました。限定LANファイアウォールは実行ファイルだけを変更し、アドレス・サブネット・ポートは固定です。実携帯と実管理者ログインの確認は別途未資格です。
+- Serverは別承認した固定操作で配置・有効化しました。実ソース、モデル・認証保持、Gateway所有識別情報、他サービス境界を確認し、公開優先度試験で前面完了・所有背景処理中断を確認しました。モデルcontext/KV変更やCloud代替はありません。
+- 最初の人間による公開投稿は受付後、妥当な`content: null`のroleフレームをServerが拒否して失敗しました。失敗イベントは再実行せず保持します。修正ではfinishメタデータとempty-choicesのusageも扱い、不正文・完了欠落・超過・取消の拒否は維持します。
+- 修正後の有限な公開直接完了試験は、モデル送信2回、HTTP 9回、10.669秒で成功しました。通常・制限マーカー一致、制限状態`complete`、試験Session終了、最後のidleを確認し、推論再試行はしていません。固定fixtureの疎通試験であり一般品質・速度の資格確認ではありません。
+- 新たな人間の公開Slack投稿が端から端まで完了しました。永続Job・受付・完了返信が各1件、公開マーカー一致、不明返信0、Socket接続1件オンラインです。このテキストメンション返信経路の確認であり、添付・再接続・再起動の保証ではありません。
+- 別の公開ローカルファイル1ページOCRで期待文字を認識しました。Slackアップロード・ファイルイベントではなく、既存の手書き・縦書き・複雑帳票の制限は広げません。
+- 以前完了したSlack OCRをUTF8 `.txt`として元スレッドへ返しました。Slackメタデータでファイル・バイト数・Bot所有権・元チャンネル・スレッドを独立確認しました。OCR・推論は再実行していません。保存結果の返却1件で、OCR精度全体の保証ではありません。
+- 2026-10-21、別途承認した環境にChat案内入口と人間承認適用を配備しました。実Chat URLと静的2ファイルのハッシュがレビュー済み公開ソースに一致し、HTTPSログイン200、未認証提案401を確認しました。認証Host capabilitiesは人間の制限知識・Rule適用がtrue、自動/通常SecondBrain採用・外部AI・Cloud代替がfalseでした。ChatとGatewayだけを各1回再起動し、推論・本番適用試験はしていません。
+- 対応する変更なしのソース試験は、ClientPC隔離公開101件、Server承認42件、Chat 12件、承認境界の重点2シナリオで成功しました。別範囲の実行で、新しい全回帰の合計値ではありません。候補だけでは採用知識・Ruleが変わらないこと、偽承認の拒否、正確なHost承認による各fixture 1回適用を確認しました。固定展開の限定独立レビューは指摘なしでした。
 
-- A previously completed Slack OCR result was returned as a UTF8 `.txt` attachment to its original thread. Slack file metadata independently confirmed the file, byte length, bot ownership, original channel and thread. OCR and inference were not rerun. This is one saved-result return, not a broad OCR accuracy qualification.
+実ID・ローカルアドレス・トークン・証明書本文・Slack原文・OCR本文・生成回答・非公開DB・環境固有の配備記録は、この公開状況報告に含めません。Slack由来データは制限状態と外部AI拒否を維持し、通常の非Slack作業のレビュー振分けは変えません。
 
-- On 2026-10-21 the separately approved installation deployed the Chat navigation entry and enabled human-bound application. The actual Chat entry URL and its two static file hashes matched the reviewed public sources. HTTPS login returned 200 and unauthenticated proposal access returned 401. Authenticated Host capabilities reported human restricted adoption and Rule activation true; automatic/ordinary SecondBrain adoption, external AI and cloud fallback stayed false. The bounded rollout restarted only Chat and Gateway once each, with no inference or production application trial.
-- The corresponding unchanged-source checks passed: 101 isolated public tests on ClientPC, 42 Server approval tests, 12 Chat tests and two focused approval-boundary scenarios. These are separately scoped runs, not a new combined full regression count. The focused fixtures confirmed candidates alone leave accepted knowledge/Rule unchanged, forged approval is rejected, and an exact Host approval applies each fixture once. Limited independent review of the fixed rollout reported no findings.
+## 性能の証跡と制限
 
-No real IDs, local addresses, tokens, certificate contents, Slack originals, OCR text, generated answers, private databases or per-site deployment receipts are part of this public status update. Slack-derived data remains restricted and denied external AI; ordinary non-Slack work retains its existing review routing.
+以前のローカル公開ACK制御は23.0084ms、Layaリース取消経路は64.3422msでした。合成ローカル測定であり実Slack・ネットワーク遅延ではありません。
 
-## Performance evidence and limits
+既存`ocr capabilities`の準備済み起動中央値は基準103.838ms、候補104.049ms（約+0.2%）、測定最大working setは32,374,784と32,776,192バイトです。出力8件すべてが一致し、推論は起動していません。同時コーディング速度、モデル処理能力、OCRピークメモリ、限界近傍のコンテキスト性能は確認していません。
 
-The earlier local public ACK control path measured 23.0084 ms and the Laya-lease cancellation path 64.3422 ms. These are synthetic local timings, not actual Slack/network latency.
+## 残る資格確認と意図的な未実装範囲
 
-The existing `ocr capabilities` warm-start median was 103.838 ms for baseline versus 104.049 ms for the candidate (about +0.2%); maximum sampled working sets were 32,374,784 and 32,776,192 bytes. All eight outputs matched. No inference was started by that comparison. It does not establish concurrent coding speed, model throughput, OCR peak memory or near-limit context performance.
+- 配備環境での実Slack画像/PDFアップロード・認証ファイル取得・OCR結果処理、停止/再接続・ログオン/再起動・曖昧送信の復旧。
+- 制限履歴のSaluki要約品質・遅延・割込み・実RAM/commitと、前面/OCR/モデル間の広いリソース競合。
+- 実非公開提案の採用、本番Rule変更、保持期間と両端の終了・削除。人間承認適用は承認環境で有効で公開契約は試験済みですが、採用済み制限知識は通常SecondBrain/TaskMemoryと分離します。
+- 他PC/iPhone/AndroidのプライベートCA信頼、パスワードログイン、LAN到達、画面適応、実承認クリック。証明書警告を無視しません。
+- 任意手書き・縦書き・複雑帳票・一般モデル品質は未資格です。大文書階層解析や汎用の制限コーパス検索は未実装です。
 
-## Remaining qualifications and deliberately inactive behavior
+Slackモデルの自動起動はServerの明示的な任意設定で、検証済みHost認証Chatだけで有効です。status/capabilitiesと自律Reviewerは起動しません。背景起動1回の失敗でモデルを強制終了・自動再試行しません。有限の実公開試験はSTOPPED → STARTING → READY → completeを推論1回で通過し、マーカー・結び付いた最終状態・試験Session終了・最後のidleを確認しました。最初のHTTP要求は推論前に明示延期し、準備完了後に同じ不変要求で進みました。モデルの強制停止はありません。対応する描画入力の上限は保守的に16,000 UTF-8バイトで、超過時は切詰め・Cloud代替なしに失敗します。添付準備の上限は、この解析予算を超えてよい許可ではありません。明示的文字起こしはモデル解析を省略し、最大1MiBのテキストファイルを返します。
 
-- Real Slack image/PDF uploads, authenticated file retrieval and OCR-result handling; shutdown/reconnect, logon/reboot and ambiguous-send recovery on the deployed system.
-- Restricted-history Saluki compression quality, latency, preemption and actual RAM/commit use, plus broader foreground/OCR/model resource contention.
-- Actual adoption of a real private proposal, production Rule changes, retention and paired retirement/purge remain unqualified. Human-bound application is enabled on the approved installation and its public contract is tested. Accepted restricted knowledge remains separate from ordinary SecondBrain and TaskMemory adoption.
-- Other PC/iPhone/Android private-CA trust, password login, LAN reachability, responsive rendering and actual approval clicks. Never bypass certificate warnings.
-- Arbitrary handwriting, vertical text, complex forms and general model quality remain unqualified. Large-document hierarchical analysis and general restricted-corpus retrieval are not implemented.
+## 配備と公開の境界
 
-Slack model cold-start is an explicit Server opt-in, enabled only for validated Host-authenticated chat. Status/capabilities and autonomous Reviewer calls do not initiate startup. One failed background start does not force-stop the model or automatically retry. A bounded live public probe passed STOPPED → STARTING → READY → complete with one inference, a matching public marker, bound terminal status, retired test Session and final idle. The initial HTTP request was explicitly deferred before inference; the same immutable request proceeded only after readiness. No model was force-stopped. The paired rendered-input budget is conservatively 16,000 UTF-8 bytes; oversize fails without silent truncation or cloud fallback. An attachment staging bound is not permission to exceed that paired analysis limit. Explicit transcription bypasses model analysis and returns a text file of at most1MiB.
+新しい環境では無効の公開テンプレートを使い、正確な承認・復元・信頼・実動確認を個別に行います。PRマージでタスク導入・証明書登録・ファイアウォール開放・受付/適用有効化はしません。環境固有変更と記録は保護されたローカル領域へ保持します。
 
-## Deployment and publication boundary
+契約と設定は`SLACK_CONNECT.md`と対応Serverの`SLACK-SERVER.md`を確認します。通常Canonical DBの復元、不明な送信・適用の再実行、無関係なモデル・サービスの強制停止はしません。実装範囲はレビュー可能ですが、残る資格確認を完了済みとせず明示的制限として残します。レビュー・マージで別環境を自動配備・有効化しません。
 
-New installations must use the disabled public templates and complete their own exact approval, rollback, trust and live qualification steps. PR merge does not install tasks, enroll certificates, open firewall rules or activate intake/application. Site-specific changes and receipts remain in protected local storage.
+## 長期Sessionの統合修正（2026-10-21）
 
-Review `SLACK_CONNECT.md` and the paired Server `SLACK-SERVER.md` for the contracts and setup. Do not restore the ordinary canonical DB, replay unknown sends/applies or force-stop unrelated models/services. The implemented scope is ready for review; the remaining qualifications above stay explicit limits rather than claims of completed coverage. Review and merge do not automatically deploy or enable another installation.
+Client通常回帰が成功しました。全Slack公開スイートは343確認（プロトコル80、処理/優先度/OCR 27、HTTP再試行7、新会話/通信95、ファイル返却28、採用67、HTTPS承認39）です。公開データと偽モデル・Slack応答を使い、実推論や非公開入力は使っていません。
 
+長会話圧縮は上限65,536バイトのバッチと、制限付きの履歴先頭に結び付けた永続チェックポイントを使います。旧200,000文字上限を超える60ターンfixtureが保存再開後も原履歴を保持し、圧縮と待機Job解除を完了します。追記履歴は検証済み先頭部分を再利用し、古い先頭状態は拒否します。保持OCR本文・入力ハッシュも参照元へ結び付けます。不正・大きすぎる要約は、待機先頭を無期限に残さず明示失敗にします。
 
-## 2026-10-21 long-session integration fixes
+最終UTF-8予算はcontext + LF 1文字 + promptで最大16,000バイト、Serverと同じです。要約はpromptとメタデータを差し引いた残りに制限し、最近のターンは丸ごと収まる場合だけ含めます。省いた生抜粋は制限領域に保持し、黙って切り詰めず結び付いた要約で表します。Unicodeのバイト境界と大きすぎる入力のfixtureを含みます。
 
-The normal Client regression completed successfully. All Slack public suites passed 343 checks (80 protocol, 27 processing/priority/OCR, 7 HTTP retry, 95 new conversation/transport, 28 file-return, 67 adoption, 39 HTTPS approval). These use public data and fake model/Slack responses, not live inference or private inputs.
+構造化されたdeferred/busy応答で真偽値retry_safe=trueの場合だけ、同じ固定要求で再試行します。リソース圧迫fixtureは1回延期後に完了し、曖昧なHTTP 503や危険・欠落した再試行フラグは最終失敗です。不明な推論結果の再実行を許可するものではありません。
 
-Long conversation compression now uses bounded 65,536-byte batches with restricted, prefix-bound durable checkpoints. A 60-turn fixture above the old 200,000-character cap resumes after store reopen, preserves original history, completes compression and wakes the waiting job. Appended history reuses the verified prefix; stale prefixes are rejected. Retained OCR text and source hashes are part of the source binding. Invalid or oversized summaries fail explicitly rather than leaving the waiting head indefinitely.
+これはソース/PR修正だけで、配備・再起動・実Slack・ネイティブモデル起動・本番知識適用・一般要約精度の確認はしていません。上の導入証跡は以前の配備版です。
 
-The final UTF-8 budget is context + one LF + prompt, at most 16,000 bytes, matching Server. Summaries are bounded to the space remaining after prompt and metadata; whole recent turns are included only if they fit. Omitted raw excerpts remain in the restricted store and are represented by the bound summary, not silently truncated. Unicode byte-boundary and oversized-input fixtures are included.
+## 最新レビューの追加対応（2026-10-21）
 
-Only structured deferred/busy responses with boolean retry_safe=true are retried using the identical frozen request. A resource-pressure fixture defers once then completes; ambiguous HTTP 503 and unsafe/missing retry flags remain terminal. This does not authorize replay after an uncertain inference result.
+追加コメント6件は妥当でした。文書解析は完了済み前会話または参照元付き要約を現在のOCRと参照情報へ組み合わせ、同じcontext + LF + promptの16,000バイト予算に収めます。要約予算には現在文書のメタデータ・本文を含め、新文書を切り詰めて空きを作りません。要約待ちは短いJobメタデータ閾値に依存せず圧縮を起動します。
 
-These changes are source/PR fixes only. This validation did not deploy, restart services, run live Slack, launch native models, apply production knowledge or qualify general summary accuracy. Existing installation evidence above describes earlier deployed builds.
+返信はエスケープ後に上限を適用し、末尾とUnicodeペアを保持します。送信前に固定済み返信チャンネルを検証し、設定変更時は転送先変更や試行数増加なしに拒否します。元の宛先を照合するまで配送を保留します。
 
+受付配送確認済みのqueued Jobだけを保守の阻止対象とします。runningとwaiting-OCRも阻止対象です。未受付・不明入力はレビュー証跡へ抽出せず、固定記録は照合用に残します。パスワード設定は入力前にPowerShell 7.2以降を要求します。
 
-## Latest review follow-up (2026-10-21)
+追加公開回帰は、前OCR/制約を伴う実文書後続処理、Jobメタデータ閾値未満での14KB文字起こし、文書を含む要約予算、エスケープ末尾保持、宛先変更、不明受付のスケジュール、パスワード設定の版受付を確認します。実モデル・Slack・OCR・パスワード入力・本番サービスは使いません。これはソース/PR修正で配備ではありません。
 
-The six follow-up review comments were valid. Document analysis now combines prior completed conversation or a source-bound summary with the current OCR and its references under the same 16,000-byte context + LF + prompt budget. A pending summary budget includes current document metadata/text; nothing truncates the new document to make room. A summary waiter triggers compression independently of the short job-metadata threshold.
+最終追加確認は通常回帰終了0、全Slack 370確認（80プロトコル、27処理、7再試行、95会話、27レビュー回帰、28ファイル、67採用、39 HTTPS）成功、ビルド既存警告9・エラー0です。パスワードスクリプトは構文エラー0で7.2要件を確認し、入力UIは開いていません。
 
-Replies are escaped before applying their output cap, preserving trailing text and Unicode pairs. Frozen pending reply channels are checked before send admission: a changed channel configuration fails closed without redirecting or incrementing attempts. Delivery remains on hold until the original destination is reconciled.
+## 構造化成果物のアップロード契約
 
-Only queued jobs with confirmed acceptance delivery block maintenance. Running and waiting-OCR jobs remain blockers. Unacknowledged or uncertain inputs are not extracted as review evidence, while their frozen records remain available for reconciliation. Password setup now requires PowerShell 7.2 or later before password entry.
+最終公開Slack画像試験で、保存側がJSON/HTML/CSV名を登録する一方、チケット検証がOCR TXT/MDとanalysis TXTだけを受理する不一致が分かりました。旧検証はHTTP前に名前を拒否しましたが、配送側は保守的に不明チケットを記録しました。修正後は、生成する接頭辞と正確な拡張子、小文字32桁16進Job IDの組だけを許可します。絶対一致で末尾改行・パスを拒否します。
 
-The added public regressions cover actual document-follow-up processing with prior OCR/constraints, a 14KB transcription with sub-threshold job metadata, document-aware summary budgets, escaped suffix preservation, destination changes, uncertain acceptance scheduling and password setup version admission. No real model, Slack, OCR, password entry or production service is used by these regressions. This follow-up is a source/PR change, not a deployment.
+`dotnet run --project dotnet/LocalBrain.ClientHost.Tests -c Release -- --slack-file-proof`は、対応6名称と形式混在・パス等の不正名を確認します。公開のメモリ内パイプラインで表を登録し、チケット・固定バイト列アップロード・MD/JSON/HTML/CSV共有を元スレッドに各1回だけ行い、再返却・再起動で再送しないことを確認します。応答喪失・レート制限の既存試験も維持します。新試験は旧検証ではHTTPハンドラー前に失敗します。ローカル引数拒否は固定診断コードで保留し、通信・応答が曖昧ならuncertainのまま自動再試行しません。
 
-Final follow-up validation: normal Client regression exit 0; all Slack suites passed 370 checks (80 protocol, 27 processing, 7 retries, 95 conversation, 27 review regressions, 28 files, 67 adoption, 39 HTTPS). Build: 9 existing warnings, 0 errors. Password script parsed with 0 syntax errors and a 7.2 requirement; no password UI was opened.
-
-
-## Structured artifact upload contract
-
-The final public Slack image test exposed a mismatch: the store queued JSON/HTML/CSV names, but the upload-ticket validator accepted only OCR TXT/MD and analysis TXT. The legacy validator rejected these additional names before any HTTP call, while delivery conservatively recorded an uncertain ticket. The validator now accepts only each generated prefix paired with its exact extension and a 32-character lowercase hexadecimal job ID. Absolute matching rejects trailing newlines and paths.
-
-`dotnet run --project dotnet/LocalBrain.ClientHost.Tests -c Release -- --slack-file-proof` covers all six supported names and invalid cross-format/path names. A public in-memory pipeline queues a table, creates tickets, uploads frozen bytes, and completes MD/JSON/HTML/CSV in the original thread exactly once; a repeated return and restart do not resend. Existing lost-response and rate-limit tests remain in this proof. The new test fails on the previous ticket validator before its HTTP handler is called. Local argument rejection is held with a fixed diagnostic code; network/response ambiguity remains uncertain and is never automatically retried.
-
-Existing uncertain rows are not reset by deployment. Any one-time repair must prove the exact original binary/source validation failure occurred before dispatch, bind the specific job/input/artifact hashes and original destination, require ticket stage with no remote ID or upload URL, and preserve all other jobs and sent files. Unknown or genuinely ambiguous dispatch remains held for reconciliation. Stub tests are separate from real Slack delivery qualification.
+配備だけで既存uncertain行は戻しません。1回限りの修復には、元の正確なバイナリ・ソースの検証失敗が送信前だったことを証明し、特定Job・入力・成果物ハッシュ・元宛先を結び付け、remote ID・upload URLがないticket段階であることを要求します。他Job・送信済みファイルは保持します。不明・本当に曖昧な送信は照合待ちのままです。スタブ試験と実Slack配送の資格確認は別です。

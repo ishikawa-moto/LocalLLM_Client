@@ -1,4 +1,4 @@
-# SOURCE_PROVENANCE
+# ソースの出所と復元記録
 
 ## 復元元
 

@@ -1,14 +1,14 @@
-# Slack integration
+# Slack連携
 
-This feature is disabled by default in the public templates. An operator-approved installation has now passed actual public Slack mention, acknowledgement and completion-reply checks. Deployment and live qualification are separate from merging this Draft PR; the PR does not enable another installation automatically. The existing coding, OCR, TaskMemory and Laya settings are preserved. See `SLACK_VALIDATION.md` for confirmed scope and remaining gates.
+公開テンプレートでは既定で無効です。別途運用者が承認した環境では、実際の公開Slackメンション・受付・完了返信を確認済みです。配備・実動資格確認と、このDraft PRのマージは別であり、PRで別環境を自動有効化しません。既存のコーディング・OCR・TaskMemory・Laya設定を保持します。確認範囲と残る条件は`SLACK_VALIDATION.md`を参照してください。
 
-## Boundaries
+## 境界
 
-ClientPC owns Socket Mode intake, the restricted SQLite session/job/outbox store and authenticated HTTPS approval. ServerPC provides authenticated, local, lower-priority inference and local Reviewer operations. A Slack request has no terminal, Git, code-editing, admin, external-review or cloud-fallback capability.
+ClientPCはSocket Mode受付、制限付きSQLiteのSession/Job/送信待ち保存、認証済みHTTPS承認を管理します。ServerPCは認証済みローカル低優先度推論とローカルReviewerを提供します。Slack要求にはterminal・Git・コード編集・管理者操作・外部レビュー・Cloud代替の権限はありません。
 
-Every derived record remains `origin=slack`, `data_class=slack_restricted`, `external_ai=deny`, `cloud_fallback=false`. Slack state and input/output stay outside repositories, the ordinary TaskMemory corpus and automatic SecondBrain adoption. Ordinary work retains its review routing. Slack itself is a cloud service: posting an image in Slack uploads it to Slack; local AI processing does not undo that upload.
+派生記録はすべて`origin=slack`、`data_class=slack_restricted`、`external_ai=deny`、`cloud_fallback=false`を維持します。Slack状態と入出力は、リポジトリ・通常のTaskMemoryコーパス・SecondBrain自動採用から分離します。通常作業のレビュー振分けは維持します。Slack自体はCloudサービスで、画像投稿はSlackへのアップロードです。ローカルAI処理にしてもそのアップロードを取り消すことにはなりません。
 
-## Data and authority flow
+## データと権限の流れ
 
 ```mermaid
 flowchart LR
@@ -24,107 +24,101 @@ flowchart LR
   Foreground[Continue / Agent / TaskMemory / Laya] -->|Priority and preemption| Host
 ```
 
-This diagram describes the implemented optional path. The public templates remain disabled; the separately approved installation has qualified a public text-only Slack round trip. Slack itself stores uploads in its cloud; OCR, local inference, summaries and private result/proposal storage do not use external AI. The approval page runs on ClientPC. The ServerPC chat sidebar links directly to its trusted HTTPS address; the HTTP chat is not an approval proxy. On the approved installation the link appears below the new-chat button after reloading an already open page.
+図は実装済みの任意利用経路です。公開テンプレートは無効のままで、別途承認した環境では公開テキストだけのSlack往復を確認しました。アップロードはSlackのCloudに保存されますが、OCR・ローカル推論・要約・非公開の結果/提案保存で外部AIは使いません。承認画面はClientPCで動きます。ServerPC Chatのサイドバーから信頼したHTTPSアドレスへ直接リンクし、HTTP Chatを承認プロキシにはしません。承認済み環境では既存ページを再読込すると新規チャットボタンの下にリンクが表示されます。
 
-## Slack administrator setup
+## Slack管理者の設定
 
-1. Create an internal Slack app using `tools/slack/app-manifest.yaml`. Enable Socket Mode and create an app-level token with `connections:write`.
-2. Install the app in the intended workspace. Invite the bot to the sole permitted public, non-shared channel. No DM or other channels are accepted.
-3. Obtain the real team ID, channel ID and bot user ID. Authorize IDs, never display names. `auth.test` and `conversations.info` verify identity and membership before receiving events.
-4. Copy the disabled settings template to a private Host-owned directory outside Git. Replace paths/IDs. Run `Set-SlackTokens.ps1` in a local Windows terminal; token entry is concealed and saved in user/SYSTEM-only files. Never paste tokens in chat, commands, screenshots or Git.
-5. Keep the feature disabled until both Client and Server candidates have passed their integration checks and the runtime/rollback plan has been approved.
+1. `tools/slack/app-manifest.yaml`で内部Slack Appを作成し、Socket Modeを有効化して`connections:write`付きApp-Level Tokenを作成します。
+2. 対象ワークスペースへ導入し、許可する唯一の公開・非共有チャンネルへBotを招待します。DMや他チャンネルは受理しません。
+3. 実team ID・channel ID・bot user IDを取得します。表示名ではなくIDで許可し、イベント受信前に`auth.test`と`conversations.info`で識別情報・所属を確認します。
+4. 無効状態の設定テンプレートをGit外のHost所有の非公開ディレクトリへコピーし、パスとIDを置換します。ローカルWindows端末で`Set-SlackTokens.ps1`を実行します。トークンは隠して入力し、ユーザー/SYSTEMだけが読めるファイルへ保存します。チャット・コマンド・画像・Gitへ貼らないでください。
+5. 両候補の統合確認と、実行環境・復元計画の承認が完了するまで機能を無効にします。
 
-The bot subscribes only to `app_mention`; explicit `<@BOT_USER_ID>` is required on every request. The manifest requests `app_mentions:read`, `channels:read`, `chat:write`, `files:read` and `files:write`. Reinstall the Slack App after changing scopes. It does not request history scanning or arbitrary URL ingestion.
+購読は`app_mention`だけで、毎要求に明示的な`<@BOT_USER_ID>`が必要です。manifestは`app_mentions:read`、`channels:read`、`chat:write`、`files:read`、`files:write`を要求します。権限変更後はAppを再インストールします。履歴スキャンや任意URL取込の権限は要求しません。
 
-## Durable reception and recovery
+## 永続受付と復旧
 
-One permitted workspace/channel/thread identifies one shared logical session. Any human participant may explicitly mention the bot to continue it, regardless of who started the thread. The original initiating user remains creator metadata, not an access restriction. Jobs and history retain the actual requester, and summaries include user IDs to distinguish participants. Previous image OCR is reused only within that same session; other threads, channels and workspaces do not receive it. Per-thread turn order and administrator approval requirements are unchanged. Each accepted event is committed to SQLite with a unique event ID and a separate reply outbox. The exact acceptance text is `受け付けました。`, without a user mention or broadcast. OCR/inference wait until its delivery has been recorded. Completion mentions the requester in the original thread.
+許可済みワークスペース・チャンネル・スレッドの組が1つの共有論理Sessionです。開始者に関係なく、人間の参加者なら明示的メンションで継続できます。開始者は作成者メタデータで、アクセス制限ではありません。Job・履歴には実際の要求者を保持し、要約にもユーザーIDを含めて参加者を区別します。前の画像OCRは同じSession内だけで再利用し、別スレッド・チャンネル・ワークスペースへ渡しません。スレッド内の順序と管理者承認要件は維持します。受理イベントは一意のevent IDと別返信キューでSQLiteへ確定します。受付文はメンション・全体通知なしの正確な`受け付けました。`です。その配送記録前にはOCR・推論を開始しません。完了時は元スレッドで要求者をメンションします。
 
-No historical channel scan generates jobs. Each authenticated Socket Mode connection has a fresh online acceptance boundary. Unknown events whose Slack message timestamp predates that boundary are ignored, including shutdown/reconnect backlog. Already persisted jobs are recovered independently. This conservative boundary may also decline an event sent during a short reconnect gap or affected by clock skew; synchronize the Host clock. It cannot perfectly infer every network/shutdown timing case.
+過去のチャンネルスキャンからJobを生成しません。認証済みSocket Mode接続ごとに新しいオンライン受付境界を作り、それ以前のSlack時刻を持つ未知イベントは、停止・再接続中の滞留分も含めて無視します。永続受理済みJobは別の規則で復旧します。保守的な境界により短い再接続中の投稿や時計ずれで受付を見送る場合もあるため、Host時計を同期してください。ネットワーク・停止の全タイミングを完全には推定できません。
 
-Known rate limits honor `Retry-After`. An ambiguous post response or crash during sending becomes `uncertain` instead of blindly posting a duplicate. The authenticated approval page lists ambiguous deliveries and allows an administrator to record the exact remote Slack post timestamp after verifying it. It never automatically resends an uncertain post. If delivery cannot be established, leave it held and investigate before making a new request. `client_msg_id` is stable, but is not treated as an unlimited exactly-once delivery guarantee.
+既知のレート制限は`Retry-After`に従います。投稿応答が曖昧、または送信中に障害が起きた場合は、重複投稿せず`uncertain`にします。認証済み承認画面で曖昧な配送を一覧化し、管理者が確認後に正確なSlack投稿時刻を記録できます。不明な投稿を自動再送しません。配送を確定できなければ保留して調査し、新規要求を作る前に確認します。`client_msg_id`は安定させますが、無期限のexactly-once保証とは扱いません。
 
-## Local OCR and conversation
+## ローカルOCRと会話
 
-Authenticated file IDs from the allowed channel are resolved through `files.info`. Only bounded image/PDF files on Slack's authenticated private download origin are allowed; redirects, arbitrary URLs, external files and unsupported formats are rejected. Originals and OCR JSON are retained in the restricted store. Existing OCR checkpoint/recovery and qualified profiles are reused; handwriting/vertical text/arbitrary forms retain their existing unqualified limits.
+許可チャンネルの認証済みfile IDを`files.info`で解決します。Slackの認証済み非公開ダウンロード元にある、上限内の画像・PDFだけを許可し、リダイレクト・任意URL・外部ファイル・未対応形式を拒否します。元ファイルとOCR JSONは制限領域へ保持します。既存のOCRチェックポイント・復旧・資格確認済みプロファイルを再利用し、手書き・縦書き・任意帳票の未資格という制限も維持します。
 
-OCR plaintext and model interpretation are separate. File-derived responses, including later conversation in that session, remain local by default; Slack receives a completion notice and processing ID. The attachment staging guard allows up to 48,000 UTF-8 bytes of extracted text, but the current paired Server contract accepts at most 16,000 UTF-8 bytes of combined rendered input fields. Inputs exceeding the paired budget fail locally instead of silently truncating them. Large-document hierarchical summarization is not qualified by this implementation.
+OCR原文とモデルの解釈は分けます。ファイル由来の応答は同Sessionの後続会話も含め既定でローカル保存とし、Slackには完了通知と処理IDを返します。添付の準備処理は抽出本文を最大48,000 UTF-8バイト許容しますが、対応する現Server契約は描画済み入力フィールド合計で最大16,000 UTF-8バイトです。対応予算を超えた入力は黙って切り詰めずローカル失敗とします。大文書の階層的要約はこの実装では未資格です。
 
-## Priority, context and retention
+## 優先度・コンテキスト・保持期間
 
-Foreground Continue/Agent/Fresh Critic and important TaskMemory/Laya work take precedence. Slack OCR reuses the existing preemptible scheduler. Slack Qwen concurrency is one; background work checks Host activity and resource admission. The Server enforces priority at actual inference admission; a Client-only busy check is insufficient. The approved public normal/background/foreground probe confirmed interruption of owned background work and foreground completion. This is limited public-probe evidence, not a general throughput guarantee.
+前面のContinue/Agent/新しいCriticと重要なTaskMemory/Layaを優先します。Slack OCRは既存の中断可能スケジューラーを使います。Slack Qwenの同時実行は1件で、背景処理はHost活動とリソース受付を確認します。Serverは実推論の受付時に優先度を強制し、Clientだけのbusy確認では不十分です。承認済み公開の通常/背景/前面確認では、所有する背景処理の中断と前面処理の完了を確認しました。限定的な公開試験であり、一般的な処理能力の保証ではありません。
 
-Saluki uses the existing verified 128K/CPU6/parallel1/GPU0/KV-q8 engine and exclusive backend lease. Background summarization yields on important activity, releases its owned backend and preserves original history. A conservative UTF-8 upper bound triggers compression near the configurable 8K input budget; the Server enforces the paired rendered-input limit. Real restricted-history Saluki compression quality, latency and resource use are not yet qualified. Summary provenance binds to immutable completed history; summaries never replace originals.
+Salukiは既存の検証済み128K/CPU6/parallel1/GPU0/KV-q8エンジンと排他的バックエンドリースを使います。背景要約は重要処理へ譲り、所有するバックエンドを解放して原履歴を保持します。保守的なUTF-8上限見積りで設定可能な8K入力予算付近に圧縮を要求し、Server側でも対応する描画入力上限を強制します。実際の制限付き履歴のSaluki要約品質・遅延・リソース利用は未資格です。要約の出所は変更不可の完了履歴へ結び付け、原文を置換しません。
 
-Daily cleanup removes inactive sessions after 30 days. Storage-attributable pressure can remove oldest sessions older than seven days, stopping when pressure recovers. Active jobs/undelivered replies remain protected. CPU load alone never deletes sessions. Client cleanup also removes expired local proposal/review and inference-input payloads, retaining hash-only audit. Unresolved application receipts protect their session until reconciliation. Formally accepted restricted knowledge stays on ServerPC; the idempotent Server retirement endpoint removes unadopted run/proposal payloads while preserving formally accepted knowledge, Rule state and adoption audit. Public fixtures verify this contract; real paired retirement remains a deployment gate.
+日次整理は30日間非活動のSessionを削除します。保存領域に起因する圧迫時には7日超の古いSessionから削除し、圧迫解消で止めます。進行中Job・未配送返信は保護し、CPU負荷だけではSessionを削除しません。Clientは期限切れの提案/レビュー・推論入力も削除し、ハッシュだけの監査を残します。未解決の適用記録は照合完了までSessionを保護します。正式採用済み制限付き知識はServerPCに保持します。冪等なServer終了処理は未採用の実行・提案本文を削除し、正式知識・Rule状態・採用監査を残します。公開fixtureで契約を確認していますが、実両端の終了処理は配備確認条件です。
 
-## Human approval over LAN HTTPS
+## LAN HTTPSでの人間承認
 
-ClientPC Windows Host is the authority. Use a dedicated LAN HTTPS URL ending in `/slack/approvals` directly; do not depend on an HTTP redirect/menu for trust. The existing ServerPC chat can link to the registered URL but is not an approval authority.
+権限の正本はClientPC Windows Hostです。信頼する専用LAN HTTPS URLの`/slack/approvals`へ直接アクセスし、HTTPリダイレクトやメニューに信頼を依存させません。既存ServerPC Chatは登録URLへリンクできますが承認主体ではありません。
 
-Use a trusted private-CA server certificate with the actual LAN DNS/IP SAN. Devices need to trust the server CA; they no longer need administrator client certificates. Never bypass certificate warnings. Each device must be on the configured private subnet; actual reachability and mobile usability need physical verification. No Internet/VPN/port-forwarding endpoint is installed. Use `tools/slack/Set-ApprovalPassword.ps1` locally to prepare a credential file outside Git and the matching web configuration. The script requires the known old configuration hash and preserves existing files.
+実際のLAN DNS/IP SANを持つ、信頼済みの専用CAサーバー証明書を使います。端末はサーバーCAを信頼する必要がありますが、管理者クライアント証明書は不要です。証明書警告を無視してはいけません。各端末は設定したプライベートサブネット内に置き、実到達性や携帯での使いやすさは実機確認が必要です。Internet/VPN/ポート転送の入口は導入しません。ローカルの`tools/slack/Set-ApprovalPassword.ps1`でGit外に認証ファイルと対応Web設定を準備します。既知の旧設定ハッシュを要求し、既存ファイルを保護します。
 
-The approval listener requires HTTPS and administrator password login. The site-selected policy permits 4–256 characters, stores only a random-salted PBKDF2-SHA256 hash (600,000 iterations), and has no failed-attempt lockout. The Secure/HttpOnly/SameSite=Strict login cookie expires after one hour; logout, password rotation or receiver restart also ends the session. Same-origin CSRF, proposal content hash, expiration and replay checks remain mandatory. Untrusted proposal text is rendered as text. Server logs omit passwords, request bodies, certificates and tokens. Host approval is distinct from formal application; an `approved` item is not an `applied` item. Approval atomically reserves an exact canonical request, bound to the existing internal Host mTLS certificate, administrator, proposal/review hashes, target/base/new hashes, nonce and five-minute expiration. A separate worker dispatches it once. Ambiguous responses are reconciled through read-only Server status; unknown/interrupted results remain HOLD and are never replayed. Accepted items remain in restricted storage and are not ordinary SecondBrain knowledge.
+承認待受にはHTTPSと管理者パスワードログインが必要です。サイト選択方針は4～256文字を許容し、ランダムsalt付きPBKDF2-SHA256（600,000回）のハッシュだけを保存し、失敗回数によるロックは設けません。Secure/HttpOnly/SameSite=StrictのCookieは1時間で期限切れとなり、ログアウト・パスワード変更・受信Host再起動でも終了します。同一originのCSRF、提案内容ハッシュ、期限、再利用防止の確認は必須です。信頼しない提案本文はテキストとして描画し、ログへパスワード・本文・証明書・トークンを残しません。Host承認と正式適用は別で、`approved`は`applied`ではありません。承認は正確なCanonical要求を原子的に予約し、既存Host mTLS証明書・管理者・提案/レビュー/対象/基準/新版ハッシュ・nonce・5分期限へ結び付けます。別workerが1回だけ送信します。曖昧応答はServerの読み取り状態で照合し、不明・中断結果はHOLDのまま再実行しません。採用済み項目も制限付き保存領域に残し、通常SecondBrain知識にはしません。
 
-The optional user-session notification watcher displays only a generic pending notice. Run it in the logged-in Windows session, not session 0. The approval list remains authoritative when a notification is missed.
+任意のユーザーセッション通知監視は一般的な保留通知だけを表示します。session 0ではなく、ログイン中Windowsセッションで動かします。通知を見逃しても承認一覧が正本です。
 
-## Rollback
+## 復元
 
-Do not change model/auth settings. Disable the Slack feature and stop only its owned process using the normal service/task lifecycle. Preserve its SQLite/outbox and unknown application receipts. Return the optional Client/Server entrypoints to their prior binaries from the exact deployment receipt. Do not replay unknown sends/applies or restore the ordinary canonical database. PRs are not auto-merged.
+モデル・認証設定は変更しません。Slack機能を無効化し、通常のサービス/タスク手順でその所有プロセスだけを止めます。SQLite・返信キュー・不明な適用記録を保持し、正確な配備記録の旧バイナリへ任意Client/Server入口を戻します。不明な送信・適用の再実行や通常Canonical DBの復元はしません。PRは自動マージしません。
 
-## Official references
+## 公式参照
 
-- [Slack Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/)
-- [Slack app mentions](https://docs.slack.dev/reference/events/app_mention/)
-- [Slack message posting and rate limits](https://docs.slack.dev/reference/methods/chat.postMessage/)
-- [Slack private file authentication](https://docs.slack.dev/reference/objects/file-object/)
-- [ASP.NET certificate authentication](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/certauth?view=aspnetcore-10.0)
+- [SlackのSocket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/)
+- [SlackのAppメンション](https://docs.slack.dev/reference/events/app_mention/)
+- [Slack投稿とレート制限](https://docs.slack.dev/reference/methods/chat.postMessage/)
+- [Slack非公開ファイルの認証](https://docs.slack.dev/reference/objects/file-object/)
+- [ASP.NETの証明書認証](https://learn.microsoft.com/en-us/aspnet/core/security/authentication/certauth?view=aspnetcore-10.0)
 
-## Candidate launch after qualification
+## 資格確認後の候補起動
 
-`localbrain slack verify --config <private-slack-config.json>` checks the current
-Bot identity and allowed channel without enabling intake, opening Socket Mode,
-posting messages, starting OCR or requesting inference. It also works while
-`enabled` is false and prints only a fixed status and zero activity counters.
-Channel and file metadata use Slack's documented GET transport; credentials
-remain in the Authorization header. Missing required channel safety flags fail
-closed.
+`localbrain slack verify --config <private-slack-config.json>`は、受付有効化・Socket Mode接続・投稿・OCR起動・推論要求なしに、現在のBot識別情報と許可チャンネルを確認します。`enabled`がfalseでも動作し、固定状態と活動件数0だけを出力します。チャンネル・ファイルのメタデータには公式GET通信を使い、認証情報はAuthorizationヘッダーだけへ入れます。必須のチャンネル安全フラグがなければ拒否します。
 
-The Client executable now requires both the .NET 10 runtime and ASP.NET Core 10 shared runtime (or a matching self-contained publish); verify them before deployment. Both are present on the development PC. The public templates contain no credentials. Keep both `enabled` and the Server's `human_apply_enabled` false until the deployment gates are satisfied. In a private, non-Git configuration directory, use the existing Host executable with:
+Client実行ファイルには.NET 10とASP.NET Core 10共有ランタイム、または対応する自己完結型発行物が必要です。配備前に確認してください。開発PCには両方あります。公開テンプレートに認証情報はありません。配備条件を満たすまで`enabled`とServerの`human_apply_enabled`をfalseにします。Git外の非公開設定ディレクトリで既存Hostを使います。
 
 ```powershell
 localbrain slack serve --config <private-slack-config.json> --web-config <private-approval-config.json>
 ```
 
-This single owner runs intake, reply outbox, processing, background maintenance, approval application and HTTPS. It does not replace or restart the existing Bridge/OCR service. The `host.lock` prevents a second Slack owner. The existing Bridge OCR scheduler must be running with its qualified configuration. The optional notification watcher runs separately in the interactive user's session. No Windows service, firewall opening, certificate enrollment or scheduled task is installed by this PR.
+この単一所有者が受付・返信キュー・処理・背景保守・承認適用・HTTPSを管理します。既存Bridge/OCRサービスを置換・再起動しません。`host.lock`で2つ目のSlack所有者を防ぎます。既存Bridge OCRスケジューラーは資格確認済み設定で稼働している必要があります。任意の通知監視はユーザー対話セッションで別実行します。このPRはWindowsサービス、ファイアウォール開放、証明書登録、予定タスクを導入しません。
 
-Use the actual configured Host owner and Host mTLS certificate fingerprint in the Server's private settings; public fixture identities are not production identities. The Server connection is restricted to private IPv4, existing HTTPS certificate validation, no proxy and no redirects. Ordinary Client requests do not instantiate this optional transport. Client HTTPS supports `/slack/approvals`; the original `/` also serves the same login/approval page.
+Server非公開設定では実設定のHost所有者とHost mTLS証明書指紋を使います。公開fixtureの識別情報は本番用ではありません。Server通信はprivate IPv4、既存HTTPS検証、プロキシなし、リダイレクトなしに制限します。通常Client要求はこの任意通信を生成しません。Client HTTPSは`/slack/approvals`に対応し、元の`/`も同じログイン・承認画面を返します。
 
-### Text file results
+### テキストのファイル返却
 
-`returnFileResults` is opt-in and defaults to false in public templates. With it enabled, a completed OCR job attaches a local Markdown reconstruction as `ocr-<job-id>.md` to its original configured channel/thread. Explicit transcription requests bypass Qwen interpretation. Analysis requests additionally receive `analysis-<job-id>.txt`. These files are returned only to the originating Slack thread; no Cloud AI or Cloud OCR is used. Slack itself receives the requested result attachment.
+`returnFileResults`は任意利用で、公開テンプレートでは既定falseです。有効時には完了OCRのMarkdown再現を`ocr-<job-id>.md`として元チャンネル・スレッドへ添付します。明示的な文字起こしはQwenの解釈を省略します。解析要求には追加で`analysis-<job-id>.txt`を返します。返却先は元のSlackスレッドだけで、Cloud AI/OCRは使いません。依頼された添付をSlack自体へ送信します。
 
-The durable file outbox freezes content and destination before obtaining a Slack upload ticket, uploading bytes, and completing the share. Known rate limits defer; ambiguous network/completion outcomes remain held without automatic resend. Pending/uncertain files protect their Session from retention cleanup. Private upload capabilities and text are never logged or published.
+永続ファイル送信キューは、Slackアップロードチケット取得・バイト列アップロード・共有確定の前に、内容と送信先を固定します。既知のレート制限は延期し、ネットワーク・完了結果が曖昧なら自動再送せず保持します。pending/uncertainファイルはSessionの保持期間整理から保護します。非公開のアップロード資格や本文をログ・公開物へ出しません。
 
-For an explicitly authorized, already completed job, `localbrain slack return-ocr-text --config <private-config> --job <job-id>` submits a local request to the standing single Host owner. It reuses saved OCR and does not rerun OCR or inference. Repeating the operator command observes the same request; a terminal sent file is not sent again. Local OCR results remain under the private OCR jobs directory and in the private Slack store.
+明示承認した既存完了ジョブでは、`localbrain slack return-ocr-text --config <private-config> --job <job-id>`で常駐する単一Hostへローカル要求を渡せます。保存OCRを再利用し、OCR・推論を再実行しません。同じ操作を繰り返すと既存要求を観測し、送信済み最終ファイルは再送しません。ローカルOCR結果は非公開OCRジョブ領域とSlack保存領域へ保持します。
 
-## Review and release status
+## レビューと公開状態
 
-See `SLACK_VALIDATION.md` for exact public test coverage and unqualified gates. Actual public Slack mention reception, acknowledgement and completion reply now pass on the approved installation. Client checks and normal regression, Server full public regression, limited independent SSE review, authenticated capabilities, public priority/completion probes and the local password-authenticated HTTPS checks are recorded in `SLACK_VALIDATION.md`. Real Slack file/OCR events, reconnect and reboot recovery, restricted Saluki compression, live knowledge/Rule application and retention, physical mobile usability and broader resource performance remain unqualified. The implemented scope is ready for review against main. Local activation remains a separate operator decision; merging does not change another installation. A failed local process never falls back to Cloud AI.
+正確な公開試験範囲と未資格条件は`SLACK_VALIDATION.md`を参照してください。承認済み環境で実公開メンション受付・ACK・完了返信が成功しました。Client確認と通常回帰、Server全公開回帰、限定的独立SSEレビュー、認証済みcapabilities、公開優先度・完了確認、ローカルのパスワード認証HTTPS確認を記録しています。実Slackファイル/OCR、再接続・再起動復旧、制限付きSaluki要約、実知識/Rule適用・保持期間、携帯実機、広範なリソース性能は未資格です。実装範囲はmainに対するレビュー可能状態ですが、有効化は別の運用判断で、マージしても別環境を変えません。ローカル障害時にCloud AIへ切り替えません。
 
-## Current operator qualification
+## 現環境の運用資格確認
 
-The App is installed and invited, concealed credentials were entered locally, and the approved single receiver is online. A new human-posted public mention produced one durable job, one acknowledgement and one completion reply with the expected marker. There was no uncertain delivery or duplicate job in that check. The earlier failed public event was retained and was not replayed.
+Appを導入・招待し、認証情報をローカルの隠し入力で設定し、承認済みの単一受信Hostがオンラインです。人間が新規投稿した公開メンションで、永続Job・受付・完了返信が各1件、期待マーカー一致を確認しました。その確認で不明配送・重複Jobはありません。先の失敗公開イベントは保持し、再実行していません。
 
-The Server stream parser now accepts valid role/finish/usage metadata while preserving malformed-frame, size, completion and cancellation checks. A bounded public restricted request completed successfully after the correction. This fixes the observed text-reply failure; it does not qualify arbitrary attachments or general model quality.
+Serverストリーム解析は妥当なrole/finish/usageメタデータを受理し、不正フレーム・サイズ・完了・取消の確認を維持します。修正後、上限付き公開の制限要求が成功しました。観測した文字返信不具合の修正であり、任意添付や一般モデル品質の保証ではありません。
 
-The approved Server installation enables opt-in local model startup for validated Host-authenticated chat. A bounded public stopped-to-ready-to-complete probe passed with one inference. Autonomous review, status and capabilities do not start the model; uncertain requests are not blindly retried. Public templates still default to disabled.
+承認済みServerは検証済みHost認証Chatに限り任意のローカルモデル自動起動を有効にします。公開の停止→準備完了→完了確認は推論1回で成功しました。自律レビュー・status・capabilitiesはモデルを起動せず、不明要求を無条件に再試行しません。公開テンプレートの既定は無効です。
 
-The approved installation also enables human-bound restricted knowledge and enumerated Slack-response Rule application. Candidates can accumulate without adoption. After password login, an administrator reviews the exact content and local review, then explicitly approves it; the authenticated Host binds the application to the proposal/review/target/base/new hashes, nonce and expiry. Actual Host capabilities report human application enabled while automatic adoption, ordinary SecondBrain adoption, external AI and cloud fallback remain false. The chat entry, HTTPS login page and unauthenticated denial were checked from ClientPC. No real private proposal was adopted or production Rule changed as a test; physical other-device approval remains unqualified.
+承認済み環境では、人間承認付き制限知識と列挙されたSlack応答Ruleの適用も有効です。候補は採用せず蓄積できます。パスワードログイン後、管理者が正確な内容とローカルレビューを確認して明示承認し、認証済みHostが提案/レビュー/対象/基準/新版ハッシュ・nonce・期限へ結び付けます。実Host capabilitiesは人間適用有効で、自動採用・通常SecondBrain採用・外部AI・Cloud代替はfalseです。ClientPCからChat入口・HTTPSログイン・未認証拒否を確認しました。試験で実非公開提案の採用や本番Rule変更はしておらず、他端末の実承認は未資格です。
 
-All site-specific task, firewall, certificate, credential and activation changes remain local operator records. They are not copied into Git. Public templates remain disabled and contain placeholders; private configuration, original messages, OCR results and generated answers are not publication artifacts.
+環境固有のタスク・ファイアウォール・証明書・認証・有効化変更はローカル運用記録に保持し、Gitへコピーしません。公開テンプレートは無効のプレースホルダーであり、非公開設定・原メッセージ・OCR結果・生成回答は公開成果物ではありません。
 
-An operator may use `slack retry-ocr-ticket --config <private-config> --job <job-id>` after correcting a known API rejection before upload. It only resets a held ticket with no remote file ID or upload URL and unchanged OCR bytes. It cannot reset uncertain uploads or completed/ambiguous shares.
+アップロード前の既知API拒否を修正した後は、運用者が`slack retry-ocr-ticket --config <private-config> --job <job-id>`を使えます。remote file ID・upload URLがなく、OCRバイト列が不変の保留チケットだけを戻します。不明なアップロード、完了済み・曖昧な共有は戻せません。
 
 ### Slackの既定の添付形式
 
@@ -138,12 +132,13 @@ HTMLは静的な安全形式です。モデルから来た任意のJavaScript・
 
 旧 `.txt`・`.md`・`.html` の配送済み・保留中・送信状態不明のファイル名、内容、送信先を保持します。既定形式の変更や再起動だけで旧ファイルを作り直したり再送したりしません。アップロード前に明確に拒否されたチケットだけは、既存の限定操作で元の形式・バイト列のまま回復できます。DBスキーマ、OCRモデル、認証、外部AI禁止、保存期間は変更しません。
 
-### Summary-wait recovery
+### 要約待ちからの復旧
 
-CPU admission now reuses a measurement over a 250ms window instead of interpreting zero-duration/single-tick samples as 100% load. RAM/commit and foreground leases are still checked on every call, and sample updates are synchronized. Sessions with accepted requests waiting for a summary precede optional knowledge-candidate extraction. The original request and original history are preserved.
+CPU受付は250ms窓の測定を再利用し、時間0・単一tickのサンプルを100%負荷と解釈しません。RAM/commitと前面リースは毎回確認し、サンプル更新を同期します。要約を待つ受理要求のSessionを、任意の知識候補抽出より優先します。元要求と原履歴は保持します。
 
-Summary attempts record only hashed session identity and fixed progress codes. One deduplicated progress message tells the original requester that local history summarization is underway. Its operation deadline is bounded at 900 seconds, including cold startup; foreground cancellation remains immediate. Native completion uses the existing token-count-dependent deadline instead of a fixed 120-second cutoff. No CPU/RAM limit, model context, credential or Cloud AI policy is relaxed.
-The compression threshold is a background-work hint, not a reply gate: a complete context inside the existing hard 16,000-byte contract is sent directly. Old unnecessary summary waiters are reconsidered by the single owning Host without changing input identity. True over-budget requests still wait for a bound summary. A running background summary yields when runnable user work appears.
+要約の試行はハッシュ化Session識別情報と固定進捗コードだけを記録します。重複しない進捗メッセージ1件で、ローカル履歴要約中と元の要求者へ知らせます。起動待ちを含む操作期限は900秒、前面処理による取消は即時です。ネイティブ完了には固定120秒でなく既存のトークン数依存期限を使い、CPU/RAM制限・モデルコンテキスト・認証・Cloud AI方針は緩めません。
+
+圧縮閾値は背景処理の目安であり返信の必須条件ではありません。完全なコンテキストが既存16,000バイト上限に収まれば直接送ります。単一Hostが不要だった旧要約待ちを入力識別情報を変えず再検討します。本当に超過する要求は結び付いた要約を待ち、実行中の背景要約は実行可能なユーザー作業が現れれば譲ります。
 
 ### Slack応答の期限（候補・切替前）
 
