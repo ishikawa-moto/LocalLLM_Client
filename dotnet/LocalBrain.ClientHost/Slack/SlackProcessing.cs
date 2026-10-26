@@ -35,7 +35,7 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
                 if(!store.BeginHeldProbe(plan,DateTimeOffset.UtcNow))throw new SlackDeferred();
                 using var probeDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);probeDeadline.CancelAfter(TimeSpan.FromSeconds(5));
                 try{
-                    var status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance}),probeDeadline.Token);
+                    var status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance},SlackOptions.Json),probeDeadline.Token);
                     store.ObserveHeldChat(plan,DecisionProtocol.Parse(status));
                 }catch(Exception e)when(e is HttpRequestException or IOException or OperationCanceledException){store.HeldProbeUnresolved(plan);throw new SlackDeferred();}
                 plan=store.ChatProgress(root,plan.Session,frozen,true);
@@ -46,7 +46,7 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
             }
             if(plan.State=="probing"&&plan.NextCheck<=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()){
                 string status;
-                try{status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance}),token);}
+                try{status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance},SlackOptions.Json),token);}
                 catch(Exception e)when(e is HttpRequestException or IOException){store.ChatProbeFailed(plan);throw new SlackDeferred();}
                 store.ObserveChat(plan,DecisionProtocol.Parse(status));
                 plan=store.ChatProgress(root,plan.Session,frozen,true);
@@ -70,7 +70,7 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         }
         if(response.Length>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");
         var json=JsonSerializer.Deserialize<JsonElement>(response);
-        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True){if(plan is not null)store.ChatDeferred(plan);throw new SlackDeferred();}
+        var state=json.GetProperty("status").GetString();if(state is "deferred" or "busy" && json.TryGetProperty("retry_safe",out var safe)&&safe.ValueKind==JsonValueKind.True){if(plan is not null)store.ChatDeferred(plan,json.TryGetProperty("reason",out var reason)&&reason.ValueKind==JsonValueKind.String?reason.GetString():null);throw new SlackDeferred();}
         if(state is "running" or "unresolved"){if(plan is not null){store.ChatAwaiting(root,"server_nonterminal");throw new SlackDeferred();}throw new SlackInterrupted();}
         if(state=="interrupted"){if(plan is not null){store.ChatAwaiting(root,"server_interrupted");throw new SlackDeferred();}throw new SlackInterrupted();}
         if(state=="complete"&&plan is not null)store.ChatCompleted(plan,response);

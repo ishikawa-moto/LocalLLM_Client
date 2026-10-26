@@ -1,0 +1,10 @@
+{
+  "schema": "localbrain.slack-admission.v1",
+  "reasons": [
+    "resource_limit_exceeded", "resource_probe_failed", "foreground_busy", "background_busy",
+    "base_starting", "base_services_unavailable", "base_start_failed", "model_starting",
+    "model_start_failed", "model_not_ready", "model_start_disabled", "activation_pending",
+    "inference_busy", "admission_unavailable"
+  ],
+  "restriction": {"origin": "slack", "dataClass": "slack_restricted", "externalAi": "deny", "cloudFallback": false}
+}
