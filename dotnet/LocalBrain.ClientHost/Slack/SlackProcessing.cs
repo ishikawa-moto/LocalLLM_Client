@@ -176,7 +176,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     internal async Task Run(CancellationToken token)
     {
         while(!token.IsCancellationRequested){
-            store.NotifyExhaustedHeldProbes(DateTimeOffset.UtcNow);
+            store.FinishUnrecoverableChats(DateTimeOffset.UtcNow);
             store.ResumeReadySummaryWaiters(options.CompressionThreshold);
             SlackResultReturnRequests.Step(options,store);
             foreach(var waiting in store.WaitingForOcr()){
