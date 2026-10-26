@@ -24,7 +24,7 @@ internal static class SlackOcrArtifacts {
   var b=new StringBuilder("<!doctype html><html lang=\"ja\"><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\"><title>OCR結果（要確認）</title><style>body{font-family:sans-serif;line-height:1.6;margin:2em}table{border-collapse:collapse;margin:1em 0}td,th{border:1px solid #666;padding:.4em}.number{text-align:right}.review{background:#fff2cc}</style><body><h1>OCR結果（未検証）</h1><p>罫線・セル対応と読み取りは要確認。先頭行は見出しとして表示します。推測は確定した文字ではありません。</p>");
   var attachment=0;
   foreach(var raw in results){using var d=JsonDocument.Parse(raw);b.Append("<h2>添付 ").Append(++attachment).Append("</h2>");
-   if(!d.RootElement.TryGetProperty("pages",out var pages)){b.Append("<p>").Append(H(S(d.RootElement,"text"))).Append("</p>");continue;}
+   if(!d.RootElement.TryGetProperty("pages",out var pages)||pages.ValueKind!=JsonValueKind.Array||pages.GetArrayLength()==0){b.Append("<p>").Append(H(S(d.RootElement,"text"))).Append("</p>");continue;}
    foreach(var page in pages.EnumerateArray()){
     b.Append("<h3>ページ ").Append(N(page,"page")+1).Append("</h3>");var mapped=new HashSet<(string,int,int)>();
     if(page.TryGetProperty("tables",out var tables))foreach(var table in tables.EnumerateArray()){

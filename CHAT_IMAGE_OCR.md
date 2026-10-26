@@ -6,6 +6,8 @@ The browser-facing Server UI and authenticated Gateway mailbox must be implement
 
 Images/PDFs use the existing OCR job store/scheduler, Japanese model, CPU2/704MiB, AppContainer, no-network worker and priority/checkpoint behavior. No model, new OCR engine, inbound port, certificate or Cloud AI is added. Default output is Markdown; table results also include canonical JSON. HTML/CSV are explicit formats. The same deterministic renderer is used as Slack. OCR-only work does not invoke Qwen; requested interpretation belongs to the Server's local-only Chat path.
 
+この段落の既定値はブラウザーChatの契約です。Slackの返却形式は別に、HTML優先・困難時Markdown、構造化JSONは明示依頼時だけへ変更しました。決定的なOCRレンダラーは共用し、今回ブラウザー側の設定・API既定値は変更しません。
+
 A separate, optional `control-plane/chat-ocr/config.json` has `enabled` and an absolute private non-Git `root`. No production file is created by this change. While absent or disabled the background task makes zero Gateway/OCR calls.
 
 ## Proposed wire contract

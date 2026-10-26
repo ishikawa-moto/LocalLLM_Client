@@ -117,7 +117,7 @@ internal sealed partial class SlackStore : IDisposable
         if(localResult.Length>64000)throw new InvalidDataException("SLACK_RESULT_SIZE");
         Execute("UPDATE jobs SET phase=$phase,result=$result WHERE id=$id;",tx,("$phase",success?"complete":"failed"),("$result",localResult),("$id",id));
         var s=GetSession(j.SessionId,tx);
-        if(success&&sensitive&&options.ReturnFileResults)QueueSuccessfulFileResults(j,localResult,tx);
+        if(success&&options.ReturnFileResults&&(sensitive||SlackReplyFormat.ExplicitDocument(j.Text)))QueueSuccessfulFileResults(j,localResult,tx);
         else{
             var text=success?(sensitive?$"<@{j.User}> 処理が完了しました。結果はローカルに保存しました。処理ID：{id}":$"<@{j.User}> "+SafeText(localResult)):$"<@{j.User}> 処理を完了できませんでした。処理ID：{id}。管理者に確認してください。";
             QueueReply(id+"-completed",id,s.Channel,s.Thread,text,"completed",tx);
