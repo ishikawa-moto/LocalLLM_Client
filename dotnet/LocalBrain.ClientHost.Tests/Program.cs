@@ -16,7 +16,9 @@ if(args.Length==1&&args[0]=="--slack-summary-admission-proof"){await SlackSummar
 if(args.Length==0){await SlackSummaryAdmissionTests.RunAsync();await SlackDeadlineTests.RunAsync();await SlackPriorityYieldTests.RunAsync();}
 if(args.Length is 1 or 2&&args[0]=="--slack-markdown-proof"){await SlackMarkdownTests.RunAsync(args.Length==2?args[1]:null);return;}
 if(args.Length==0)await SlackMarkdownTests.RunAsync();
-if(args.Length==1&&args[0]=="--slack-file-proof"){await SlackFileTests.RunAsync();await SlackArtifactDeliveryTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-file-proof"){await SlackFileTests.RunAsync();await SlackArtifactDeliveryTests.RunAsync();await SlackReplyFormatTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-format-proof"){await SlackReplyFormatTests.RunAsync();return;}
+if(args.Length==0)await SlackReplyFormatTests.RunAsync();
 if(args.Length==0)await SlackArtifactDeliveryTests.RunAsync();
 if(args.Length==1&&args[0]=="--slack-adoption-proof"){await SlackAdoptionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-proof"){await SlackTests.RunAsync();return;}

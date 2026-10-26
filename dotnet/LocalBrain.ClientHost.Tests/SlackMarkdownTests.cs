@@ -47,13 +47,9 @@ internal static class SlackMarkdownTests
             store.SaveAttachment(job,"FPUBLIC",".png",[1,2,3]);store.SaveOcrResult(job,"FPUBLIC",evidence);
             store.Finish(job,"{\"output_kind\":\"ocr_text\"}",true,true);
             var file=store.ClaimResultFile(now)!;
-            Check(file.Filename=="ocr-"+job+".md"&&Encoding.UTF8.GetString(file.Bytes)==md,"structured result delivered as exact default Markdown bytes");
+            Check(file.Filename=="ocr-"+job+".md"&&Encoding.UTF8.GetString(file.Bytes)==md,"explicit Markdown delivered as exact retained evidence projection");
             store.HoldResultFile(file,true);
-            var structured=store.ClaimResultFile(now)!;
-            Check(structured.Filename=="ocr-json-"+job+".json"&&structured.Channel==file.Channel&&structured.Thread==file.Thread,"new table JSON artifact bound to original destination");
-            store.AdvanceResultFile(structured,"upload","FJSONPUBLIC","https://files.slack.com/upload/v1/PUBLIC");
-            store.AdvanceResultFile(store.ClaimResultFile(now)!,"complete");
-            store.AdvanceResultFile(store.ClaimResultFile(now)!,"sent");
+            Check(store.ClaimResultFile(now) is null,"table does not automatically add JSON");
             store.QueueSavedOcrText(job);
             Check(store.ClaimResultFile(now) is null,"uncertain Markdown never requeued");
         }

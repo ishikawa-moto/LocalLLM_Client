@@ -16,7 +16,7 @@ internal static class SlackFileTests
         var raw=string.Concat(Enumerable.Repeat("PUBLIC 文字起こし\n",5000));
         var sequence=0;string Prepare(string label){
             var ts=now.ToUnixTimeSeconds()+"."+(++sequence).ToString("D6");
-            var m=new SlackMention("EV-"+label,"TTEST","CTEST","UALICE",ts,ts,"<@UBOT> 添付画像の文字をテキストで返してください。",["FPUBLIC"],now);
+            var m=new SlackMention("EV-"+label,"TTEST","CTEST","UALICE",ts,ts,"<@UBOT> 添付画像の文字をMarkdown形式のテキストで返してください。",["FPUBLIC"],now);
             var id=store.Accept(m,now.AddMinutes(-1),now).JobId!;
             while(store.ClaimReply(now) is{} ack)store.ReplySent(ack.Id,now.ToUnixTimeSeconds()+".000002");
             Check(store.ClaimNext()?.Id==id,"single accepted job");
@@ -29,7 +29,7 @@ internal static class SlackFileTests
         Check(SlackResultText.OcrOnly(store.GetJob(job).Text)&&!SlackResultText.OcrOnly("添付資料の要点を要約してください"),"transcription distinguished from interpretation");
         var file=store.ClaimResultFile(now)!;
         Check(Encoding.UTF8.GetString(file.Bytes)==markdown&&file.Bytes.Length>48000,"long raw UTF8 transcription untruncated");
-        Check(file.Channel=="CTEST"&&file.Thread==now.ToUnixTimeSeconds()+".000001"&&file.Filename=="ocr-"+job+".md","original channel thread and default markdown binding");
+        Check(file.Channel=="CTEST"&&file.Thread==now.ToUnixTimeSeconds()+".000001"&&file.Filename=="ocr-"+job+".md","original channel thread and explicit markdown binding");
         store.RetryResultFile(file,now.AddSeconds(-1));
         var calls=0;using var api=new SlackApi(new Handler(async request=>{
             calls++;var url=request.RequestUri!;

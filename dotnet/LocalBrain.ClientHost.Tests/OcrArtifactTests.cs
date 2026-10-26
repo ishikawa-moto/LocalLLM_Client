@@ -21,7 +21,7 @@ internal static class OcrArtifactTests {
    var now=DateTimeOffset.UtcNow;var ts=now.ToUnixTimeSeconds()+".000001";var job=store.Accept(new("EV-ARTIFACT","TTEST","CTEST","UALICE",ts,ts,"文字起こしを HTML CSV JSON で返してください",["FPUBLIC"],now),now.AddSeconds(-1),now).JobId!;
    while(store.ClaimReply(now) is {} ack)store.ReplySent(ack.Id,ts);store.ClaimNext();store.SaveAttachment(job,"FPUBLIC",".png",[1,2,3]);store.SaveOcrResult(job,"FPUBLIC",raw);store.Finish(job,"{\"output_kind\":\"ocr_text\"}",true,true);
    var formats=new HashSet<string>();while(store.ClaimResultFile(now) is {} file){Check(file.Channel=="CTEST"&&file.Thread==ts,"each artifact bound to exact original destination");formats.Add(Path.GetExtension(file.Filename));store.HoldResultFile(file,false,"public_fixture_hold");}
-   Check(formats.SetEquals(new[]{".md",".json",".html",".csv"}),"requested formats queued once");store.QueueSavedOcrText(job);Check(store.ClaimResultFile(now) is null,"held files not recreated");
+   Check(formats.SetEquals(new[]{".json",".html",".csv"}),"HTML primary and explicit JSON/CSV queued once; no implicit MD");store.QueueSavedOcrText(job);Check(store.ClaimResultFile(now) is null,"held files not recreated");
   }
   Console.WriteLine(JsonSerializer.Serialize(new{ocr_artifact_checks=checks,status="PASS",real_slack=false,private_data=false}));
  }

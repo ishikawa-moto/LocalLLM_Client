@@ -126,13 +126,17 @@ All site-specific task, firewall, certificate, credential and activation changes
 
 An operator may use `slack retry-ocr-ticket --config <private-config> --job <job-id>` after correcting a known API rejection before upload. It only resets a held ticket with no remote file ID or upload URL and unchanged OCR bytes. It cannot reset uncertain uploads or completed/ambiguous shares.
 
-### Default OCR Markdown attachments
+### Slackの既定の添付形式
 
-New image/PDF results are attached as UTF-8 Markdown. Page/attachment boundaries, detected ruled-table cells and estimated spatial reading order are retained. Synthetic column labels show position, not inferred headers. Standard Markdown cannot merge cells: content is anchored at the top-left and the row/column span is noted. Text with no usable geometry falls back to escaped line text. Original page images, colors, fonts and exact document layout are not recreated.
+画像・PDFのOCRと、そのスレッド内で続けて依頼した解析結果は、HTMLを優先して添付します。HTMLとして安全に構成できない場合やHTMLが添付サイズ上限を超える場合は、Markdownへ切り替えた旨を元スレッドへ通知します。利用者がMarkdownを明示した場合は、その指定を優先します。HTMLとMarkdownを既定で両方送ることはありません。
 
-Uncertain regions remain marked. A retained local OCR hypothesis for an unreadable span is included with `[推測]`; without a usable hypothesis `[判読不能]` remains. No model is invoked to invent missing text or layout. General unruled/complex/handwritten layout remains unqualified. Document markup is escaped so OCR content cannot activate HTML or remote image links. Output has the existing 1 MiB attachment limit and never silently truncates.
+構造化JSONは「JSON形式も添付してください」などの明示依頼がある場合だけ追加します。表が検出されただけではJSONを追加しません。「JSONは不要」「JSONではなくHTML」も識別します。CSVも表データと明示依頼がある場合だけ追加します。「HTMLで」「HTML形式で」のように形式名の後ろへ日本語が続く依頼を認識します。
 
-Frozen legacy `.txt` uploads keep their filename, bytes and delivery state. A default-format change never resends already-sent or uncertain uploads. Known rejected pre-upload tickets remain recoverable under their original format. Analysis attachments remain separate `.txt` files. No DB schema, OCR model, credential, Cloud AI or storage-policy change is required.
+OCRのHTMLは保存済みの構造化結果から生成し、表・結合セル・数字の配置と要確認情報を保持します。追加依頼でモデルがHTMLを返した場合も、実際の `.html` 文書として保存します。形式指定のために新しい画像を添付し直す必要はありません。追加JSON/CSVの参照元は同じSessionに保存されたOCR結果だけです。通常の文字だけの会話は、HTML/Markdownを明示しない限りSlack本文の返信を維持します。
+
+HTMLは静的な安全形式です。モデルから来た任意のJavaScript・外部リソース・CSS・URL属性は実行用として引き継がず、Hostの固定スタイルとCSPを使います。解釈できないHTMLは本文を失わない安全なMarkdownへ切り替えます。OCRの推測候補は `[推測]`、候補がない判読不能箇所は `[判読不能]` を保持し、形式を変えるために文字や表を推測し直しません。各ファイルの既存1MiB上限は維持し、切詰めません。Markdownも上限を超える場合は分割依頼を案内します。
+
+旧 `.txt`・`.md`・`.html` の配送済み・保留中・送信状態不明のファイル名、内容、送信先を保持します。既定形式の変更や再起動だけで旧ファイルを作り直したり再送したりしません。アップロード前に明確に拒否されたチケットだけは、既存の限定操作で元の形式・バイト列のまま回復できます。DBスキーマ、OCRモデル、認証、外部AI禁止、保存期間は変更しません。
 
 ### Summary-wait recovery
 
@@ -149,7 +153,7 @@ The compression threshold is a background-work hint, not a reply gate: a complet
 
 新しい推論だけを `inference_progress` へ登録し、論理Jobと最大3回のAttemptを区別します。通信断やHost再起動後は認証済みstatusとrequest hashを照合し、終了・単一slot待機・不変入力を確認する新Server契約がある場合だけ再開します。旧凍結要求や状態不明は自動再送しません。照会失敗は30秒間隔・20回までで保留し、保留通知は一度だけ記録します。
 
-表の既定返却はMarkdownと構造化JSONです。HTML・CSVは依頼に形式名がある場合に追加します。各ファイルは1MiB上限で、構造化ファイルだけが上限を超えた場合もMarkdownを維持し、分割依頼の案内を返します。旧配送のファイル名・内容・送信先・uncertain状態は変更しません。
+Slackの既定返却はHTML優先・困難時Markdownです。構造化JSON/CSVは明示依頼がある場合だけ追加します。詳細は「Slackの既定の添付形式」を参照してください。旧配送のファイル名・内容・送信先・uncertain状態は変更しません。
 
 `allowSharedThreads` の既定値は `true` で現行の共有スレッド動作を維持します。`false` は最初の依頼者だけが同じSessionを継続できる候補です。今回の指示書と従来の共有指定が異なるため、本番設定の変更は別途決定・承認が必要です。
 

@@ -62,7 +62,7 @@ internal sealed class SlackApi : IDisposable
         return response.GetProperty("ts").GetString()!;
     }
     internal static bool ValidResultUploadArgument(string filename,int length)=>length is >=1 and <=1024*1024 &&
-        System.Text.RegularExpressions.Regex.IsMatch(filename,@"\A(?:ocr-[a-f0-9]{32}\.(?:txt|md)|analysis-[a-f0-9]{32}\.txt|ocr-json-[a-f0-9]{32}\.json|ocr-html-[a-f0-9]{32}\.html|ocr-csv-[a-f0-9]{32}\.csv)\z");
+        System.Text.RegularExpressions.Regex.IsMatch(filename,@"\A(?:ocr-[a-f0-9]{32}\.(?:txt|md)|analysis-[a-f0-9]{32}\.(?:txt|md|html)|ocr-json-[a-f0-9]{32}\.json|ocr-html-[a-f0-9]{32}\.html|ocr-csv-[a-f0-9]{32}\.csv)\z");
     internal async Task<(string Id,string Url)> ResultUploadTicket(string filename,int length,CancellationToken token)
     {
         if(!ValidResultUploadArgument(filename,length))throw new InvalidDataException("SLACK_RESULT_UPLOAD_ARGUMENT");

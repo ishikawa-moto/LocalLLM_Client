@@ -13,7 +13,7 @@ internal static class SlackArtifactDeliveryTests
         int checks=0;void Check(bool value,string name){if(!value)throw new Exception("SLACK_ARTIFACT_DELIVERY: "+name);checks++;}
         var id=new string('a',32);var calls=0;
         using(var api=new SlackApi(new Handler(_=>{calls++;return Task.FromResult(Json("{\"ok\":true,\"file_id\":\"FPUBLIC\",\"upload_url\":\"https://files.slack.com/upload/v1/PUBLIC\"}"));}),"xapp-PUBLIC","xoxb-PUBLIC")){
-            foreach(var filename in new[]{"ocr-"+id+".txt","ocr-"+id+".md","analysis-"+id+".txt","ocr-json-"+id+".json","ocr-html-"+id+".html","ocr-csv-"+id+".csv"}){
+            foreach(var filename in new[]{"ocr-"+id+".txt","ocr-"+id+".md","analysis-"+id+".txt","analysis-"+id+".md","analysis-"+id+".html","ocr-json-"+id+".json","ocr-html-"+id+".html","ocr-csv-"+id+".csv"}){
                 var before=calls;await api.ResultUploadTicket(filename,12,CancellationToken.None);Check(calls==before+1,"supported filename reaches ticket once: "+filename);
             }
             foreach(var filename in new[]{"ocr-"+id+".html","ocr-json-"+id+".md","ocr-html-"+id+".json","ocr-csv-"+id+".exe","../ocr-"+id+".md","ocr-"+id+".md\n","ocr-"+id.ToUpperInvariant()+".md","ocr-"+id+".MD"}){
@@ -42,10 +42,10 @@ internal static class SlackArtifactDeliveryTests
             completions++;return Json("{\"ok\":true,\"files\":[{\"id\":\"FPUBLIC"+completions+"\"}]}");
         }),"xapp-PUBLIC","xoxb-PUBLIC");
         for(var i=0;i<16;i++)await SlackFileDelivery.Step(store,delivery,CancellationToken.None);
-        Check(tickets==4&&uploads==4&&completions==4,"MD JSON HTML CSV each completes once");
-        Check(names.Select(Path.GetExtension).ToHashSet().SetEquals(new[]{".md",".json",".html",".csv"}),"requested artifact formats delivered");
+        Check(tickets==3&&uploads==3&&completions==3,"HTML JSON CSV each completes once; MD is not an implicit extra");
+        Check(names.Select(Path.GetExtension).ToHashSet().SetEquals(new[]{".json",".html",".csv"}),"requested artifact formats delivered");
         store.Recover();store.QueueSavedOcrText(job);for(var i=0;i<4;i++)await SlackFileDelivery.Step(store,delivery,CancellationToken.None);
-        Check(tickets==4&&uploads==4&&completions==4&&store.ClaimResultFile(DateTimeOffset.UtcNow) is null,"restart and repeated return do not resend completed artifacts");
+        Check(tickets==3&&uploads==3&&completions==3&&store.ClaimResultFile(DateTimeOffset.UtcNow) is null,"restart and repeated return do not resend completed artifacts");
         Console.WriteLine(JsonSerializer.Serialize(new{slack_artifact_delivery_checks=checks,status="PASS",real_slack=false,private_data=false}));
     }
 }
