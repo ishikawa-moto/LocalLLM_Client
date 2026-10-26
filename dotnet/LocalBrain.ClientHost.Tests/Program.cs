@@ -7,8 +7,8 @@ if(args.Length==4&&args[0]=="--chat-ocr-interop"){await ChatOcrInteropTests.RunA
 if(args.Length==1&&args[0]=="--chat-ocr-proof"){await ChatOcrTests.RunAsync();return;}
 if(args.Length==0)await ChatOcrTests.RunAsync();
 if(args.Length==5&&args[0]=="--ocr-bounded-case"){await OcrBoundedTests.RunAsync(args[1],args[2],args[3],args[4]);return;}
-if(args.Length==1&&args[0]=="--slack-recovery-proof"){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();return;}
-if(args.Length==0){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();}
+if(args.Length==1&&args[0]=="--slack-recovery-proof"){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();await SlackHeldRecoveryTests.RunAsync();return;}
+if(args.Length==0){SlackRecoveryTests.Run();await SlackExecutionContractTests.RunAsync();await SlackHeldRecoveryTests.RunAsync();}
 if(args.Length is 1 or 3&&args[0]=="--ocr-artifacts-proof"){OcrArtifactTests.Run(args.Length==3?args[1]:null,args.Length==3?args[2]:null);return;}
 if(args.Length==0)OcrArtifactTests.Run();
 if(args.Length==4&&args[0]=="--ocr-bounded-proof"){await OcrBoundedTests.RunAsync(args[1],args[2],args[3]);return;}
