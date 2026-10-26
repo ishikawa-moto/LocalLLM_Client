@@ -1,21 +1,21 @@
-# Client release management
+# Clientのリリース管理
 
-`git pull` updates source. It does not replace a running .NET process or its published DLL.
+`git pull`で更新されるのはソースコードです。実行中の.NETプロセスや、ビルド・配置済みのDLLは置き換わりません。
 
-1. Review and merge the tested source; fast-forward the primary checkout to the same main commit.
-2. Run `tools/Build-ReproducibleClient.ps1` with the pinned SDK and a new external output directory. Restore is a separate explicit setup step.
-3. Run `tools/deployment/Stage-ClientRelease.ps1 -PublishDirectory <absolute publish directory> -ReleaseDirectory <new absolute release directory>`.
-4. Verify the build manifest, private external configuration, consumer paths, idle state, and DB logical schema/rows before activation. Stop intake before checking for queued work. Do not start another instance to test a locked production DB.
-5. With deployment authorization, migrate only necessary additive schema changes and update Bridge, Slack Host and both Continue MCP consumers to the same release and external client configuration. Keep model, token, certificate and data paths separate from immutable product files. Record launcher/config hashes, source commit and process path/birth identity in an installation receipt.
-6. Start the owned tasks, verify live capabilities and exact DLL identity, and qualify the real authenticated Gateway and public Slack behavior separately from stub tests. A Continue window may need an official Reload Window to release the previous MCP process.
-7. Remove obsolete releases, worktrees and temporary outputs only after no launch configuration, active process or required dependency refers to them. Keep the current source, required models/dependencies/authentication and a small final installation/validation receipt. Do not treat a pull or successful process launch as a completed deployment.
+1. テスト済みのソースをレビューしてマージし、主要な作業用リポジトリを同じmainコミットへfast-forwardで更新します。
+2. 指定されたバージョンのSDKを使用し、リポジトリ外の新しい出力先を指定して`tools/Build-ReproducibleClient.ps1`を実行します。依存関係の復元（restore）は、別の明示的な初期設定工程として行います。
+3. `tools/deployment/Stage-ClientRelease.ps1 -PublishDirectory <発行先の絶対パス> -ReleaseDirectory <新しいリリース先の絶対パス>`を実行します。
+4. 本番切替前に、ビルドマニフェスト、リポジトリ外に保管した非公開設定、各利用元の実行パス、処理がない状態、DBの論理スキーマと行データを確認します。待機中の処理を確認する前に、新規要求の受付を停止します。ロック中の本番DBを試験するために、別のインスタンスを起動してはいけません。
+5. 配備の承認を得たうえで、必要な追加型のスキーマ変更だけを適用し、Bridge、Slack Host、Continueの両MCP利用元が同じリリースとリポジトリ外のClient設定を参照するよう更新します。モデル、トークン、証明書、データの保存先は、変更しない製品ファイル群と分離します。起動スクリプトと設定のハッシュ、ソースコミット、プロセスの実行パスと起動時刻による識別情報を、インストール記録（receipt）へ保存します。
+6. 管理対象のタスクを起動し、実稼働APIが返す対応機能とDLLの正確な識別情報を確認します。認証付きの実Gatewayと公開データによるSlackの動作確認は、スタブ試験と分けて行います。旧MCPプロセスを解放するため、Continueを開いているVS Codeで公式の「Developer: Reload Window」操作が必要になる場合があります。
+7. 古いリリース、worktree、一時出力は、起動設定、実行中プロセス、必要な依存関係のいずれからも参照されていないことを確認してから削除します。現在のソース、必要なモデル・依存関係・認証情報と、最終的なインストール・検証の要点を記録した小さなreceiptを残します。pullの完了やプロセスの起動成功だけで、配備完了と判断してはいけません。
 
-Staging never activates code, modifies configuration or a database, or deletes previous releases. It rejects undeclared files, private client settings, path traversal and reparse points. Unknown deployment failures require inspection and forward repair; an older binary must not be automatically restored against a newer schema.
+ステージングは新しいリリースを配置する工程であり、コードの有効化、設定やDBの変更、旧リリースの削除は行いません。マニフェストに未記載のファイル、非公開のClient設定、パストラバーサル、再解析ポイントは拒否します。原因が不明な配備失敗では、現状を調査して前進修正します。新しいスキーマに対して古いバイナリを自動復元してはいけません。
 
-The tracked Start-ClientHost.ps1 and Run-SlackHost.ps1 replace installation-specific launcher copies. Their installation receipt binds the release manifest and external private configuration. The latter preserves the existing exclusive launcher lease, PID/birth receipt and uncertain-launch hold. It needs client_config, client_config_sha256 and ocr_config paths in the private receiver receipt; no token, certificate or private source belongs in Git.
+Gitで管理する`Start-ClientHost.ps1`と`Run-SlackHost.ps1`は、インストール環境ごとに作成していた起動スクリプトの代わりに使用します。インストール記録によって、リリースマニフェストとリポジトリ外の非公開設定を結び付けます。後者は、既存の起動処理の排他ロック、PID・起動時刻の記録、起動結果が不明な場合の保留を維持します。非公開の受信側receiptには、`client_config`、`client_config_sha256`、`ocr_config`の各設定項目が必要です。トークン、証明書、私有のソースデータをGitへ保存してはいけません。
 
-The OCR operator resolves its default Host from the installed receipt rather than a dated runtime path. Operator scripts and the .NET core have separate source identities: a tools-only main update does not require replacing an unchanged core DLL. Record the core build commit and the operator commit/hashes separately.
+OCRの操作スクリプトは、日付付きの実行環境パスを固定せず、インストール記録から既定のHostを特定します。操作スクリプトと.NETコアは、ソースの識別情報を別々に管理します。mainの変更がtoolsだけであれば、内容の変わっていないコアDLLを置き換える必要はありません。コアのビルド元コミットと、操作スクリプトのコミット・ハッシュを分けて記録します。
 
-The reproducible builder and installer bind both native confirmation scripts to their SHA256 metadata before inventorying the release. These files identify installed confirmation code; they do not authorize a task, replace a human click, or attest that a new script passed a desktop test. Staging carries both bindings in the build manifest. An existing mismatched binding stops installation for inspection. When repairing an already installed release, preserve the original build manifest and record the supplemental metadata hashes separately; copy a previous qualification only after proving that both script bytes are identical.
+再現可能ビルドとインストールの処理では、リリースのファイル一覧を作成する前に、両方のネイティブ確認スクリプトとSHA256メタデータを結び付けます。このメタデータが示すのは、インストールした確認コードの識別情報です。タスクの実行を許可したり、人間のクリックを代行したり、新しいスクリプトがデスクトップ試験に合格したことを証明したりするものではありません。ステージングでは、両方の対応情報をビルドマニフェストに含めます。既存の対応情報に不一致があれば、インストールを停止して調査します。インストール済みのリリースを修復する場合は、元のビルドマニフェストを保持し、補足メタデータのハッシュを別途記録します。過去の検証結果を引き継ぐのは、両スクリプトのバイト列が同一であることを確認した場合だけです。
 
-The manual SecondBrain adoption operator in tools/adoption resolves the same installed core release and its separately hash-bound SecondBrain role configuration (configuration_hashes.secondbrain). Install this small operator under the stable tools directory before retiring dated decision-approval runtimes. Its -Inspect mode verifies binding without opening an approval, contacting the Server, or writing knowledge. Normal execution still requires the Host's interactive human terminal approval and the exact bound request ID.
+`tools/adoption`のSecondBrain手動採用スクリプトは、同じインストール済みコアリリースと、別途ハッシュで結び付けたSecondBrain用設定（`configuration_hashes.secondbrain`）を参照します。日付付きの旧Decision承認用実行環境を廃止する前に、この小さな操作スクリプトを固定のtoolsディレクトリへ配置します。`-Inspect`は、承認画面を開かず、Serverへ接続せず、知識を書き込まずに対応情報を検証します。通常実行では引き続き、Hostの対話型端末での人間による承認と、対応情報に一致する正確なRequest IDが必要です。
