@@ -31,6 +31,19 @@ internal sealed class SlackLocalInference(GatewayClient gateway,SlackStore store
         if(route=="/v1/slack/chat"){
             plan=store.ChatProgress(root,supplied.GetProperty("session_id").GetString()!,frozen,existed);
             if(plan.State=="complete")return DecisionProtocol.Parse(plan.Result!);
+            if(plan.State=="held"){
+                if(!store.BeginHeldProbe(plan,DateTimeOffset.UtcNow))throw new SlackDeferred();
+                using var probeDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);probeDeadline.CancelAfter(TimeSpan.FromSeconds(5));
+                try{
+                    var status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance}),probeDeadline.Token);
+                    store.ObserveHeldChat(plan,DecisionProtocol.Parse(status));
+                }catch(Exception e)when(e is HttpRequestException or IOException or OperationCanceledException){store.HeldProbeUnresolved(plan);throw new SlackDeferred();}
+                plan=store.ChatProgress(root,plan.Session,frozen,true);
+                if(plan.State=="complete")return DecisionProtocol.Parse(plan.Result!);
+                // A resumed priority yield still goes through the existing gated
+                // retry endpoint after its persisted delay; unknown never sends.
+                throw new SlackDeferred();
+            }
             if(plan.State=="probing"&&plan.NextCheck<=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()){
                 string status;
                 try{status=await gateway.SlackJsonAsync("/v1/slack/status",JsonSerializer.Serialize(new{operation="chat",request_id=plan.Request,session_id=plan.Session,request_hash=plan.Hash,restriction=SlackRestriction.Instance}),token);}
@@ -163,6 +176,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
     internal async Task Run(CancellationToken token)
     {
         while(!token.IsCancellationRequested){
+            store.FinishUnrecoverableChats(DateTimeOffset.UtcNow);
             store.ResumeReadySummaryWaiters(options.CompressionThreshold);
             SlackResultReturnRequests.Step(options,store);
             foreach(var waiting in store.WaitingForOcr()){

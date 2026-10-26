@@ -22,22 +22,22 @@ internal static class SlackRecoveryTests {
     using var body=JsonDocument.Parse(store.RetryBody(plan));var r=body.RootElement;Check(r.GetProperty("previous_request_id").GetString()==SlackStore.AttemptId(id,attempt-1)&&r.GetProperty("request").GetProperty("timeout_seconds").GetInt32()==120,"exact predecessor and frozen timeout");
     store.ChatAwaiting(id,"server_interrupted");
    }
-   plan=store.ChatProgress(id,session,frozen,true);store.ObserveChat(plan,JsonSerializer.SerializeToElement(new{state="interrupted",request_hash=plan.Hash,reason="explicit_cancel",recovery_contract="quiescent-attempt-v1"}));Check(store.ChatProgress(id,session,frozen,true).State=="held","three total attempts then hold");
+   plan=store.ChatProgress(id,session,frozen,true);store.ObserveChat(plan,JsonSerializer.SerializeToElement(new{state="interrupted",request_hash=plan.Hash,reason="explicit_cancel",recovery_contract="quiescent-attempt-v1"}));Check(store.ChatProgress(id,session,frozen,true).State=="abandoned","three total attempts then terminal failure");
    var legacy="PUBLIC_LEGACY_001";var old=Freeze(legacy);
    Check(store.ChatProgress(legacy,session,old,true).State=="ready","new freeze already has atomic unsent progress");
    using(var legacyDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+Path.Combine(root,"slack.db"))){legacyDb.Open();using var command=legacyDb.CreateCommand();command.CommandText="DELETE FROM inference_progress WHERE root_id=$id";command.Parameters.AddWithValue("$id",legacy);command.ExecuteNonQuery();}
    Check(store.ChatProgress(legacy,session,old,true).State=="legacy_hold","old frozen request never replayed");
-   var unknown="PUBLIC_UNKNOWN_001";var raw=Freeze(unknown);var u=store.ChatProgress(unknown,session,raw,false);store.MarkChatSending(u);for(var check=0;check<20;check++)store.ObserveChat(u,JsonSerializer.SerializeToElement(new{state="unknown",retry_safe=false}));Check(store.ChatProgress(unknown,session,raw,true).State=="held","unknown state never inferred safe");
+   var unknown="PUBLIC_UNKNOWN_001";var raw=Freeze(unknown);var u=store.ChatProgress(unknown,session,raw,false);store.MarkChatSending(u);for(var check=0;check<20;check++)store.ObserveChat(u,JsonSerializer.SerializeToElement(new{state="unknown",retry_safe=false}));Check(store.ChatProgress(unknown,session,raw,true).State=="abandoned","unknown state ends without being inferred safe");
    var recovered="PUBLIC_COMPLETE_001";var text=Freeze(recovered);var p=store.ChatProgress(recovered,session,text,false);store.MarkChatSending(p);store.ObserveChat(p,JsonSerializer.SerializeToElement(new{state="complete",request_hash=p.Hash,result=new{status="complete",text="PUBLIC recovered result"}}));Check(store.ChatProgress(recovered,session,text,true).Result!.Contains("PUBLIC recovered result"),"lost response recovered by exact status");
    var admissionId="PUBLIC_ADMISSION_001";var admissionRaw=Freeze(admissionId);var admission=store.ChatProgress(admissionId,session,admissionRaw,false);
-   for(var check=0;check<25;check++)store.ChatDeferred(admission);Check(store.ChatProgress(admissionId,session,admissionRaw,true).State=="held","admission retries are bounded without another generation");
+   for(var check=0;check<25;check++)store.ChatDeferred(admission);Check(store.ChatProgress(admissionId,session,admissionRaw,true).State=="abandoned","admission retries end without another generation");
    var own=Freeze(job);var waiting=store.ChatProgress(job,session,own,false);store.MarkChatSending(waiting);
    for(var check=0;check<25;check++)store.ObserveChat(waiting,JsonSerializer.SerializeToElement(new{state="unknown",retry_safe=false}));
-   var notices=0;while(store.ClaimReply(DateTimeOffset.UtcNow) is {} reply){if(reply.Kind=="progress")notices++;store.ReplySent(reply.Id,ts);}Check(notices==1,"one durable hold notification after bounded probes");
+   var notices=0;while(store.ClaimReply(DateTimeOffset.UtcNow) is {} reply){if(reply.Kind=="completed"&&reply.Text.Contains("後ほど再度お試しください"))notices++;store.ReplySent(reply.Id,ts);}Check(notices==1,"one terminal retry-later notification after unknown check budget");
    try{store.ChatCompleted(p,"{\"status\":\"complete\",\"text\":\"CHANGED\"}");throw new Exception("result overwrite accepted");}catch(InvalidDataException){checks++;}
    try{store.Defer(job,"priority_arbitrary_secret");throw new Exception("unfixed audit code accepted");}catch(InvalidDataException){checks++;}
   }
-  using(var reopened=new SlackStore(options)){Check(reopened.ChatProgress(id,session,"{}",true).State=="held","restart preserves held state and attempt count");}
+  using(var reopened=new SlackStore(options)){Check(reopened.ChatProgress(id,session,"{}",true).State=="abandoned","restart preserves terminal failure and attempt count");}
   using(var creator=new SlackStore(options with{Root=Path.Combine(root,"creator-only"),AllowSharedThreads=false})){
    var first=creator.Accept(new("OWNER-FIRST","TTEST","CTEST","UALICE",ts,ts,"PUBLIC",[],now),now.AddSeconds(-1),now);var owner=creator.GetSession(creator.GetJob(first.JobId!).SessionId);
    var second=creator.Accept(new("OWNER-SECOND","TTEST","CTEST","UBOB",ts,ts,"PUBLIC",[],now),now.AddSeconds(-1),now);
