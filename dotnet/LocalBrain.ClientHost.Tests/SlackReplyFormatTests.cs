@@ -14,7 +14,7 @@ internal static class SlackReplyFormatTests
         foreach(var request in new[]{"表を再現して","HTMLで返してください","JSONは不要です","JSON形式は不要です","JSONではなくHTMLで返して","JSONを添付しないで","JSONの添付は不要です","JSONについて説明して","JSONとは何ですか","No JSON, return HTML"})Check(!SlackReplyFormat.Requested(request,"json"),"no implicit/negated JSON: "+request);
         Check(SlackReplyFormat.Markdown("mdで返してください")&&SlackReplyFormat.Markdown("Markdown形式で返して")&&!SlackReplyFormat.Markdown("形式指定なし"),"explicit MD overrides default");
         Check(SlackResultText.OcrOnly("画像をHTMLで再現して")&&SlackResultText.OcrOnly("この表をHTML形式で返してください")&&!SlackResultText.OcrOnly("要点を分析してください"),"format-only OCR needs no interpretation");
-        Check(!SlackResultText.OcrOnly("この画像を分析してHTMLで返してください")&&!SlackResultText.OcrOnly("この表を比較してMarkdownで返してください"),"format request never suppresses explicitly requested analysis");
+        Check(!SlackResultText.OcrOnly("この画像を分析してHTMLで返してください")&&!SlackResultText.OcrOnly("この画像を解析してHTMLで返してください")&&!SlackResultText.OcrOnly("この表を比較してMarkdownで返してください"),"format request never suppresses explicitly requested analysis");
         var html=SlackAnalysisDocument.Html("```html\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>body{background:red}</style></head><body><table onclick=\"alert(1)\"><tr><th colspan=\"2\">財務 &amp; 表</th></tr><tr><td>売上</td><td align=\"right\" style=\"background:url(https://evil.invalid)\">1,234円</td></tr></table></body></html>\n```");
         Check(html.StartsWith("<!doctype html>")&&html.Contains("<table>")&&html.Contains("colspan=\"2\"")&&html.Contains("1,234円"),"fenced full HTML becomes real document with merged table");
         Check(!html.Contains("onclick")&&!html.Contains("evil.invalid")&&!html.Contains("background:red")&&html.Contains("Content-Security-Policy"),"only Host metadata CSS and safe attributes survive");
@@ -40,6 +40,16 @@ internal static class SlackReplyFormatTests
             Check(files.Count==1&&files[0].Filename=="ocr-html-"+first+".html"&&Encoding.UTF8.GetString(files[0].Bytes).Contains("<table>"),"default table OCR is HTML only; no MD or JSON by default");
             var firstThread=files[0].Thread;
             store.QueueSavedOcrText(first);store.Recover();Check(Drain().Count==0,"uncertain frozen HTML never gains MD or JSON on saved-result request/restart");
+            var analysis=Prepare("この画像を確認してください");store.Finish(analysis,"{\"interpretation\":\"<p>PUBLIC analysis only</p>\"}",true,true);files=Drain();
+            Check(files.Count==1&&files[0].Filename=="analysis-"+analysis+".html"&&Encoding.UTF8.GetString(files[0].Bytes).Contains("PUBLIC analysis only"),"image analysis defaults to its single analysis file without an OCR duplicate or JSON");
+            store.Recover();Check(Drain().Count==0,"restart does not add an OCR document to frozen analysis delivery");
+            var analysisMd=Prepare("この画像を解析してMarkdownで返してください");store.Finish(analysisMd,"{\"interpretation\":\"PUBLIC requested Markdown\"}",true,true);files=Drain();
+            Check(files.Count==1&&files[0].Filename=="analysis-"+analysisMd+".md"&&Encoding.UTF8.GetString(files[0].Bytes).Contains("PUBLIC requested Markdown"),"explicit Markdown analysis stays a single analysis deliverable");
+            var analysisFallback=Prepare("この画像を分析してください");store.Finish(analysisFallback,"{\"interpretation\":\"<table><tr><td>PUBLIC image analysis fallback\"}",true,true);files=Drain();
+            Check(files.Count==1&&files[0].Filename=="analysis-"+analysisFallback+".md"&&Encoding.UTF8.GetString(files[0].Bytes).Contains("PUBLIC image analysis fallback"),"unsupported analysis HTML returns only Markdown, never an implicit OCR file");
+            var analysisJson=Prepare("この画像を分析しJSON形式も添付してください");store.Finish(analysisJson,"{\"interpretation\":\"PUBLIC analysis with requested JSON\"}",true,true);files=Drain();
+            Check(files.Count==2&&files.Any(f=>f.Filename=="analysis-"+analysisJson+".html")&&files.Any(f=>f.Filename=="ocr-json-"+analysisJson+".json"),"explicit JSON remains available without an unwanted primary OCR document");
+            store.QueueSavedOcrText(analysis);files=Drain();Check(files.Count==1&&files[0].Filename=="ocr-"+analysis+".md","explicit saved-OCR operator request can still export evidence separately");
             var follow=Prepare("HTML形式で返してください",false,firstThread,"UBOB");store.Finish(follow,"```html\n<table><tr><td>PUBLIC follow-up</td></tr></table>\n```",true,true);files=Drain();
             Check(files.Count==1&&files[0].Filename=="analysis-"+follow+".html"&&files[0].Thread==firstThread&&files[0].Channel=="CTEST"&&Encoding.UTF8.GetString(files[0].Bytes).Contains("<td>PUBLIC follow-up</td>"),"second user image-free follow-up returns actual HTML into original shared thread");
             var json=Prepare("構造化JSON形式も添付してください",false,firstThread);store.Finish(json,"PUBLIC continued analysis",true,true);files=Drain();
