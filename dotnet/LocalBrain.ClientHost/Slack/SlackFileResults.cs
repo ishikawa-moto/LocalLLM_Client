@@ -12,7 +12,7 @@ internal static class SlackResultText
     internal static bool OcrOnly(string request){
         const RegexOptions flags=RegexOptions.IgnoreCase|RegexOptions.Singleline;
         if(Regex.IsMatch(request,@"文字起こし|文字.{0,30}テキスト|(?:OCR|読み取).{0,20}(?:テキスト|文字).{0,20}(?:返|出力|添付)",flags))return true;
-        return !Regex.IsMatch(request,@"分析|考察|要約|要点|比較|解釈|計算",flags)&&Regex.IsMatch(request,@"(?:表|画像).{0,25}(?:HTML|Markdown|md).{0,20}(?:返|出力|添付|再現)|(?:HTML|Markdown|md).{0,20}(?:再現|文字起こし)",flags);
+        return !Regex.IsMatch(request,@"分析|解析|考察|要約|要点|比較|解釈|計算",flags)&&Regex.IsMatch(request,@"(?:表|画像).{0,25}(?:HTML|Markdown|md).{0,20}(?:返|出力|添付|再現)|(?:HTML|Markdown|md).{0,20}(?:再現|文字起こし)",flags);
     }
     internal static byte[] Utf8(string value){var b=new UTF8Encoding(false,true).GetBytes(value);if(b.Length is <1 or >1024*1024)throw new InvalidDataException("SLACK_RESULT_FILE_SIZE");return b;}
 }
@@ -109,8 +109,11 @@ internal sealed partial class SlackStore
         string[] evidence=[];
         if(job.FileIds.Length>0){
             evidence=Evidence(job);
-            if(!FrozenOcrPrimary(job,tx))QueueDocument(job,true,()=>SlackOcrArtifacts.Html(evidence),()=>OcrText(job,tx,true),tx);
-            if(!SlackResultText.OcrOnly(job.Text)){
+            var ocrOnly=SlackResultText.OcrOnly(job.Text);
+            // Analysis is the default deliverable. Retain OCR evidence locally;
+            // attach its primary document only for an explicit transcription/layout request.
+            if(ocrOnly&&!FrozenOcrPrimary(job,tx))QueueDocument(job,true,()=>SlackOcrArtifacts.Html(evidence),()=>OcrText(job,tx,true),tx);
+            if(!ocrOnly){
                 using var value=JsonDocument.Parse(localResult);
                 var interpretation=value.RootElement.GetProperty("interpretation").GetString()??"";
                 if(!string.IsNullOrWhiteSpace(interpretation))QueueDocument(job,false,()=>SlackAnalysisDocument.Html(interpretation),()=>SlackAnalysisDocument.Markdown(interpretation),tx);
