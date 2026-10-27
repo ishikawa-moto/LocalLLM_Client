@@ -3,6 +3,7 @@ import base64
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -79,6 +80,38 @@ async def main():
             raise AssertionError("non-private socket directory was accepted")
         except ValueError:
             pass
+    with tempfile.TemporaryDirectory(prefix="localbrain-bridge-stop-") as name:
+        root = Path(name)
+        relay = root / "localbrain.exe"
+        pidfile = root / "relay.pid"
+        relay.write_text("#!/usr/bin/python3\nimport os,pathlib,sys,time\nsys.stdin.readline()\npathlib.Path(%r).write_text(str(os.getpid()))\ntime.sleep(30)\n" % str(pidfile))
+        relay.chmod(0o700)
+        path = root / "model.sock"
+        process = await asyncio.create_subprocess_exec(sys.executable, str(module_path), "--socket", str(path), "--relay", str(relay))
+        try:
+            for _ in range(200):
+                if path.exists(): break
+                if process.returncode is not None: raise AssertionError("bridge failed to start")
+                await asyncio.sleep(0.01)
+            reader, writer = await asyncio.open_unix_connection(path)
+            writer.write(json.dumps({"method":"POST", "path":"/v1/chat/completions", "contentType":"application/json", "bodyBase64":"e30="}).encode()+b"\n")
+            await writer.drain()
+            for _ in range(200):
+                if pidfile.exists(): break
+                await asyncio.sleep(0.01)
+            relay_pid = int(pidfile.read_text())
+            process.terminate()
+            assert await asyncio.wait_for(process.wait(), timeout=5) == 0
+            try: os.kill(relay_pid, 0)
+            except ProcessLookupError: pass
+            else: raise AssertionError("relay survived bridge shutdown")
+            assert not path.exists()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
     print("Model bridge route, framing and private-directory checks passed")
 
 

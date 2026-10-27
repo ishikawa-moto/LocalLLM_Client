@@ -12,6 +12,7 @@ import base64
 import binascii
 import json
 import os
+import signal
 import stat
 from pathlib import Path
 
@@ -141,15 +142,14 @@ async def serve(socket_path, relay):
     socket_identity = socket_path.lstat()
     try:
         os.chmod(socket_path, 0o600)
-        async with server:
-            await server.serve_forever()
+        await asyncio.Event().wait()
     finally:
         server.close()
-        await server.wait_closed()
         for task in list(clients):
             task.cancel()
         if clients:
             await asyncio.gather(*clients, return_exceptions=True)
+        await server.wait_closed()
         try:
             current = socket_path.lstat()
             if stat.S_ISSOCK(current.st_mode) and (current.st_dev, current.st_ino) == (socket_identity.st_dev, socket_identity.st_ino):
@@ -165,7 +165,18 @@ def main():
     args = parser.parse_args()
     if not args.socket.is_absolute():
         parser.error("socket path must be absolute")
-    asyncio.run(serve(args.socket, args.relay))
+    async def run():
+        loop = asyncio.get_running_loop()
+        task = asyncio.create_task(serve(args.socket, args.relay))
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
