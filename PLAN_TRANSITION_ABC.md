@@ -6,9 +6,11 @@
 
 当時のA/B/C計画は [EVALUATION_PLAN_ABC.md](EVALUATION_PLAN_ABC.md) です。ユーザー添付ファイルをバイト単位でコピーしたもので、SHA-256は `179B340635B5C046AFAE481250754C70972A0285DAD9D69C7DDD8838341AF28D` です。現在の正本仕様は [GSQ_PI_SPEC.md](GSQ_PI_SPEC.md) です。
 
+[日本語訳の評価計画](EVALUATION_PLAN_ABC.ja.md)を用意しました。原文とその記録済みSHA-256は変更しません。
+
 ## 新しい比較対象
 
-| 記号 | Actor | 実行harness | Fresh Critic |
+| 記号 | 実装担当モデル | 実行基盤 | 独立した新しいCritic |
 | --- | --- | --- | --- |
 | A | GSQ-RCO Qwen3.8-27B IQ3_XXS | Pi + SoL-Pi | GSQ-RCO |
 | B | 同じGSQ-RCO | Hermes Agent | GSQ-RCO |
@@ -51,6 +53,6 @@ ServerPCの管理経路が使えるようになった後、正確なモデル・
 3. ServerPCからGSQ 64K実現性の証跡、およびBonsai 2 + MTPと逐次モデル切替の正確な実装元・管理経路を得るまで、B/Cのモデル操作は保留します。
 4. 実リポジトリから非自明なバグ修正、複数ファイル変更、長時間課題を選び、同一課題・同一検証条件で9回以内の試験を組みます。課題の準備だけで実行回数を消費しません。
 
-実施済みの [AB_BENCHMARK.md](ab-benchmark/AB_BENCHMARK.md) は履歴として残しました。未実行のduration試験用リポジトリ3件と手順ファイルは、その後のGSQ+Pi採用決定で削除しました。
+実施済みの [AB_BENCHMARK.md](AB_BENCHMARK.md) は履歴として残しました。未実行のduration試験用リポジトリ3件と手順ファイルは、その後のGSQ+Pi採用決定で削除しました。
 
 ClientPCのHermes統合に必要な実装境界とWSL loopback接続確認は [HERMES_INTEGRATION_DESIGN.md](HERMES_INTEGRATION_DESIGN.md) に記録しました。

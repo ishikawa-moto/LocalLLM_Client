@@ -1,4 +1,4 @@
-# LocalBrain v2 context budget telemetry — ClientPC実装結果
+# LocalBrain v2のコンテキスト予算計測：ClientPC実装結果
 
 実施日: 2026-09-26（JST）。新しいAgent v2ホストを配置し、ContinueのMCP起動先を切り替えた。VS Codeの再読み込み後に、Continue画面から新ホストの接続を確認する作業が残る。ServerPC、Bridge、Gateway、既存のContinueチャット経路は変更していない。
 

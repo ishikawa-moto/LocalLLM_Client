@@ -1,5 +1,7 @@
 # ClientPC用LocalBrainクライアント
 
+[日本語の文書一覧とフォルダー案内](DOCUMENTATION.ja.md)を参照できます。
+
 ## 初回だけ行う操作
 
 1. ServerPCで作成した暗号化ZIPをClientPCへコピーして展開します。
@@ -17,13 +19,13 @@ Bridgeは`__BRIDGE_HOST__:__BRIDGE_PORT__`だけで待ち受けます。ServerPC
 
 `continue-agent-v2-template.yaml`を手動で使う場合も、同じローカルBridgeの接続値でプレースホルダーを解決してください。
 
-## repositoryを後から追加
+## リポジトリを後から追加
 
 ```powershell
 %LOCALAPPDATA%\LocalBrain\app\localbrain.exe register-project C:\path\to\repo
 ```
 
-## Codex Review Runner
+## Codexのレビュー実行
 
 ```powershell
 localbrain.exe review classify .localbrain\requirement.md

@@ -1,14 +1,14 @@
-# Agent v2: task-scoped command execution
+# Agent v2：タスク単位のコマンド実行
 
-Continue submits implementation and terminal work to the Windows Host. The Host returns a task ID promptly and owns the background execution independently of the MCP connection. `queued` and `running` are not completion.
+Continueは実装・ターミナル作業をWindows Hostへ渡します。Hostは速やかにタスクIDを返し、MCP接続とは独立してバックグラウンド実行を管理します。`queued`と`running`は完了を意味しません。
 
-## One permission for one task
+## 1タスクにつき1回の許可
 
-`localbrain_agent_v2_run` accepts the exact requirement, acceptance criteria, editing scope, required tests and `command_execution`. The Windows confirmation shows these together. A genuine native confirmation grants commands in this exact task and its verified resumptions; a model-supplied boolean or repository text cannot grant it. Changing the requirement, command scope or baseline requires a new task/grant. Cancellation and completion end the grant. Recorded time/turn/command/output budgets still apply. UAC and reauthentication remain OS operations.
+`localbrain_agent_v2_run`は、正確な依頼、受入条件、編集範囲、必須テスト、`command_execution`を受け取ります。Windowsの確認画面にはこれらをまとめて表示します。実際のネイティブ確認で許可されるのは、その正確なタスクと検証済みの再開に属するコマンドだけです。モデルが渡す真偽値やリポジトリの文章は許可になりません。依頼・コマンド範囲・基準状態を変更する場合は、新しいタスクと許可が必要です。取消または完了で許可は終了します。記録済みの時間・ターン・コマンド数・出力量の上限は引き続き有効です。UACと再認証はOS上の操作です。
 
-Use trusted personal project code. A cwd restriction is not a filesystem/network sandbox for arbitrary programs. The Host enforces job ownership, admission, deadlines and output limits; it does not claim isolation against hostile scripts or daemon escape.
+信頼できる個人プロジェクトのコードを使用してください。作業ディレクトリの制限だけで、任意プログラムのファイル・ネットワークアクセスが隔離されるわけではありません。Hostはジョブ所有権、受付条件、期限、出力量の上限を管理しますが、悪意あるスクリプトやデーモンの脱出に対する隔離を保証しません。
 
-Example `task` for a registered Git root (initial worktree must be clean):
+登録済みGitルートに対する`task`の例です。開始時の作業ツリーはクリーンである必要があります。
 
 ```json
 {
@@ -31,26 +31,26 @@ Example `task` for a registered Git root (initial worktree must be clean):
 }
 ```
 
-A scope of `**` or `src/**` requires the command contract and is displayed in the native grant. Legacy exact-file task hashes remain compatible. File tools continue to exclude protected metadata and secret paths. The initial clean-tree and bounded review-packet requirements remain; existing uncommitted work is never automatically committed, stashed or removed to make admission pass. HEAD-changing Git operations are outside the ordinary same-HEAD task contract.
+`**`や`src/**`の範囲指定にはコマンド契約が必要で、ネイティブの許可画面にも表示します。従来の正確なファイル単位のタスクハッシュとの互換性は維持します。ファイルツールは保護されたメタデータや秘密情報のパスを引き続き除外します。開始時のクリーンな作業ツリーと、上限付きレビューパケットの要件も維持します。受付条件を満たすために既存の未コミット変更を自動コミット・stash・削除することはありません。HEADを変更するGit操作は、通常の同一HEADタスク契約の対象外です。
 
-## Execution and evidence
+## 実行と証跡
 
-The Actor uses `host_command_start`, `host_command_status`, `host_command_cancel`. Program and arguments are separate fields. Windows jobs close owned descendants; WSL uses a login shell (including configured Volta-like environment managers), an owned process group and a short Host lease. Long commands do not rely on Continue's terminal timeout.
+Actorは`host_command_start`、`host_command_status`、`host_command_cancel`を使います。プログラムと引数は別フィールドです。Windows Jobは所有する子孫プロセスを終了させます。WSLでは、Voltaなどの設定済み環境管理ツールを読み込むログインシェル、所有するプロセスグループ、短時間のHostリースを使います。長時間コマンドはContinueのターミナル期限に依存しません。
 
-Each operation has a stable ID, immutable intent, bounded raw logs, terminal receipt, exit code and declared output hashes. Keep declared outputs stable final files; do not declare transient `result.csv` if a later operation renames it. For a batch, verify all final renamed outputs in the batch operation. Expected-output verification has finite size/time bounds (128MiB per file, 512MiB total, 15 seconds; at most256 declared files). Oversized/unknown outcomes cannot qualify as successful.
+各操作には安定したID、変更不可の実行意図、上限付きの生ログ、終了記録、終了コード、宣言済み出力のハッシュがあります。宣言する出力は安定した最終ファイルにしてください。後続操作で名前が変わる一時的な`result.csv`は宣言しません。バッチでは、その操作内で名前変更後の最終出力をすべて検証します。期待出力の検証には、1ファイル128MiB、合計512MiB、15秒、最大256ファイルの上限があります。上限超過や結果不明の操作は成功と認定しません。
 
-Repeated submission observes the existing task. Reusing an operation ID with different arguments is refused. An intent without a terminal outcome is `outcome_unknown`, never automatically replayed under another ID. Cancellation targets the exact task and retains receipts. Missing worker identity/unknown launch is inspected rather than restarted automatically.
+同じ依頼を繰り返し送信した場合は既存タスクを観測します。同じ操作IDを異なる引数で再利用することは拒否します。終了結果がない実行意図は`outcome_unknown`とし、別IDで自動再実行しません。取消は正確なタスクを対象とし、記録を保持します。workerの識別情報がない場合や起動結果が不明な場合は、自動再起動せず調査します。
 
-Real receipts feed the single canonical writer and TaskMemory. Laya counts new Host-verified progress, not repeated status calls or model completion claims. The worker continues across ordinary Actor chunks and context handoff within the original finite budget. Normal tests, a fresh local Critic and existing risk-based external review gates still decide completion. Genuine no-progress, invalid evidence, scope/baseline drift, unavailable review, cancellation and exhausted budgets remain truthful stop conditions.
+実際の実行記録を単一のCanonical書込処理とTaskMemoryへ渡します。Layaが数えるのはHostが検証した新しい進捗であり、繰り返しの状態照会やモデルの完了宣言ではありません。workerは元の有限な予算内で、通常のActor処理分割やコンテキスト引継ぎをまたいで継続します。完了判定には通常テスト、新しいローカルCritic、既存のリスク別外部レビュー条件を引き続き使います。実際の進捗停止、不正な証跡、範囲・基準状態のずれ、レビュー不能、取消、予算枯渇は、正直に報告する停止条件です。
 
-Managed model calls obtain a one-use Host capability bound to the accepted provider payload. Only that capability avoids a second Bridge conversation-level Laya/TaskMemory pass. Ordinary conversations retain conversation history management and loop supervision; all routes retain network deadlines. A caller's arbitrary HTTP label cannot select the managed route.
+管理対象のモデル呼出しは、受理済みプロバイダーペイロードに結び付いた1回限りのHost実行資格を取得します。その資格がある場合だけ、Bridgeでの会話単位のLaya・TaskMemory処理の二重適用を回避できます。通常の会話では履歴管理とループ監視を維持し、どの経路でも通信期限を維持します。呼出し側が任意のHTTPラベルを付けても管理経路は選べません。
 
-## Continue configuration
+## Continueの設定
 
-Use Agent v2 for coding, file changes, scripts, builds and tests. Direct read-only investigation and ordinary chat remain available. Disable built-in file mutation and terminal tools in Continue's supported tool-policy UI (`Excluded`); set Agent v2 run/resume/status/cancel according to the desired UI policy. `Automatic` on run/resume removes redundant Continue confirmations; the genuine one-task native grant remains. Do not edit extension private state to fake user settings. Reload the VS Code window after activating the new MCP executable.
+コーディング、ファイル変更、スクリプト、ビルド、テストにはAgent v2を使います。直接の読み取り専用調査と通常チャットは引き続き利用できます。Continueの公式ツール設定画面で、組込のファイル変更・ターミナルツールを`Excluded`にし、Agent v2のrun/resume/status/cancelを希望する設定にします。run/resumeを`Automatic`にするとContinue側の重複確認を省けますが、タスク単位の実際のネイティブ許可は残ります。ユーザー設定を偽装するために拡張機能の内部状態を編集してはいけません。新しいMCP実行ファイルを有効化した後はVS Codeのウィンドウを再読み込みします。
 
-`localbrain_agent_v2_status` reports background ownership and canonical completion. Do not spin on status. The background Host continues even if Continue ends its current response. Use `localbrain_agent_v2_cancel` with the current exact task ID to stop it. The corresponding local CLI supports `agent-v2 managed-status <registered-root>` and `managed-cancel <registered-root> <task-id>`.
+`localbrain_agent_v2_status`はバックグラウンドの所有状態とCanonicalの完了状態を返します。状態照会を繰り返すループは避けてください。Continueが現在の回答を終えてもHostは継続します。停止するときは、現在の正確なタスクIDで`localbrain_agent_v2_cancel`を使います。対応するローカルCLIは`agent-v2 managed-status <registered-root>`と`managed-cancel <registered-root> <task-id>`です。
 
-## Runtime packaging
+## 実行環境のパッケージ化
 
-Build and run normal regression tests first. Publish the exact tested assembly and its scripts. The installer writes `task-command-native-code.json` with SHA256 of the installed `Confirm-TaskCommands.ps1`; the Host refuses unqualified confirmation code. Keep private client settings outside Git. Never replace or delete a canonical DB to activate this feature. Preserve the configured Server model/context, Client TaskMemory and SecondBrain policies.
+先にビルドと通常回帰テストを行い、実際に試験したアセンブリとスクリプトを発行します。インストーラーは、配置済み`Confirm-TaskCommands.ps1`のSHA256を持つ`task-command-native-code.json`を書き込みます。Hostは未資格の確認コードを拒否します。非公開のClient設定はGit外に置きます。この機能を有効化するためにCanonical DBを置換・削除してはいけません。Serverのモデル・コンテキスト、ClientのTaskMemory、SecondBrainの方針を保持します。

@@ -1,29 +1,29 @@
-> Agent v2 command-gate update: implementation and terminal work now goes through the managed Agent v2 task owner. Its native task grant, owned process deadline/receipt, canonical progress and TaskMemory take precedence over the historical direct-terminal route described below. Continue built-in mutations/terminal must be Excluded in the supported UI. Ordinary read-only chat retains the Bridge guard. See [AGENT_COMMAND_EXECUTION.md](AGENT_COMMAND_EXECUTION.md).
+> Agent v2コマンド実行制御の更新：実装・ターミナル作業は、現在は管理対象Agent v2のタスク所有者を経由します。タスク単位のネイティブ許可、所有プロセスの期限と記録、Canonicalの進捗、TaskMemoryが、以下の旧来の直接ターミナル経路より優先されます。Continueの公式UIで組込の変更・ターミナルツールをExcludedにします。通常の読み取り専用チャットではBridgeの監視を維持します。[AGENT_COMMAND_EXECUTION.md](AGENT_COMMAND_EXECUTION.md)を参照してください。
 
-# Work loop monitoring
+# 作業ループの監視
 
-## Coverage
+## 監視範囲
 
-| Route | Monitor and intervention |
+| 経路 | 監視と介入 |
 | --- | --- |
-| Ordinary Continue chat/Agent using the local Bridge | Every chat history is inspected before context-memory selection. CPU Laya receives compact numeric tool milestones (first result and each fourth result, or errors). A confident replan/escalation pauses the next request; it never executes a command or calls a cloud reviewer. |
-| Other clients using this Bridge | The same HTTP limits and chat-history checks apply, independent of client/model names. |
-| Agent v2 / Pi | Existing live tool milestones, deterministic ProgressTracker, Laya decisions, documented Pi abort, 10-minute Actor run and task-turn limits remain. Its model requests additionally cross the Bridge guard. |
-| TaskMemory selection inside a Bridge chat | The existing native/measurement budgets and the Bridge's total request budget apply. Selection is not a separate permission to execute tools. |
-| Continue's direct terminal tools | Completed tool results are inspected when the next model request returns to the Bridge. A running external command is owned by Continue, not by this supervisor. The inspected Continue 2.0.0 local foreground implementation has its own two-minute timeout; background commands do not use that timeout. The supplied always-apply rule requires bounded foreground execution or an explicitly owned background job. |
-| SecondBrain background Reviewer, external cloud tools, Codex, arbitrary OS programs, routes bypassing this Bridge | Their own process/lease/timeout policies apply. This change does not give Laya access to their running jobs or control over them. It is not an OS-wide watchdog. |
+| ローカルBridgeを使う通常のContinueチャット・Agent | コンテキスト記憶の選択前に毎回履歴を確認します。CPU Layaへ小さな数値のツール進捗を渡します。最初の結果、以後4件ごと、またはエラー時です。十分な信頼度で再計画・エスカレーションが判断されれば次の要求を停止します。コマンド実行やCloud Reviewer呼出しはしません。 |
+| このBridgeを使う他クライアント | クライアント名・モデル名に関係なく同じHTTP制限と履歴確認を適用します。 |
+| Agent v2 / Pi | 既存の実ツール進捗、決定的なProgressTracker、Laya判断、Piの公式abort、Actor実行10分とタスクターン上限を維持します。モデル要求にはBridgeの監視も適用します。 |
+| Bridgeチャット内のTaskMemory選択 | 既存のネイティブ・計測予算とBridge全体の要求予算を適用します。選択処理は別のツール実行許可にはなりません。 |
+| Continueの直接ターミナルツール | 次のモデル要求がBridgeへ戻ったときに完了済みツール結果を確認します。実行中の外部コマンドの所有者はContinueで、この監視機能ではありません。確認したContinue 2.0.0のローカル前面実行には独自の2分期限があり、バックグラウンドコマンドには適用されません。配布する常時適用ルールは、期限付き前面実行または明示的な所有者のあるバックグラウンドジョブを要求します。 |
+| SecondBrainの背景Reviewer、外部Cloudツール、Codex、任意のOSプログラム、Bridgeを迂回する経路 | 各機能のプロセス・リース・期限方針に従います。この変更でLayaがそれらの実行中ジョブへアクセス・制御できるようにはなりません。OS全体の監視機能ではありません。 |
 
-## Rules
+## 規則
 
-- Stop before forwarding after four repetitions of an identical tool-argument/result cycle of length one, two or three, or three consecutive identical tool errors. JSON object property order does not evade matching. Tool call IDs are not part of the fingerprint.
-- Different results count as observable progress; repeated commands with changing results are not blocked by the identical-cycle rule. A new explicit `user` message starts a new work segment. The check uses the original history, not the shortened TaskMemory prompt.
-- Laya receives counts and allowlisted labels only. Low confidence, invalid confidence, unavailable Laya or its 45-second budget expiry falls back to deterministic checks. A Laya decision never grants approvals, attests tests, claims success, submits Sol work, or executes an inferred action.
-- Every forwarded HTTP request has a 30-minute absolute deadline. Reading a request/body/response or waiting for upstream response headers has a ten-minute no-response deadline. Actual bytes reset the read deadline. The existing native selection has its own stricter budget.
-- Before forwarding, a detected loop returns HTTP 422 `work_loop_paused`, `forwarded=false`, `automatic_retry=false`. After a dispatch whose outcome is unknown, the error forbids automatic retries. Before emitting any bytes, a response timeout can return HTTP 422; a partially emitted stream is aborted without a fake completion marker. Neither case replays tools or forcibly restarts an upstream service/model.
-- Local `/localbrain/supervision/status` exposes coverage, limits and in-memory counters. Audit events contain numeric counters, typed decisions and request IDs, not command text, tool output or prompts. Counters reset when the Bridge restarts; this is not a cross-conversation job database.
+- 長さ1・2・3の同一ツール引数・結果の循環が4回続く場合、または同一ツールエラーが3回連続する場合は、転送前に停止します。JSONプロパティの順序変更では判定を回避できません。ツール呼出しIDは指紋に含めません。
+- 結果が異なれば観測可能な進捗として扱います。コマンドが同じでも結果が変化していれば同一循環規則では止めません。新しい明示的な`user`メッセージで作業区間を更新します。確認には短縮済みTaskMemoryプロンプトではなく元の履歴を使います。
+- Layaへ渡すのは件数と許可リスト内のラベルだけです。低信頼度、不正な信頼度、利用不能、45秒予算の期限切れでは決定的な確認へ戻します。Laya判断は承認の付与、テストの証明、成功宣言、Sol作業の投入、推測した操作の実行を行いません。
+- 転送HTTP要求の絶対期限は30分です。要求・本文・応答の読取、上流の応答ヘッダー待ちは無応答10分で期限切れとし、実バイトの受信で読取期限を更新します。既存のネイティブ選択にはさらに厳しい予算があります。
+- 転送前にループを検出するとHTTP 422 `work_loop_paused`、`forwarded=false`、`automatic_retry=false`を返します。送信後の結果が不明なら自動再試行を禁止します。応答の出力前なら期限切れをHTTP 422で返せますが、一部出力済みストリームは偽の完了マーカーを付けず中断します。どちらの場合もツールの再実行や上流サービス・モデルの強制再起動はしません。
+- ローカルの`/localbrain/supervision/status`は監視範囲・制限・メモリ内カウンターを公開します。監査イベントには数値、型付き判断、要求IDを含め、コマンド本文・ツール出力・プロンプトは含めません。Bridge再起動でカウンターはリセットされます。会話横断のジョブDBではありません。
 
-## Verification
+## 検証
 
-The console test suite includes identical and alternating cycles, distinct-result progress, new-user reset, Laya confidence/unavailability, before-compaction inspection, exact forwarding, real HTTP header/body/absolute timeouts and no replay. The separate `--work-loop-native-proof` uses the real CPU Laya worker inside a disposable Bridge with a public HTTP peer, without PC70 model requests or production knowledge writes. Runtime activation and the independently observed installed checks are recorded outside the public repository.
+コンソールテストには、同一・交互の循環、異なる結果による進捗、新規ユーザー区間、Layaの信頼度・利用不能、短縮前確認、正確な転送、実HTTPヘッダー・本文・絶対期限、再実行禁止を含めます。別の`--work-loop-native-proof`は、使い捨てBridge内で実CPU Laya workerと公開HTTP相手を使い、PC70モデル要求や本番知識書込なしに確認します。本番有効化と独立した配置確認は公開リポジトリ外へ記録します。
 
-This monitor cannot diagnose a tool that Continue has not returned, a UI stopped awaiting human approval, or work on another machine without a supported event/control channel. Do not describe those cases as fully covered by Laya.
+Continueがまだ結果を返していないツール、人間の承認を待っているUI、対応するイベント・制御経路がない別PCの作業は、この監視機能では診断できません。それらをLayaの完全な監視対象と説明してはいけません。
