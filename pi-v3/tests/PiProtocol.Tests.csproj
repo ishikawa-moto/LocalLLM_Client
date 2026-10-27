@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../dotnet/LocalBrain.ClientHost/AgentV3/PiJsonlReader.cs" Link="PiJsonlReader.cs" />
+    <Compile Include="../../dotnet/LocalBrain.ClientHost/AgentV3/PiRpcTurn.cs" Link="PiRpcTurn.cs" />
   </ItemGroup>
 </Project>
