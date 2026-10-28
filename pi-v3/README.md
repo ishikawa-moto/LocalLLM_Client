@@ -22,6 +22,9 @@ flag. Its recovery record and scope checks have been exercised in disposable
 WSL fixtures, but independent security review and Host lifecycle integration
 remain outstanding. The Host archive inspector validates data without applying
 it; validation alone grants no authority to update a production workspace.
+The Host scope-stop helper is also experimental. Its command and argument
+guards were tested, but a Windows Host call and termination of the separate
+Windows relay have not been verified.
 
 PC70 development fixtures have exercised Pi RPC, Codemode and Tool Search
 with a test MCP server, isolated WSL-to-Gateway Qwen requests, RPC framing,
