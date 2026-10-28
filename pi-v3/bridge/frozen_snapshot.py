@@ -6,6 +6,7 @@ independent security review are still required before production use.
 import argparse
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import signal
@@ -38,6 +39,71 @@ def _private_directory(path):
         raise ValueError('task directory is not private')
 
 
+def _sync_directory(path):
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
+def _lock_task(task):
+    fd=os.open(task/'.snapshot.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1:
+            raise ValueError('unsafe snapshot lock')
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd);raise
+
+
+def _wait_thawed(group):
+    events=group/'cgroup.events';deadline=time.monotonic()+10
+    while 'frozen 0' not in events.read_text():
+        if time.monotonic()>deadline: raise TimeoutError('task did not thaw')
+        time.sleep(.01)
+
+
+def recover_interrupted(root,task_id):
+    """Thaw only a task for which our durable snapshot intent exists.
+
+    Partial archives are retained for inspection. An ambiguous process identity
+    or scope fails closed and requires Host intervention.
+    """
+    if str(uuid.UUID(task_id))!=task_id: raise ValueError('invalid task identity')
+    _private_directory(root);task=root/'tasks'/task_id;_private_directory(task)
+    lock_fd=_lock_task(task)
+    try:
+        intent=task/'.snapshot-intent.json'
+        try: fd=os.open(intent,os.O_RDONLY|os.O_NOFOLLOW)
+        except FileNotFoundError: return False
+        with os.fdopen(fd,'rb') as stream:
+            info=os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_size>4096:
+                raise ValueError('unsafe snapshot intent')
+            value=json.load(stream)
+        if set(value)!={'task','snapshot','pid','start','group'} or value['task']!=task_id or str(uuid.UUID(value['snapshot']))!=value['snapshot']:
+            raise ValueError('invalid snapshot intent')
+        uid=os.getuid();expected=f'/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/lb-v3-{task_id}.scope'
+        if value['group']!=expected or type(value['pid']) is not int or value['pid']<=1 or type(value['start']) is not int or value['start']<=0:
+            raise ValueError('invalid snapshot identity')
+        group=Path('/sys/fs/cgroup')/expected.lstrip('/')
+        if group.exists():
+            try:
+                matches=_identity(value['pid'])==value['start'] and _group(value['pid'],task_id)==group
+            except (FileNotFoundError,ProcessLookupError,ValueError): matches=False
+            # A dead task has no live descendants; do not thaw an ambiguous
+            # populated scope if the recorded process identity changed.
+            if not matches and 'populated 0' not in (group/'cgroup.events').read_text():
+                raise ValueError('snapshot process identity changed in a populated scope')
+            freeze=group/'cgroup.freeze'
+            if freeze.read_text().strip()=='1': freeze.write_text('0')
+            _wait_thawed(group)
+        intent.unlink();_sync_directory(task)
+        return True
+    finally: os.close(lock_fd)
+
+
 def snapshot(root,task_id,pid,snapshot_id,max_files,max_bytes):
     if str(uuid.UUID(task_id))!=task_id or str(uuid.UUID(snapshot_id))!=snapshot_id or pid<=1:
         raise ValueError('invalid task identity')
@@ -46,13 +112,8 @@ def snapshot(root,task_id,pid,snapshot_id,max_files,max_bytes):
     _private_directory(root)
     task=root/'tasks'/task_id
     _private_directory(task)
-    lock_path=task/'.snapshot.lock'
-    lock_fd=os.open(lock_path,os.O_RDWR|os.O_CREAT|getattr(os,'O_NOFOLLOW',0),0o600)
+    lock_fd=_lock_task(task)
     try:
-        lock_info=os.fstat(lock_fd)
-        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid!=os.getuid() or lock_info.st_nlink!=1:
-            raise ValueError('unsafe snapshot lock')
-        fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         return _snapshot_locked(task,task_id,pid,snapshot_id,max_files,max_bytes)
     finally:
         os.close(lock_fd)
@@ -65,9 +126,15 @@ def _snapshot_locked(task,task_id,pid,snapshot_id,max_files,max_bytes):
         raise ValueError('task was already frozen or is unavailable')
     temporary=task/('.snapshot-'+snapshot_id+'.partial')
     target=task/('snapshot-'+snapshot_id+'.tar')
-    frozen=False; made=False
+    intent=task/'.snapshot-intent.json'; made=False; intent_made=False
     try:
-        freeze.write_text('1');frozen=True
+        fd=os.open(intent,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);intent_made=True
+        with os.fdopen(fd,'w',encoding='utf-8') as marker:
+            json.dump({'task':task_id,'snapshot':snapshot_id,'pid':pid,'start':identity,
+                       'group':'/'+str(group.relative_to('/sys/fs/cgroup'))},marker,separators=(',',':'))
+            marker.flush();os.fsync(marker.fileno())
+        _sync_directory(task)
+        freeze.write_text('1')
         deadline=time.monotonic()+10
         while 'frozen 1' not in events.read_text():
             if time.monotonic()>deadline: raise TimeoutError('task did not freeze')
@@ -84,22 +151,35 @@ def _snapshot_locked(task,task_id,pid,snapshot_id,max_files,max_bytes):
         os.link(temporary,target,follow_symlinks=False)
         return target,digest
     finally:
-        if frozen: freeze.write_text('0')
-        if made:
-            try: temporary.unlink()
-            except FileNotFoundError: pass
+        try:
+            if intent_made:
+                if group.exists():
+                    if freeze.read_text().strip()=='1': freeze.write_text('0')
+                    _wait_thawed(group)
+                intent.unlink();_sync_directory(task)
+        finally:
+            if made:
+                try: temporary.unlink()
+                except FileNotFoundError: pass
 
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--root',type=Path,required=True);parser.add_argument('--task',required=True)
-    parser.add_argument('--pid',type=int,required=True);parser.add_argument('--snapshot',required=True)
-    parser.add_argument('--max-files',type=int,required=True);parser.add_argument('--max-bytes',type=int,required=True)
+    parser.add_argument('--pid',type=int);parser.add_argument('--snapshot')
+    parser.add_argument('--max-files',type=int);parser.add_argument('--max-bytes',type=int)
+    parser.add_argument('--recover',action='store_true')
     parser.add_argument('--experimental',action='store_true')
     args=parser.parse_args()
     if not args.experimental: parser.error('snapshot helper is not yet approved for production use')
     def terminate(signum,frame): raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,terminate)
+    fields=(args.pid,args.snapshot,args.max_files,args.max_bytes)
+    if args.recover:
+        if any(value is not None for value in fields): parser.error('recovery does not accept snapshot arguments')
+        print('recovered' if recover_interrupted(args.root,args.task) else 'no_pending_intent')
+        return
+    if any(value is None for value in fields): parser.error('snapshot arguments are required')
     target,digest=snapshot(args.root,args.task,args.pid,args.snapshot,args.max_files,args.max_bytes)
     print(target.name,digest)
 
