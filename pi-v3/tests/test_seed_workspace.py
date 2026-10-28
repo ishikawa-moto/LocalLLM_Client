@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='lb-seed-') as name:
     base=Path(name)
     for index in range(4):
         workspace=base/str(index);workspace.mkdir()
-        subprocess.run(['mount','-t','tmpfs','-o','size=8388608','tmpfs',str(workspace)],check=True)
+        subprocess.run(['mount','-t','tmpfs','-o','size=8388608,mode=0700','tmpfs',str(workspace)],check=True)
         try:
             raw=make_archive(tarfile.SYMTYPE if index==3 else tarfile.REGTYPE)
             digest=hashlib.sha256(raw).hexdigest()

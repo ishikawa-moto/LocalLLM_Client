@@ -30,6 +30,8 @@ until these races are fixed and independently re-reviewed.
 The workspace-seeding helper is likewise experimental: it requires an exact
 archive hash and a manifest already inspected and authorized by the Host. On
 failure, the Host must discard the entire isolated mount before starting Pi.
+The mount must be owned by the helper and not group- or world-writable; for
+tmpfs, provision it with `mode=0700` before seeding.
 The Host scope-stop helper is also experimental. Its command and argument
 guards were tested, but a Windows Host call and termination of the separate
 Windows relay have not been verified.
