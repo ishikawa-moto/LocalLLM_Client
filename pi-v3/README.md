@@ -34,6 +34,12 @@ The Host scope-stop helper is also experimental. Its command and argument
 guards were tested, but a Windows Host call and termination of the separate
 Windows relay have not been verified.
 
+`tests/outcome-host` specifies a proposed Pi outcome evidence reducer. Its
+referenced `PiRunOutcome.cs` is not present on this branch until the separately
+queued implementation has passed review and been integrated; the fixture is
+therefore not yet runnable. Settlement and model response status alone never
+authorize a task result or production update.
+
 PC70 development fixtures have exercised Pi RPC, Codemode and Tool Search
 with a test MCP server, isolated WSL-to-Gateway Qwen requests, RPC framing,
 snapshot and archive guards. These fixtures do not establish PC73 deployment,
