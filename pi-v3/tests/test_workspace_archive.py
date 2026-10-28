@@ -8,7 +8,6 @@ import importlib.util
 import io
 import os
 import posixpath
-import stat
 import tarfile
 import tempfile
 import unittest
@@ -26,12 +25,22 @@ archive_workspace = _module.archive_workspace
 
 class TestArchiveWorkspace(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
+        try:
+            self.tempdir = tempfile.TemporaryDirectory()
+        except OSError as exc:
+            self.skipTest(f"temporary directory unavailable: {exc}")
         self.addCleanup(self.tempdir.cleanup)
         self.root = os.path.abspath(self.tempdir.name)
+        try:
+            probe = os.path.join(self.root, "probe")
+            with open(probe, "wb") as stream:
+                stream.write(b"ok")
+            os.remove(probe)
+        except OSError as exc:
+            self.skipTest(f"temporary workspace is not writable: {exc}")
 
-    def make_file(self, name, content=b""):
-        path = os.path.join(self.root, *name.split("/"))
+    def make_file(self, relpath, content=b""):
+        path = os.path.join(self.root, *relpath.split("/"))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as stream:
             stream.write(content)
@@ -76,8 +85,11 @@ class TestArchiveWorkspace(unittest.TestCase):
     def test_file_permissions(self):
         ordinary = self.make_file("ordinary", b"data")
         executable = self.make_file("executable", b"script")
-        os.chmod(ordinary, 0o600)
-        os.chmod(executable, 0o755)
+        try:
+            os.chmod(ordinary, 0o600)
+            os.chmod(executable, 0o755)
+        except OSError as exc:
+            self.skipTest(f"cannot set executable permission: {exc}")
         if not os.stat(executable).st_mode & 0o111:
             self.skipTest("platform does not represent executable permission")
         with tarfile.open(fileobj=io.BytesIO(self.archive()), mode="r:") as archive:
@@ -110,8 +122,8 @@ class TestArchiveWorkspace(unittest.TestCase):
         self.make_file("target", b"data")
         try:
             os.symlink("target", os.path.join(self.root, "link"))
-        except (OSError, NotImplementedError):
-            self.skipTest("symlink creation is unavailable")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
         with self.assertRaises((ValueError, OSError)):
             self.archive()
 
@@ -119,8 +131,8 @@ class TestArchiveWorkspace(unittest.TestCase):
         target = self.make_file("target", b"data")
         try:
             os.link(target, os.path.join(self.root, "link"))
-        except (OSError, NotImplementedError):
-            self.skipTest("hard link creation is unavailable")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hard link creation is unavailable: {exc}")
         if os.stat(target).st_nlink < 2:
             self.skipTest("filesystem does not report hard link counts")
         with self.assertRaises((ValueError, OSError)):
