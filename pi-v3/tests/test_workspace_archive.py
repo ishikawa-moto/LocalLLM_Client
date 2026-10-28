@@ -25,19 +25,11 @@ archive_workspace = _module.archive_workspace
 
 class TestArchiveWorkspace(unittest.TestCase):
     def setUp(self):
-        try:
-            self.tempdir = tempfile.TemporaryDirectory()
-        except OSError as exc:
-            self.skipTest(f"temporary directory unavailable: {exc}")
+        self.tempdir = tempfile.TemporaryDirectory(
+            dir=os.path.dirname(os.path.abspath(__file__))
+        )
         self.addCleanup(self.tempdir.cleanup)
         self.root = os.path.abspath(self.tempdir.name)
-        try:
-            probe = os.path.join(self.root, "probe")
-            with open(probe, "wb") as stream:
-                stream.write(b"ok")
-            os.remove(probe)
-        except OSError as exc:
-            self.skipTest(f"temporary workspace is not writable: {exc}")
 
     def make_file(self, relpath, content=b""):
         path = os.path.join(self.root, *relpath.split("/"))
