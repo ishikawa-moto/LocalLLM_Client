@@ -38,21 +38,49 @@ internal static class V3ScopeControl
         start.Environment.Remove("LOCALBRAIN_SIDEFX_PIPE");
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        using var process=Process.Start(start) ?? throw new IOException("WSL scope stop could not start");
-        process.StandardInput.Close();
-        var output=DrainAsync(process.StandardOutput.BaseStream,deadline.Token);
-        var error=DrainAsync(process.StandardError.BaseStream,deadline.Token);
+        using var process=new Process { StartInfo=start };
+        var started=false;
+        Task output=Task.CompletedTask;
+        Task error=Task.CompletedTask;
         try {
+            deadline.Token.ThrowIfCancellationRequested();
+            started=process.Start();
+            if(!started)throw new IOException("WSL scope stop could not start");
+            process.StandardInput.Close();
+            output=DrainAsync(process.StandardOutput.BaseStream,deadline.Token);
+            error=DrainAsync(process.StandardError.BaseStream,deadline.Token);
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             await Task.WhenAll(output,error).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
             if(process.ExitCode!=0)throw new IOException("WSL scope stop was not confirmed");
         } catch {
-            try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
-            catch(InvalidOperationException) { }
-            // A failed or cancelled stop has unknown outcome. The caller must
-            // reconcile the task rather than report a confirmed cancellation.
+            deadline.Cancel();
+            using var cleanupDeadline=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // Cleanup is best effort and must not replace the original failure.
+            if(started) {
+                try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
+                catch { }
+                try {
+                    await process.WaitForExitAsync(cleanupDeadline.Token).ConfigureAwait(false);
+                } catch { }
+            }
+            // Observe both reads even if cleanup times out. Disposing the process
+            // also closes its redirected streams when this method leaves.
+            var drains=Task.WhenAll(ObserveFailureAsync(output),ObserveFailureAsync(error));
+            try {
+                await drains.WaitAsync(cleanupDeadline.Token).ConfigureAwait(false);
+            } catch(OperationCanceledException) { }
+            // A failed or cancelled stop has unknown outcome. Cleanup does not
+            // confirm Linux scope termination or stop the separate Windows relay.
+            // The caller must reconcile the task rather than report a confirmed cancellation.
             throw;
         }
+    }
+
+    private static async Task ObserveFailureAsync(Task task)
+    {
+        try { await task.ConfigureAwait(false); }
+        catch { }
     }
 
     private static async Task DrainAsync(Stream stream,CancellationToken token)
