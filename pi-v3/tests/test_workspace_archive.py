@@ -4,6 +4,7 @@ The caller must keep the workspace stable and frozen throughout archiving.
 These tests use a private temporary directory with no concurrent writers.
 """
 
+import importlib.util
 import io
 import os
 import posixpath
@@ -12,7 +13,15 @@ import tarfile
 import tempfile
 import unittest
 
-from pi_v3.bridge.workspace_archive import archive_workspace
+_MODULE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "bridge",
+    "workspace_archive.py",
+)
+_spec = importlib.util.spec_from_file_location("workspace_archive", _MODULE_PATH)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+archive_workspace = _module.archive_workspace
 
 
 class TestArchiveWorkspace(unittest.TestCase):
