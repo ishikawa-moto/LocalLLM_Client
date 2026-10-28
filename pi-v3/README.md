@@ -22,6 +22,11 @@ flag. Its recovery record and scope checks have been exercised in disposable
 WSL fixtures, but independent security review and Host lifecycle integration
 remain outstanding. The Host archive inspector validates data without applying
 it; validation alone grants no authority to update a production workspace.
+The independent review found that locks are scoped to a caller-selected task
+root rather than the cgroup itself, so two roots could race while freezing and
+thawing the same scope. Process and scope identities are also checked by path
+without pinning them. Do not use this helper for security-sensitive snapshots
+until these races are fixed and independently re-reviewed.
 The workspace-seeding helper is likewise experimental: it requires an exact
 archive hash and a manifest already inspected and authorized by the Host. On
 failure, the Host must discard the entire isolated mount before starting Pi.
