@@ -22,6 +22,9 @@ flag. Its recovery record and scope checks have been exercised in disposable
 WSL fixtures, but independent security review and Host lifecycle integration
 remain outstanding. The Host archive inspector validates data without applying
 it; validation alone grants no authority to update a production workspace.
+The workspace-seeding helper is likewise experimental: it requires an exact
+archive hash and a manifest already inspected and authorized by the Host. On
+failure, the Host must discard the entire isolated mount before starting Pi.
 The Host scope-stop helper is also experimental. Its command and argument
 guards were tested, but a Windows Host call and termination of the separate
 Windows relay have not been verified.
