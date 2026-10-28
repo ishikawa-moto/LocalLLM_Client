@@ -40,3 +40,11 @@ both paths failed. This establishes only that isolated fixture; it does not
 prove process quiescence, mount ownership, crash recovery or PC73 behavior.
 The `mount -o remount` command failed in this user namespace, while the direct
 syscall succeeded, so a future implementation must verify its exact mechanism.
+
+A second disposable PC70 WSL fixture created a fresh delegated user scope,
+placed a blocked child and its descendant in a new child cgroup, used
+`cgroup.kill`, observed `populated 0`, and then sealed and archived a tmpfs
+held by the supervisor. Directly creating a cgroup under the un-delegated user
+slice could not attach a child: `cgroup.procs` was not writable. This fixture
+does not establish crash recovery, operation ownership, Host authorization,
+process isolation, formal publication, or PC73 support. It does not execute Pi.
