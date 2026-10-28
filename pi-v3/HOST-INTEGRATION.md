@@ -47,6 +47,8 @@ scope-stop components still require their deferred security reviews.
 A PC70 disposable WSL fixture passed a narrow handoff test: the C# archive
 inspector generated a manifest for a Japanese-named file, the seeding helper
 checked the archive digest and manifest and populated an empty bounded mount,
-and an isolated Pi RPC bash command read the file. The fixture did not invoke
-Qwen or the Windows Host and does not establish Host authorization, production
-application, or PC73 behavior.
+and an isolated Pi RPC bash command read the file. In a second run of the same
+fixture, Pi also reached Qwen through the existing PC70 Gateway via a temporary
+relay and completed a prompt. The fixture did not invoke the Windows Host and
+does not establish Host authorization, production application, or PC73
+behavior.
