@@ -84,6 +84,8 @@ class TestArchiveWorkspace(unittest.TestCase):
             self.skipTest(f"cannot set executable permission: {exc}")
         if not os.stat(executable).st_mode & 0o111:
             self.skipTest("platform does not represent executable permission")
+        if os.stat(ordinary).st_mode & 0o111:
+            self.skipTest("filesystem cannot clear executable permission")
         with tarfile.open(fileobj=io.BytesIO(self.archive()), mode="r:") as archive:
             self.assertEqual(archive.getmember("ordinary").mode, 0o644)
             self.assertEqual(archive.getmember("executable").mode, 0o755)
@@ -93,6 +95,7 @@ class TestArchiveWorkspace(unittest.TestCase):
         self.make_file(".localbrain/state", b"excluded")
         self.make_file("sub/.git/HEAD", b"excluded")
         self.make_file("sub/.localbrain/state", b"excluded")
+        self.make_file("sub/.LocalBrain/private", b"excluded")
         self.make_file("sub/keep", b"included")
         names = {member.name for member in self.members(self.archive())}
         self.assertEqual(names, {"sub", "sub/keep"})

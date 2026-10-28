@@ -103,12 +103,23 @@ def archive_workspace(root, output, max_files, max_bytes):
 
     def visit(archive, directory, parts):
         nonlocal entries, total_bytes
+        children = []
         with os.scandir(directory) as iterator:
-            children = sorted(iterator, key=lambda entry: entry.name)
+            for child in iterator:
+                # Bound allocation before sorting. Excluded directories still
+                # require inspection, but cannot be added to the result.
+                if child.name.casefold() in _EXCLUDED_DIRECTORIES and child.is_dir(follow_symlinks=False):
+                    continue
+                children.append(child)
+                if len(children) > max_files - entries:
+                    raise ValueError("workspace entry limit exceeded")
+        children.sort(key=lambda entry: entry.name)
         for child in children:
-            child_stat = child.stat(follow_symlinks=False)
+            # On Windows DirEntry.stat may omit the file identity and link
+            # count; lstat obtains those fields for the subsequent fstat check.
+            child_stat = os.lstat(child.path)
             mode = child_stat.st_mode
-            if stat.S_ISDIR(mode) and child.name in _EXCLUDED_DIRECTORIES:
+            if stat.S_ISDIR(mode) and child.name.casefold() in _EXCLUDED_DIRECTORIES:
                 continue
             child_parts = parts + (child.name,)
             name = _archive_name(child_parts)
