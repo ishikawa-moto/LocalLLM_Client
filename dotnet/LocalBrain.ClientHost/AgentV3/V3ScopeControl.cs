@@ -1,0 +1,63 @@
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+
+namespace LocalBrain.ClientHost.AgentV3;
+
+// Experimental process control only. The Host must persist task state,
+// terminate the separate Windows model relay, and reconcile unknown outcomes.
+internal static class V3ScopeControl
+{
+    internal static string ScopeName(string taskId)
+    {
+        if(!Guid.TryParseExact(taskId,"D",out var parsed) || parsed.ToString("D")!=taskId)
+            throw new ArgumentException("Task ID must be a canonical UUID",nameof(taskId));
+        return "lb-v3-"+taskId+".scope";
+    }
+
+    internal static string[] StopArguments(string distro,string taskId)
+    {
+        if(string.IsNullOrEmpty(distro) || !Regex.IsMatch(distro,@"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z",RegexOptions.CultureInvariant))
+            throw new ArgumentException("Invalid WSL distribution name",nameof(distro));
+        return ["-d",distro,"--exec","/usr/bin/systemctl","--user","stop","--",ScopeName(taskId)];
+    }
+
+    internal static async Task StopAsync(string distro,string taskId,CancellationToken token)
+    {
+        var arguments=StopArguments(distro,taskId);
+        token.ThrowIfCancellationRequested();
+        if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("WSL Host control requires Windows");
+        var executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"wsl.exe");
+        var start=new ProcessStartInfo(executable) {
+            UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
+            RedirectStandardOutput=true,RedirectStandardError=true
+        };
+        foreach(var argument in arguments)start.ArgumentList.Add(argument);
+        // A stop command needs no Host capability or model credentials.
+        start.Environment.Remove("WSLENV");
+        start.Environment.Remove("LOCALBRAIN_SIDEFX_NONCE");
+        start.Environment.Remove("LOCALBRAIN_SIDEFX_PIPE");
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        using var process=Process.Start(start) ?? throw new IOException("WSL scope stop could not start");
+        process.StandardInput.Close();
+        var output=DrainAsync(process.StandardOutput.BaseStream,deadline.Token);
+        var error=DrainAsync(process.StandardError.BaseStream,deadline.Token);
+        try {
+            await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+            await Task.WhenAll(output,error).ConfigureAwait(false);
+            if(process.ExitCode!=0)throw new IOException("WSL scope stop was not confirmed");
+        } catch {
+            try { if(!process.HasExited)process.Kill(entireProcessTree:true); }
+            catch(InvalidOperationException) { }
+            // A failed or cancelled stop has unknown outcome. The caller must
+            // reconcile the task rather than report a confirmed cancellation.
+            throw;
+        }
+    }
+
+    private static async Task DrainAsync(Stream stream,CancellationToken token)
+    {
+        var buffer=new byte[4096];
+        while(await stream.ReadAsync(buffer,token).ConfigureAwait(false)!=0) { }
+    }
+}
