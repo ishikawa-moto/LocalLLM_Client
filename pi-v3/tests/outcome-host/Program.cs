@@ -26,4 +26,10 @@ try { ok.Observe(Event("{\"type\":\"agent_end\"}")); throw new Exception("settle
 catch(InvalidOperationException) { }
 try { new PiRunOutcome().Observe(Event("{\"type\":\"tool_execution_end\",\"isError\":\"false\"}")); throw new Exception("malformed tool status accepted"); }
 catch(InvalidDataException) { }
+var invalid=new PiRunOutcome();
+invalid.Observe(Event("{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"stop\"}}"));
+try { invalid.Observe(Event("{\"type\":\"tool_execution_end\",\"isError\":\"false\"}")); }
+catch(InvalidDataException) { }
+invalid.Observe(Event("{\"type\":\"agent_settled\"}"));
+Check(!invalid.CompletedWithoutModelError,"malformed event was forgotten after settlement");
 Console.WriteLine("Pi outcome evidence fixtures passed");
