@@ -33,3 +33,10 @@ Host-controlled lifecycle boundary and real WSL validation of cgroup lifetime,
 workspace sealing, access separation, interruption and recovery on PC70 and
 PC73. A separate Windows model relay also needs independent termination and
 reconciliation. Temporary WSL filesystems may not survive a distro restart.
+
+One PC70 WSL fixture created a private tmpfs and a writable bind alias, then
+used the filesystem remount syscall to make the tmpfs read-only. Writes through
+both paths failed. This establishes only that isolated fixture; it does not
+prove process quiescence, mount ownership, crash recovery or PC73 behavior.
+The `mount -o remount` command failed in this user namespace, while the direct
+syscall succeeded, so a future implementation must verify its exact mechanism.
