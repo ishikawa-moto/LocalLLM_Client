@@ -22,4 +22,8 @@ Check(!unsettled.CompletedWithoutModelError,"unsettled response accepted");
 var toolFailure=new PiRunOutcome();
 toolFailure.Observe(Event("{\"type\":\"tool_execution_end\",\"isError\":true}"));
 Check(toolFailure.ToolErrorObserved,"tool failure evidence lost");
+try { ok.Observe(Event("{\"type\":\"agent_end\"}")); throw new Exception("settled turn reused"); }
+catch(InvalidOperationException) { }
+try { new PiRunOutcome().Observe(Event("{\"type\":\"tool_execution_end\",\"isError\":\"false\"}")); throw new Exception("malformed tool status accepted"); }
+catch(InvalidDataException) { }
 Console.WriteLine("Pi outcome evidence fixtures passed");
