@@ -17,6 +17,11 @@ queue. The Host must own the relay capability, credentials, task state,
 workspace grant, process cancellation and result authorization. These
 connections have not yet been completed for PC73.
 
+`localbrain-loop.mjs` is an isolated Pi event extension that stops a turn after
+three consecutive identical bash calls and results. It does not export task
+contents or call an external model. It is not loaded by the sandbox launcher
+or connected to Host handoff yet, and does not detect other forms of loops.
+
 The Host archive inspector validates data without applying it; validation alone
 grants no authority to update a production workspace.
 The workspace-seeding helper is likewise experimental: it requires an exact
