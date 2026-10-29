@@ -28,9 +28,13 @@ does not authorize deployment or claim that the steps below are implemented.
    interrupted run it must reconcile the WSL scope, Windows relay and any
    snapshot intent before starting a new attempt. An uncertain production
    application must not be replayed automatically.
-6. An experimental snapshot can freeze only its exact task scope, retain a
-   durable intent and produce a bounded archive. The Host must inspect that
-   archive, compare every path and digest against its authorized scope and
+6. The existing experimental freeze helper does not establish exclusive
+   ownership of `cgroup.freeze` and must not produce or publish a production
+   result. The proposed replacement stops the task generation, verifies its
+   cgroup is empty, seals its Host-owned workspace and then captures an archive;
+   see `SNAPSHOT-SAFETY.md`. This lifecycle and recovery protocol are not yet
+   implemented. After safe capture is available, the Host must inspect its
+   archive, compare every path and digest against the authorized scope and
    baseline, and bind any required approval to the exact result. The inspector
    performs no extraction or application. Materialization needs its own
    reparse-point, collision, integrity and atomicity checks.
@@ -41,8 +45,9 @@ does not authorize deployment or claim that the steps below are implemented.
 The Pi provider, RPC reader, WSL launcher, snapshot helper, archive inspector
 and scope-stop helper have isolated PC70 fixtures. These do not replace a real
 Windows Host integration test, PC73 deployment test, Canonical recovery test,
-or representative Slack, Browser Chat and OCR checks. The snapshot and
-scope-stop components still require their deferred security reviews.
+or representative Slack, Browser Chat and OCR checks. The replacement snapshot
+lifecycle is not implemented; scope-stop still needs Windows Host and relay
+integration testing.
 
 A PC70 disposable WSL fixture passed a narrow handoff test: the C# archive
 inspector generated a manifest for a Japanese-named file, the seeding helper
