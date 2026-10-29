@@ -161,6 +161,25 @@ class SnapshotRegistry:
         """Mark an operation unresolved; never release it."""
         self._transition(ownership, 'QUARANTINED', None)
 
+    def unresolved(self, task_id):
+        """Inspect unresolved identity without granting ownership or recovery.
+
+        Only the trusted Host may access this database. A returned generation
+        does not prove that a process stopped, that a workspace is safe, or
+        that a missing owner token may be recreated.
+        """
+        task_id = _canonical_uuid(task_id)
+        db = self._connect()
+        try:
+            db.execute('BEGIN')
+            self._validate(db)
+            row = db.execute("SELECT generation_id, state FROM generations "
+                             "WHERE task_id = ? AND state != 'COMPLETED'", (task_id,)).fetchone()
+            db.commit()
+            return row
+        finally:
+            db.close()
+
     def complete(self, ownership, receipt):
         """Resolve with opaque nonempty bytes; verification belongs to the Host."""
         if not isinstance(receipt, bytes) or not receipt:

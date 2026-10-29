@@ -162,8 +162,13 @@ class SnapshotRegistryTests(unittest.TestCase):
                     rows = db.execute('SELECT state FROM generations WHERE task_id = ?', (task,)).fetchall()
                 self.assertEqual(rows, [('ACTIVE',)] if after else [])
                 if after:
+                    unresolved = SnapshotRegistry(self.path, self.registry_id).unresolved(task)
+                    self.assertEqual(unresolved[1], 'ACTIVE')
+                    self.assertEqual(str(uuid.UUID(unresolved[0])), unresolved[0])
                     with self.assertRaises(RegistryError):
                         self.registry.acquire(task)
+                else:
+                    self.assertIsNone(SnapshotRegistry(self.path, self.registry_id).unresolved(task))
 
     def test_concurrent_processes_only_one_acquires(self):
         ctx = multiprocessing.get_context('spawn')
@@ -245,6 +250,8 @@ class SnapshotRegistryTests(unittest.TestCase):
         owner = self.registry.acquire(self.task)
         self.registry.quarantine(owner)
         restarted = SnapshotRegistry(self.path, self.registry_id)
+        self.assertEqual(restarted.unresolved(self.task), (owner.generation_id, 'QUARANTINED'))
+        self.assertIsNone(restarted.unresolved(str(uuid.uuid4())))
         with self.assertRaises(RegistryError):
             restarted.acquire(self.task)
         restarted.complete(owner, b'externally verified receipt')
