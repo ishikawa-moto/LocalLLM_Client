@@ -20,12 +20,16 @@ namespace LocalBrain.ClientHost.AgentV3
         {
             if (input == null)
                 throw new ArgumentNullException(nameof(input));
+            if (maxRecordBytes <= 0 || maxRecordBytes > 1024 * 1024)
+                throw new ArgumentOutOfRangeException(nameof(maxRecordBytes));
             _output = output ?? throw new ArgumentNullException(nameof(output));
             _reader = new PiJsonlReader(input, maxRecordBytes);
         }
 
-        // Observers must honor their cancellation token and must not commit task
-        // state after cancellation. All Pi events are untrusted observations.
+        // Single use: the caller supplies a fresh task-bound process and exclusive
+        // streams. Separate wrappers cannot enforce stream ownership. Observers must
+        // honor cancellation; an asynchronous observer may outlive a cancelled wait,
+        // and its owner must observe eventual faults. Events are untrusted observations.
         public async Task RunPromptAsync(string id, string message, Func<JsonElement, CancellationToken, Task> observe, CancellationToken token)
         {
             if (string.IsNullOrEmpty(id))
@@ -43,8 +47,9 @@ namespace LocalBrain.ClientHost.AgentV3
             try
             {
                 if (_unusable)
-                    throw new InvalidOperationException("This PiRpcTurn instance is unusable after a failed or interrupted turn.");
+                    throw new InvalidOperationException("This PiRpcTurn instance is single-use.");
 
+                _unusable = true;
                 try
                 {
                     token.ThrowIfCancellationRequested();
@@ -77,8 +82,8 @@ namespace LocalBrain.ClientHost.AgentV3
                         }
                         else
                         {
-                            if (type == "agent_settled" && !responseAccepted)
-                                throw new InvalidDataException("agent_settled received before response acceptance.");
+                            if (!responseAccepted)
+                                throw new InvalidDataException("Event received before response acceptance.");
                             await observe(record, token).WaitAsync(token).ConfigureAwait(false);
                             token.ThrowIfCancellationRequested();
                             if (type == "agent_settled")

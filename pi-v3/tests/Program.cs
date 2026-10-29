@@ -2,6 +2,10 @@ using System.Text;
 using LocalBrain.ClientHost.AgentV3;
 
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+using (var input = new MemoryStream()) using (var output = new MemoryStream()) {
+    try { _ = new PiRpcTurn(input, output, 1024 * 1024 + 1); throw new Exception("oversized record limit accepted"); }
+    catch (ArgumentOutOfRangeException) { }
+}
 static async Task Reject(byte[] bytes, int max=1024) {
     using var stream = new MemoryStream(bytes);
     var reader = new PiJsonlReader(stream,max);

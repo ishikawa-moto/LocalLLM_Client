@@ -7,7 +7,8 @@ namespace LocalBrain.ClientHost.AgentV3
         public bool Settled { get; private set; }
         private bool _lastAssistantStopped;
         private bool _invalidEventObserved;
-        public bool CompletedWithoutModelError => Settled && _lastAssistantStopped && !_invalidEventObserved;
+        private bool _modelErrorObserved;
+        public bool CompletedWithoutModelError => Settled && _lastAssistantStopped && !_invalidEventObserved && !_modelErrorObserved;
         public bool ToolErrorObserved { get; private set; }
 
         public void Observe(JsonElement record)
@@ -24,6 +25,13 @@ namespace LocalBrain.ClientHost.AgentV3
 
                 switch (type.GetString())
                 {
+                    case "message_start":
+                        if (!record.TryGetProperty("message", out var started) || started.ValueKind != JsonValueKind.Object ||
+                            !started.TryGetProperty("role", out var startedRole) || startedRole.ValueKind != JsonValueKind.String ||
+                            string.IsNullOrEmpty(startedRole.GetString()))
+                            throw new InvalidDataException("Pi message start is missing or invalid.");
+                        if (startedRole.GetString() == "assistant") _lastAssistantStopped = false;
+                        break;
                     case "message_end":
                         ObserveMessageEnd(record);
                         break;
@@ -73,7 +81,9 @@ namespace LocalBrain.ClientHost.AgentV3
                 _lastAssistantStopped = false;
                 throw new InvalidDataException("Pi assistant stop reason is missing or invalid.");
             }
-            _lastAssistantStopped = stopReason.GetString() == "stop";
+            string reason = stopReason.GetString()!;
+            _lastAssistantStopped = reason == "stop";
+            if (reason is not ("stop" or "toolUse")) _modelErrorObserved = true;
         }
     }
 }

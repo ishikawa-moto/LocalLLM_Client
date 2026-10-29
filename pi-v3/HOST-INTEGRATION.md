@@ -49,6 +49,17 @@ or representative Slack, Browser Chat and OCR checks. The replacement snapshot
 lifecycle is not implemented; scope-stop still needs Windows Host and relay
 integration testing.
 
+`PiCanonicalTurn` is an unintegrated Host-side building block. It records an
+attempt reservation, prepared prompt and bounded untrusted observations in the
+existing Canonical store; it does not authenticate a caller, authorize a task,
+launch or stop Pi, update task state or publish results. Its caller must bind a
+fresh isolated process and exclusive streams to the authorized task. A previous
+revision passed a disposable Windows Canonical fixture. On the final revision,
+Windows Code Integrity blocked the generated test executable; a successful build
+or a static review does not establish that the final executable can run under
+the applicable policy. The exact policy-approved Windows fixture remains to be
+run. Do not use this adapter to bypass Host approval or isolation requirements.
+
 A PC70 disposable WSL fixture passed a narrow handoff test: the C# archive
 inspector generated a manifest for a Japanese-named file, the seeding helper
 checked the archive digest and manifest and populated an empty bounded mount,

@@ -4,8 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Program.cs" />
     <Compile Include="../../dotnet/LocalBrain.ClientHost/AgentV3/PiJsonlReader.cs" Link="PiJsonlReader.cs" />
     <Compile Include="../../dotnet/LocalBrain.ClientHost/AgentV3/PiRpcTurn.cs" Link="PiRpcTurn.cs" />
   </ItemGroup>
