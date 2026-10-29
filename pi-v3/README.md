@@ -17,16 +17,8 @@ queue. The Host must own the relay capability, credentials, task state,
 workspace grant, process cancellation and result authorization. These
 connections have not yet been completed for PC73.
 
-`frozen_snapshot.py` is experimental and requires an explicit experimental
-flag. Its recovery record and scope checks have been exercised in disposable
-WSL fixtures, but independent security review and Host lifecycle integration
-remain outstanding. The Host archive inspector validates data without applying
-it; validation alone grants no authority to update a production workspace.
-The independent review found that locks are scoped to a caller-selected task
-root rather than the cgroup itself, so two roots could race while freezing and
-thawing the same scope. Process and scope identities are also checked by path
-without pinning them. Do not use this helper for security-sensitive snapshots
-until these races are fixed and independently re-reviewed.
+The Host archive inspector validates data without applying it; validation alone
+grants no authority to update a production workspace.
 The workspace-seeding helper is likewise experimental: it requires an exact
 archive hash and a manifest already inspected and authorized by the Host. On
 failure, the Host must discard the entire isolated mount before starting Pi.
@@ -36,10 +28,8 @@ The Host scope-stop helper is also experimental. Its scope name includes both
 the task and generation UUID. A disposable PC70 WSL fixture stopped one of two
 generation-specific scopes while the other stayed active. Scope names and a
 successful stop command do not establish ownership, cgroup emptiness or relay
-termination. The Host must verify its owner token and pinned scope identity.
-This generation-aware helper is not connected to the old experimental freeze
-helper, which expects the older task-only scope name; neither is production
-ready. A Windows Host invocation and separate relay termination remain unverified.
+termination. A Windows Host invocation and separate relay termination remain
+unverified; do not use the helper to claim that a workspace is safe to discard.
 
 `tests/outcome-host` exercises the experimental `PiRunOutcome.cs` evidence
 reducer. It is not connected to the Host and still needs independent review.
@@ -48,7 +38,7 @@ production update.
 
 PC70 development fixtures have exercised Pi RPC, Codemode and Tool Search
 with a test MCP server, isolated WSL-to-Gateway Qwen requests, RPC framing,
-snapshot and archive guards. These fixtures do not establish PC73 deployment,
+and archive guards. These fixtures do not establish PC73 deployment,
 live service integration, migration correctness, or full resource isolation on
 another machine. Preserve the existing Canonical and approval boundaries until
 the replacement is integrated and verified.

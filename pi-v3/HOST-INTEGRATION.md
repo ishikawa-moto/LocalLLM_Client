@@ -25,28 +25,23 @@ does not authorize deployment or claim that the steps below are implemented.
    checks model/tool errors and the task's own acceptance conditions.
 5. The Host checkpoints running, cancellation, capture, validation and
    application decisions in the existing Canonical task state. After an
-   interrupted run it must reconcile the WSL scope, Windows relay and any
-   snapshot intent before starting a new attempt. An uncertain production
+   interrupted run it must reconcile the WSL scope and Windows relay before
+   starting a new attempt. An uncertain production
    application must not be replayed automatically.
-6. The existing experimental freeze helper does not establish exclusive
-   ownership of `cgroup.freeze` and must not produce or publish a production
-   result. The proposed replacement stops the task generation, verifies its
-   cgroup is empty, seals its Host-owned workspace and then captures an archive;
-   see `SNAPSHOT-SAFETY.md`. This lifecycle and recovery protocol are not yet
-   implemented. After safe capture is available, the Host must inspect its
-   archive, compare every path and digest against the authorized scope and
-   baseline, and bind any required approval to the exact result. The inspector
-   performs no extraction or application. Materialization needs its own
-   reparse-point, collision, integrity and atomicity checks.
+6. Use a dedicated Git worktree for each task and inspect its diff against the
+   authorized baseline. Bind any required approval to the exact proposed
+   result. Git commits preserve accepted results; a failed task's worktree may
+   be discarded only after its owned processes have stopped. This Git-based
+   Host integration and the production application boundary are not yet
+   implemented.
 7. Cancellation is complete only when the task scope and separate Windows
    relay have both stopped and the Host has recorded the outcome. A timeout,
    failed stop or lost identity is an unknown outcome requiring reconciliation.
 
-The Pi provider, RPC reader, WSL launcher, snapshot helper, archive inspector
+The Pi provider, RPC reader, WSL launcher, archive inspector
 and scope-stop helper have isolated PC70 fixtures. These do not replace a real
 Windows Host integration test, PC73 deployment test, Canonical recovery test,
-or representative Slack, Browser Chat and OCR checks. The replacement snapshot
-lifecycle is not implemented; scope-stop still needs Windows Host and relay
+or representative Slack, Browser Chat and OCR checks. Scope-stop still needs Windows Host and relay
 integration testing.
 
 `PiCanonicalTurn` is an unintegrated Host-side building block. It records an
