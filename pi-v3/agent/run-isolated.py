@@ -76,9 +76,10 @@ def main():
     pi = runtime / "pi"
     bwrap = runtime / "bwrap"
     provider = pi / "localbrain-provider.mjs"
+    settings = pi / "localbrain-settings.json"
     for directory in (workspace, runtime, node, pi): checked(directory, "dir")
     verify_resource_limits(workspace, args.max_workspace_bytes, args.max_memory_bytes, args.max_processes, args.max_cpu_percent)
-    for regular in (bwrap, provider, node / "bin/node", pi / "node_modules/@earendil-works/pi-coding-agent/package.json"):
+    for regular in (bwrap, provider, settings, node / "bin/node", pi / "node_modules/@earendil-works/pi-coding-agent/package.json"):
         checked(regular, "file")
     socket_info = checked(socket, "socket")
     if socket_info.st_uid != os.getuid() or socket_info.st_mode & 0o077:
@@ -90,7 +91,8 @@ def main():
             "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
             "--symlink", "usr/lib64", "/lib64", "--ro-bind", str(node), "/opt/node", "--ro-bind", str(pi), "/opt/pi",
             "--dev", "/dev",
-            "--size", str(min(args.max_memory_bytes, 256 * 1024 * 1024)), "--tmpfs", "/tmp", "--dir", "/run/localbrain", "--ro-bind", str(socket), "/run/localbrain/model.sock",
+            "--size", str(min(args.max_memory_bytes, 256 * 1024 * 1024)), "--tmpfs", "/tmp", "--dir", "/tmp/pi-agent",
+            "--ro-bind", str(settings), "/tmp/pi-agent/settings.json", "--dir", "/run/localbrain", "--ro-bind", str(socket), "/run/localbrain/model.sock",
             "--bind", str(workspace), "/workspace", "--chdir", "/workspace", "--clearenv",
             "--setenv", "HOME", "/tmp", "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi-agent",
             "--setenv", "PATH", "/opt/node/bin:/usr/bin:/bin", "/opt/node/bin/node",

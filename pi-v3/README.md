@@ -10,6 +10,10 @@ Host-controlled runtime and task directory, a task-specific model socket, a
 dedicated bounded workspace filesystem, and cgroup v2 CPU, memory and process
 limits. It refuses to start when these boundaries are absent. MCP is currently
 disabled in this launcher pending Host-scoped authorization.
+The Host-provided Pi runtime must include `localbrain-settings.json` next to
+the provider. It enables standard compaction with an 8192-token reserve and
+12000 recent tokens for the 32768-token model. These are initial development
+settings; representative context and quality measurements remain required.
 
 The model provider uses only the task socket. The socket bridge forwards only
 model requests to the existing Windows Host relay; it is not a new inference
