@@ -3,27 +3,31 @@ using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV3;
 
-// Experimental process control only. The Host must persist task state,
-// terminate the separate Windows model relay, and reconcile unknown outcomes.
+// Experimental request construction only. Distinct generation names prevent
+// accidental reuse but do not prove ownership or cgroup emptiness. The Host
+// must verify its owner token and pinned scope before issuing a stop request,
+// terminate the separate Windows relay, and reconcile unknown outcomes.
 internal static class V3ScopeControl
 {
-    internal static string ScopeName(string taskId)
+    internal static string ScopeName(string taskId, string generationId)
     {
         if(!Guid.TryParseExact(taskId,"D",out var parsed) || parsed.ToString("D")!=taskId)
             throw new ArgumentException("Task ID must be a canonical UUID",nameof(taskId));
-        return "lb-v3-"+taskId+".scope";
+        if(!Guid.TryParseExact(generationId,"D",out var generation) || generation.ToString("D")!=generationId)
+            throw new ArgumentException("Generation ID must be a canonical UUID",nameof(generationId));
+        return "lb-v3-"+taskId+"-"+generationId+".scope";
     }
 
-    internal static string[] StopArguments(string distro,string taskId)
+    internal static string[] StopArguments(string distro,string taskId,string generationId)
     {
         if(string.IsNullOrEmpty(distro) || !Regex.IsMatch(distro,@"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z",RegexOptions.CultureInvariant))
             throw new ArgumentException("Invalid WSL distribution name",nameof(distro));
-        return ["-d",distro,"--exec","/usr/bin/systemctl","--user","stop","--",ScopeName(taskId)];
+        return ["-d",distro,"--exec","/usr/bin/systemctl","--user","stop","--",ScopeName(taskId,generationId)];
     }
 
-    internal static async Task StopAsync(string distro,string taskId,CancellationToken token)
+    internal static async Task RequestStopAsync(string distro,string taskId,string generationId,CancellationToken token)
     {
-        var arguments=StopArguments(distro,taskId);
+        var arguments=StopArguments(distro,taskId,generationId);
         token.ThrowIfCancellationRequested();
         if(!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("WSL Host control requires Windows");
         var executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"wsl.exe");

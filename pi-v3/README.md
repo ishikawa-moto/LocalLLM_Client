@@ -32,9 +32,14 @@ archive hash and a manifest already inspected and authorized by the Host. On
 failure, the Host must discard the entire isolated mount before starting Pi.
 The mount must be owned by the helper and not group- or world-writable; for
 tmpfs, provision it with `mode=0700` before seeding.
-The Host scope-stop helper is also experimental. Its command and argument
-guards were tested, but a Windows Host call and termination of the separate
-Windows relay have not been verified.
+The Host scope-stop helper is also experimental. Its scope name includes both
+the task and generation UUID. A disposable PC70 WSL fixture stopped one of two
+generation-specific scopes while the other stayed active. Scope names and a
+successful stop command do not establish ownership, cgroup emptiness or relay
+termination. The Host must verify its owner token and pinned scope identity.
+This generation-aware helper is not connected to the old experimental freeze
+helper, which expects the older task-only scope name; neither is production
+ready. A Windows Host invocation and separate relay termination remain unverified.
 
 `tests/outcome-host` exercises the experimental `PiRunOutcome.cs` evidence
 reducer. It is not connected to the Host and still needs independent review.
