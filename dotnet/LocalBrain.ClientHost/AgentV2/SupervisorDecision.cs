@@ -66,12 +66,9 @@ internal sealed record SupervisorDecision(string Action, string Source, string R
 
 internal static class SupervisorDecider
 {
-    private static readonly HashSet<string> Actions = ["CONTINUE", "RUN_TEST", "REPLAN", "COMPACT",
-        "FRESH_REVIEW", "ESCALATE_SOL", "STOP"];
-
-    public static async Task<SupervisorDecision> DecideAsync(SupervisorState state,
-        LayaSupervisor? sharedSupervisor = null, CancellationToken token = default)
+    public static Task<SupervisorDecision> DecideAsync(SupervisorState state, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
         if (!double.IsFinite(state.EffectiveContextUsage) || state.EffectiveContextUsage < 0 ||
             state.ToolCalls < 0 || state.FilesRead < 0 || state.FilesChanged < 0 ||
             state.TestsRun < 0 || state.SameErrorCount < 0 || state.SameCommandCount < 0 ||
@@ -80,42 +77,22 @@ internal static class SupervisorDecider
             state.Progress is not ("none" or "low" or "medium" or "high"))
             throw new InvalidDataException("Supervisor state is invalid");
         if (state.HighRiskAction && !state.UserApproved)
-            return Rule("STOP", "high_risk_requires_user_approval");
+            return Task.FromResult(Rule("STOP", "high_risk_requires_user_approval"));
         if (state.CompletionCandidate && (!state.RequiredTestsPassed || state.TestsRun == 0 ||
             !state.TestsPassed))
-            return Rule("RUN_TEST", "completion_requires_test_evidence");
+            return Task.FromResult(Rule("RUN_TEST", "completion_requires_test_evidence"));
         if (state.CompletionCandidate)
-            return Rule("FRESH_REVIEW", "completion_requires_independent_review");
+            return Task.FromResult(Rule("FRESH_REVIEW", "completion_requires_independent_review"));
         if (state.SameErrorCount >= 3 || state.SameCommandCount >= 4 || state.Replans >= 3)
-            return Rule("ESCALATE_SOL", "no_progress_threshold");
+            return Task.FromResult(Rule("ESCALATE_SOL", "no_progress_threshold"));
         // Context composition is observation-only until a validated action
         // policy is implemented. The prior caller supplied 0 usage here.
         if (state.ToolCalls >= 5 && state.FilesChanged > 0 && state.TestsRun == 0)
-            return Rule("RUN_TEST", "changed_files_need_test");
+            return Task.FromResult(Rule("RUN_TEST", "changed_files_need_test"));
         if (state.ToolCalls >= 3 && !state.LastActionChangedState &&
             state.Progress is "none" or "low")
-            return Rule("REPLAN", "recent_action_did_not_change_state");
-        try
-        {
-            await using var ownedSupervisor = sharedSupervisor is null ? new LayaSupervisor() : null;
-            var (action, confidence, latency) = await (sharedSupervisor ?? ownedSupervisor!)
-                .PredictAsync(state.Compact, token);
-            if (action is null || !Actions.Contains(action) || !double.IsFinite(confidence) ||
-                confidence < 0.55)
-                return new("CONTINUE", "fallback", "low_or_uncalibrated_laya_confidence",
-                    confidence, latency, true);
-            if (action == "STOP" && !state.CompletionCandidate)
-                return new("CONTINUE", "fallback", "laya_stop_without_validation",
-                    confidence, latency, true);
-            if (action == "COMPACT")
-                return new("CONTINUE", "fallback", "context_auto_actions_unvalidated",
-                    confidence, latency, true);
-            return new(action, "laya", "typed_decision", confidence, latency, false);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            return new("CONTINUE", "fallback", "laya_unavailable", null, null, true);
-        }
+            return Task.FromResult(Rule("REPLAN", "recent_action_did_not_change_state"));
+        return Task.FromResult(Rule("CONTINUE", "no_rule_triggered"));
     }
 
     private static SupervisorDecision Rule(string action, string reason) =>

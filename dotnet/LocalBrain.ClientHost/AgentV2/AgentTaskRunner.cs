@@ -139,7 +139,6 @@ internal static class AgentTaskRunner
         var testMutatedWorktree = false;
         AttemptStartingState.Saved? rescueStarting=null;
         var maxTurn = Math.Min(firstTurn + 2, request.CommandExecution?.MaxActorTurns ?? (recoveryCount == 1 ? 9 : 6));
-        await using var supervisor = new LayaSupervisor();
         for (var turn = firstTurn; turn <= maxTurn; turn++)
         {
             var commandsBefore=journal.Commands?.SuccessfulCommands??0;
@@ -164,7 +163,7 @@ internal static class AgentTaskRunner
                         snapshot.FilesChanged > 0 ? "high" : newEvidence ? "medium" : "low",
                         snapshot.FilesChanged > 0 || newEvidence, false, false, false, false)
                         .WithContext(windowsRoot, taskId),
-                        supervisor, token);
+                        token);
                     decisions.Add(live);
                     ContextTelemetryState.TryRecordDecision(windowsRoot, taskId,
                         "implementation_milestone", live);
@@ -203,7 +202,7 @@ internal static class AgentTaskRunner
                     (int)Math.Min(int.MaxValue,journal.CumulativeTools), actor.FilesRead, after.ChangedFiles.Length, 0, false,
                     actor.SameErrorCount, actor.SameCommandCount, replans, 0,
                     changedThisTurn ? "high" : "low", changedThisTurn, false,
-                    false, false, false).WithContext(windowsRoot, taskId), supervisor, token);
+                    false, false, false).WithContext(windowsRoot, taskId), token);
             decisions.Add(decision);
             ContextTelemetryState.TryRecordDecision(windowsRoot, taskId,
                 "implementation", decision);
@@ -239,7 +238,7 @@ internal static class AgentTaskRunner
                     (int)Math.Min(int.MaxValue,journal.CumulativeTools), actor.FilesRead, after.ChangedFiles.Length, tests.Count,
                     testsPassed, actor.SameErrorCount, actor.SameCommandCount, replans, 0,
                     testsPassed ? "high" : "low", changedThisTurn, testsPassed,
-                    false, false, testsPassed).WithContext(windowsRoot, taskId), supervisor, token);
+                    false, false, testsPassed).WithContext(windowsRoot, taskId), token);
                 decisions.Add(decision);
                 ContextTelemetryState.TryRecordDecision(windowsRoot, taskId,
                     "validation", decision);

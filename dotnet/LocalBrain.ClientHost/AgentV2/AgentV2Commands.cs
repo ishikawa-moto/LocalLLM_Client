@@ -164,27 +164,6 @@ internal static class AgentV2Commands
             if (!validation.IsComplete) Environment.ExitCode = 2;
             return;
         }
-        if (command == "laya-health")
-        {
-            await LayaHealthAsync();
-            return;
-        }
-        if (command == "reviewer-route-health")
-        {
-            await using var supervisor = new LayaSupervisor();
-            var sample = new { risk = "normal", files_changed = 2, diff_lines = 40,
-                tests_passed = true, languages = ".cs", task_kind = "bug_fix",
-                public_api = false, security = false, concurrency = false };
-            var prediction = await supervisor.PredictReviewRouteAsync(sample);
-            if (prediction.Route is not ("copilot" or "sol" or "both") ||
-                !double.IsFinite(prediction.Confidence) ||
-                prediction.Confidence is < 0 or > 1)
-                throw new InvalidDataException("Laya reviewer route response is invalid");
-            Console.WriteLine(JsonSerializer.Serialize(new { laya_reviewer_route = "ready",
-                route = prediction.Route, confidence = prediction.Confidence,
-                latency_ms = prediction.LatencyMs }, ClientConfig.JsonOptions));
-            return;
-        }
         if (command == "sol-health")
         {
             var ready = await SolReviewer.HealthAsync();
@@ -219,11 +198,10 @@ internal static class AgentV2Commands
         }
         if (command == "decide-batch")
         {
-            await using var supervisor = new LayaSupervisor();
             while (await Console.In.ReadLineAsync() is { } line)
             {
                 var state = ParseSupervisorState(line);
-                Console.WriteLine(JsonSerializer.Serialize(await SupervisorDecider.DecideAsync(state, supervisor),
+                Console.WriteLine(JsonSerializer.Serialize(await SupervisorDecider.DecideAsync(state),
                     ClientConfig.JsonOptions));
             }
             return;
@@ -287,7 +265,7 @@ internal static class AgentV2Commands
             if (result.ToolErrors > 0 || string.IsNullOrWhiteSpace(result.Text)) Environment.ExitCode = 2;
             return;
         }
-        throw new ArgumentException("agent-v2 commands: path, pi-health, laya-health, reviewer-route-health, sol-health, approve-high, knowledge-health, ask, critic, decide, decide-batch, test, run, resume, recover, validation");
+        throw new ArgumentException("agent-v2 commands: path, pi-health, sol-health, approve-high, knowledge-health, ask, critic, decide, decide-batch, test, run, resume, recover, validation");
     }
 
     private static SupervisorState ParseSupervisorState(string input)
@@ -331,33 +309,6 @@ internal static class AgentV2Commands
             provider = "localbrain",
             session_id = data.GetProperty("sessionId").GetString(), stderr_lines = worker.StderrLineCount },
             ClientConfig.JsonOptions));
-    }
-
-    private static async Task LayaHealthAsync()
-    {
-        var script = Path.Combine(AppContext.BaseDirectory, "scripts", "laya_worker.py");
-        if (!File.Exists(script)) throw new FileNotFoundException("Laya worker script is not deployed", script);
-        var wslScript = await WslPathAsync(script);
-        var start = new ProcessStartInfo("wsl.exe");
-        foreach (var arg in new[] { "-d", "Ubuntu", "--exec",
-            "/home/worker/localbrain-v2/laya-venv/bin/python", "-u", wslScript, "--threads", "2" })
-            start.ArgumentList.Add(arg);
-        var ready = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var worker = JsonlWorker.Start(start, message =>
-        {
-            if (message.TryGetProperty("type", out var kind) && kind.GetString() == "ready")
-                ready.TrySetResult(message);
-        });
-        var startup = await ready.Task.WaitAsync(TimeSpan.FromMinutes(5));
-        var state = new { phase = "debugging", tool_calls = 4, files_read = 2, files_changed = 1,
-            tests_run = 1, tests_passed = false, same_error_count = 0, same_command_count = 0,
-            replans = 0, context_usage = 0.2, progress = "medium", last_action_changed_state = true };
-        var answer = await worker.SendAsync(new() { ["state"] = state }, TimeSpan.FromSeconds(60));
-        if (answer.TryGetProperty("error", out _)) throw new InvalidOperationException("Laya inference failed");
-        Console.WriteLine(JsonSerializer.Serialize(new { laya = "ready", startup,
-            action = answer.GetProperty("action").GetString(),
-            confidence = answer.GetProperty("confidence").GetDouble(),
-            latency_ms = answer.GetProperty("latency_ms").GetInt32() }, ClientConfig.JsonOptions));
     }
 
     private static async Task<string> WslPathAsync(string windowsPath)

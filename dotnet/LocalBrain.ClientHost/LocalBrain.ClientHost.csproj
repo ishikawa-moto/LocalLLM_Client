@@ -13,7 +13,6 @@
     <None Include="../../scripts/host-command-worker.py" Link="scripts/host-command-worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-request.mjs" Link="scripts/host-request.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../scripts/laya_worker.py" Link="scripts/laya_worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-provider.js" Link="scripts/localbrain-provider.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-policy.mjs" Link="scripts/localbrain-policy.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />

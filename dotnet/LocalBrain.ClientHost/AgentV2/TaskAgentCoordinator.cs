@@ -155,7 +155,7 @@ internal static class TaskAgentCoordinator
             while(true){
                 Report("running");var result=await AgentTaskRunner.RunAsync(job.Root,wsl,request,config,resume:resume,token:stop.Token,controlPlaneRoot:job.ControlRoot);turns=result.ActorTurns;
                 if(result.EligibleForCompletion){Report("complete",complete:true);break;}
-                if(result.NoProgress||result.FalseVerified||result.TestMutatedWorktree||turns>=contract.MaxActorTurns){Report("blocked",result.FalseVerified?"false_completion_claim":result.NoProgress?"laya_no_progress":"task_turn_budget_or_worktree_gate");break;}
+                if(result.NoProgress||result.FalseVerified||result.TestMutatedWorktree||turns>=contract.MaxActorTurns){Report("blocked",result.FalseVerified?"false_completion_claim":result.NoProgress?"no_progress":"task_turn_budget_or_worktree_gate");break;}
                 if(result.Phase=="awaiting_external_review"){
                     if(++reviewRetries>3){Report("blocked","external_review_unavailable");break;}await Task.Delay(TimeSpan.FromSeconds(30),stop.Token);
                 }
