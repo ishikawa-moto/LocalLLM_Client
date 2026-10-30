@@ -48,6 +48,13 @@ def checked(path, kind):
     return info
 
 
+def checked_private_directory(path):
+    info = checked(path, "dir")
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("Host-controlled directory must be private")
+    return info
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path, help="Host-controlled private WSL v3 root")
@@ -63,13 +70,11 @@ def main():
     if task_id != args.task:
         parser.error("task must be a canonical UUID")
     root = args.root
-    root_info = checked(root, "dir")
+    checked_private_directory(root)
     task = root / "tasks" / task_id
-    task_info = checked(task, "dir")
-    for info in (root_info, task_info):
-        if info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("Host root and task directory must be private")
+    checked_private_directory(task)
     workspace = task / "workspace"
+    sessions = task / "sessions"
     socket = task / "model.sock"
     runtime = root / "runtime"
     node = runtime / "node"
@@ -79,6 +84,7 @@ def main():
     settings = pi / "localbrain-settings.json"
     loop_guard = pi / "localbrain-loop.mjs"
     for directory in (workspace, runtime, node, pi): checked(directory, "dir")
+    checked_private_directory(sessions)
     verify_resource_limits(workspace, args.max_workspace_bytes, args.max_memory_bytes, args.max_processes, args.max_cpu_percent)
     for regular in (bwrap, provider, settings, loop_guard, node / "bin/node", pi / "node_modules/@earendil-works/pi-coding-agent/package.json"):
         checked(regular, "file")
@@ -94,11 +100,11 @@ def main():
             "--dev", "/dev",
             "--size", str(min(args.max_memory_bytes, 256 * 1024 * 1024)), "--tmpfs", "/tmp", "--dir", "/tmp/pi-agent",
             "--ro-bind", str(settings), "/tmp/pi-agent/settings.json", "--dir", "/run/localbrain", "--ro-bind", str(socket), "/run/localbrain/model.sock",
-            "--bind", str(workspace), "/workspace", "--chdir", "/workspace", "--clearenv",
+            "--bind", str(workspace), "/workspace", "--bind", str(sessions), "/run/localbrain/sessions", "--chdir", "/workspace", "--clearenv",
             "--setenv", "HOME", "/tmp", "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi-agent",
             "--setenv", "PATH", "/opt/node/bin:/usr/bin:/bin", "/opt/node/bin/node",
             "/opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", "--mode", "rpc", "--offline",
-            "--no-session", "--no-mcp", "--no-skills", "--no-context-files", "--no-approve",
+            "--session-dir", "/run/localbrain/sessions", "--no-mcp", "--no-skills", "--no-context-files", "--no-approve",
             "--tools", "read,write,edit,bash,codemode,tool_search", "--extension", "/opt/pi/localbrain-provider.mjs",
             "--extension", "/opt/pi/localbrain-loop.mjs",
             "--provider", "localbrain", "--model", "local-qwen38"]

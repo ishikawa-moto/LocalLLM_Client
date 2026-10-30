@@ -16,6 +16,15 @@ with tempfile.TemporaryDirectory(prefix="localbrain-launcher-test-") as name:
         raise AssertionError("unbounded workspace accepted")
     except ValueError:
         pass
+    private = root / "sessions"
+    private.mkdir(mode=0o700)
+    launcher.checked_private_directory(private)
+    private.chmod(0o755)
+    try:
+        launcher.checked_private_directory(private)
+        raise AssertionError("non-private session directory accepted")
+    except ValueError:
+        pass
     link = root / "linked"
     link.symlink_to(workspace, target_is_directory=True)
     try:

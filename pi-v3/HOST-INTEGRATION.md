@@ -10,7 +10,8 @@ does not authorize deployment or claim that the steps below are implemented.
    Host approval mechanism as writable mounts.
 2. The Host creates a private task identity and a bounded isolated workspace.
    The WSL launch must have an appropriately limited user cgroup and dedicated
-   filesystem before invoking `run-isolated.py`. The exact runtime path and
+   filesystem and private per-task session directory before invoking
+   `run-isolated.py`. The exact runtime path and
    resource budgets are Host configuration, not model input. The current
    launcher intentionally disables MCP until the Host supplies an authorized
    configuration and capability boundary.
