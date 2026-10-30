@@ -172,7 +172,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if(parsed.Verdict!="PASS" || critic.ToolErrors>0)throw new InvalidDataException("Fresh local Rescue Critic did not pass");
         var externalPassed=request.EffectiveRisk=="LOW";
         if(!externalPassed) {
-            await using var supervisor=new LayaSupervisor();var external=await ExternalReviewCoordinator.RunAsync(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]),supervisor,token);
+            var external=await ExternalReviewCoordinator.RunAsync(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]),token);
             externalPassed=external.Passed;
         }
         if(!externalPassed || AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=stateHash)

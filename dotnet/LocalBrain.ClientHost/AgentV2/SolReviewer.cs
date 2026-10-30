@@ -1,20 +1,15 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
-/// <summary>Runs one isolated, read-only OpenCode review over a bounded evidence packet.</summary>
+/// <summary>Legacy review entry points remain unavailable until a subscription-only route is verified.</summary>
 internal static class SolReviewer
 {
     internal sealed record Review(string Verdict, string[] Issues);
     internal sealed record Rescue(string Verdict, string[] Steps, int Attempts);
 
-    private const string Model = "openai/gpt-6.1-sol";
-    private const string OpenCode = "/home/worker/localbrain-v2/opencode/node_modules/.bin/opencode";
-    private const string SafeDirectory = "/home/worker/localbrain-v2/opencode";
-    private const string DenyAllTools = "{\"permission\":{\"*\":\"deny\"}}";
     private static readonly Regex Secret = new(
         @"-----BEGIN [^-]*PRIVATE KEY-----|\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|authorization|password)\s*[:=]\s*\S+|\bBearer\s+\S{12,}|\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|AKIA[A-Z0-9]{16})",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -127,50 +122,11 @@ internal static class SolReviewer
     private static async Task<Review> RunReviewAsync(string packet, string variant,
         CancellationToken token,string[]? sources=null,string[]? files=null) => Parse(await InvokeAsync(packet, variant, token,sources,files));
 
-    private static async Task<string> InvokeAsync(string packet, string variant, CancellationToken token,string[]? sources=null,string[]? files=null)
+    private static Task<string> InvokeAsync(string packet, string variant, CancellationToken token,string[]? sources=null,string[]? files=null)
     {
         Slack.RestrictedExecution.DenyExternal();
-        using var export=HostTaskJournal.Current?.BeginExternalPacket(packet,"sol",sources,files);
-        if(export is not null)packet=export.Packet;
-        if (Encoding.UTF8.GetByteCount(packet) > 64_000)
-            throw new InvalidDataException("Sol review packet exceeds 64,000 bytes");
-        if (Secret.IsMatch(packet))
-            throw new InvalidDataException("Sol review packet may contain a credential");
-        var start = new ProcessStartInfo("wsl.exe")
-        {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-        foreach (var arg in new[] { "-d", "Ubuntu", "--cd", SafeDirectory, "--exec", "/usr/bin/env",
-            $"OPENCODE_CONFIG_CONTENT={DenyAllTools}", "OPENCODE_AUTO_SHARE=false", OpenCode,
-            "run", "--model", Model, "--variant", variant, "--agent", "plan",
-            "--dir", SafeDirectory }) start.ArgumentList.Add(arg);
-        HostTaskJournal.Current?.ReviewStarted("sol");
-        Slack.RestrictedExecution.DenyExternal();
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Sol reviewer did not start");
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromMinutes(5));
-        try
-        {
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.StandardInput.WriteAsync(packet.AsMemory(), timeout.Token);
-            process.StandardInput.Close();
-            await process.WaitForExitAsync(timeout.Token);
-            var answer = await stdout;
-            _ = await stderr; // Do not log provider diagnostics or credentials.
-            if (process.ExitCode != 0 || answer.Length > 8_000)
-                throw new InvalidOperationException("Sol review failed or exceeded output limit");
-            return answer;
-        }
-        catch
-        {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
-            throw;
-        }
+        token.ThrowIfCancellationRequested();
+        return Task.FromException<string>(new InvalidOperationException("Sol subscription route is not verified"));
     }
 
     private static Rescue ParseRescue(string answer, int attempts)

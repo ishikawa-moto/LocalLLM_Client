@@ -305,7 +305,7 @@ internal static class AgentTaskRunner
             !noProgress && !testMutatedWorktree && after.UnexpectedFiles.Length == 0)
         {
             externalReview = await ExternalReviewCoordinator.RunAsync(request, after.ReviewDiff,
-                after.ChangedFiles, tests, knowledge, supervisor, token);
+                after.ChangedFiles, tests, knowledge, token);
             solReview = externalReview.Sol;
             solReviewCount += externalReview.SolFinalAttempts;
         }
@@ -391,6 +391,8 @@ internal static class AgentTaskRunner
         int actorTurns, string requestHash, int recoveryCount,
         string? forcedRoute, CancellationToken token,bool falseVerified=false,int replans=0,int stalledTests=0)
     {
+        if (forcedRoute is not (null or "sol"))
+            throw new InvalidOperationException("Saved external review route is no longer available; inspect the task before resuming.");
         var tests = new List<ToolRouter.TestResult>();
         foreach (var required in request.RequiredTests)
         {
@@ -424,9 +426,8 @@ internal static class AgentTaskRunner
         ExternalReviewCoordinator.Outcome? externalReview = null;
         if (request.EffectiveRisk != "LOW" && testsPassed && criticReview.Verdict == "PASS")
         {
-            await using var supervisor = new LayaSupervisor();
             externalReview = await ExternalReviewCoordinator.RunAsync(request, after.ReviewDiff,
-                after.ChangedFiles, tests, knowledge, supervisor, token, forcedRoute);
+                after.ChangedFiles, tests, knowledge, token);
             solReview = externalReview.Sol;
             solReviewCount += externalReview.SolFinalAttempts;
         }

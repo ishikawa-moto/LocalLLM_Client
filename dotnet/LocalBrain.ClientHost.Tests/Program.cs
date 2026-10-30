@@ -41,6 +41,7 @@ if(args.Length==1&&args[0] is "--task-command-proof" or "--task-command-wsl-proo
 if(args.Length==1&&args[0]=="--managed-agent-proof"){await ManagedAgentTests.RunAsync();return;}
 if(args.Length==2&&args[0]=="--managed-agent-native-prepare"){await ManagedAgentTests.NativePrepareAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--work-loop-proof"){await WorkLoopSupervisorTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--external-review-availability-proof"){await ExternalReviewAvailabilityTests.RunAsync();return;}
 if(args.Length==2 && args[0]=="--continue-memory-native-proof") {await ContinueContextMemoryTests.NativeAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--continue-memory-proof") {await ContinueContextMemoryTests.RunAsync();return;}
 if(args.Length==3 && args[0]=="--git-open-stdin-fixture") {await GitReadStdioTests.ChildAsync(args[1],args[2]);return;}
