@@ -18,10 +18,9 @@ internal static class ExternalReviewCoordinator
         CancellationToken token, string? forcedRoute = null)
     {
         var settings = ReviewerRoutingSettings.Read();
-        ReviewerCalibration calibration;
-        try { calibration = ReviewerCalibration.Read(); }
-        catch (Exception error) when (error is InvalidDataException or JsonException or IOException)
-        { calibration = new(0, 0, 0.5, 0.5); }
+        // No model-based review weighting: a neutral routing value never
+        // changes the review decision or starts an additional model.
+        var calibration = new ReviewerCalibration(0, 0, 0.5, 0.5);
         string? layaRoute = forcedRoute;
         double? confidence = forcedRoute is null ? null : 1;
         if (forcedRoute is null && request.EffectiveRisk != "LOW")
@@ -79,32 +78,9 @@ internal static class ExternalReviewCoordinator
         if (routing.Route == ReviewerRoute.Sol && sol.Verdict == "UNAVAILABLE")
             copilot = await RunCopilotAsync(packet, token);
 
-        var solValid = sol.Verdict is "PASS" or "ISSUES";
-        var copilotValid = copilot.Verdict is "PASS" or "ISSUES";
         var gate = Evaluate(request.EffectiveRisk, sol, copilot);
-
-        var astraStatus = "NOT_RUN";
-        if (routing.Route == ReviewerRoute.Both && solValid && copilotValid &&
-            calibration.Attempts < settings.CalibrationSamples)
-        {
-            AstraMetaEvaluator.Comparison? comparison = null;
-            try
-            {
-                comparison = await AstraMetaEvaluator.CompareAsync(packet, sol, copilot, token);
-                astraStatus = comparison is null ? "UNAVAILABLE" : "RECORDED";
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-            catch (Exception error) when (error is IOException or InvalidDataException or
-                InvalidOperationException or OperationCanceledException or
-                System.ComponentModel.Win32Exception or UnauthorizedAccessException)
-            { astraStatus = "UNAVAILABLE"; }
-            try { await ReviewerCalibration.RecordAsync(comparison, settings, token); }
-            catch (Exception error) when (error is IOException or InvalidDataException or
-                UnauthorizedAccessException)
-            { astraStatus = "UNAVAILABLE"; }
-        }
         return new(routing, sol, copilot, gate.Passed, gate.SolRequired, gate.Unavailable,
-            solAttempts, astraStatus);
+            solAttempts, "NOT_RUN");
     }
 
     internal static Gate Evaluate(string risk, SolReviewer.Review sol,
