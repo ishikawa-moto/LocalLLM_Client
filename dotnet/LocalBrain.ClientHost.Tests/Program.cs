@@ -229,20 +229,6 @@ if (args.Length == 2 && args[0] == "--reviewer-e2e")
     return;
 }
 
-if (args.Contains("--astra-live", StringComparer.Ordinal))
-{
-    var comparison = await AstraMetaEvaluator.CompareAsync(
-        "Synthetic requirement: greeting.txt contains HELLO plus LF. " +
-        "Synthetic diff: new greeting.txt, bytes 48 45 4C 4C 4F 0A. " +
-        "Synthetic tests: content check PASS; git diff check PASS.",
-        new SolReviewer.Review("PASS", []),
-        new CopilotReviewer.Review("PASS", []), CancellationToken.None,
-        Console.WriteLine);
-    Console.WriteLine("astra_meta_status=" + (comparison is null ? "UNAVAILABLE" : "AVAILABLE"));
-    if (comparison is null) Environment.ExitCode = 2;
-    return;
-}
-
 if (args.Contains("--copilot-live", StringComparer.Ordinal))
 {
     var packet = """
@@ -265,24 +251,6 @@ static void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException(name);
 }
-
-var settings = new ReviewerRoutingSettings(0.65, 6);
-var neutral = new ReviewerCalibration(0, 0, 0.5, 0.5);
-Check(ReviewerRouting.Decide("LOW", null, null, settings, neutral).Route == ReviewerRoute.None,
-    "LOW needs no external reviewer");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.4, settings, neutral).Route == ReviewerRoute.Both,
-    "Low confidence requires both reviewers");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.9, settings, neutral).Route == ReviewerRoute.Copilot,
-    "Confident NORMAL can use Copilot");
-Check(ReviewerRouting.Decide("HIGH", "copilot", 0.9, settings, neutral).Route == ReviewerRoute.Sol,
-    "HIGH cannot select Copilot alone");
-Check(ReviewerRouting.Decide("HIGH", "sol", 0.4, settings, neutral).Route == ReviewerRoute.Both,
-    "Uncertain HIGH requires both");
-var calibrated = new ReviewerCalibration(4, 3, 0.35, 0.65);
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.7, settings, calibrated).Route == ReviewerRoute.Sol,
-    "Bounded Astra calibration can change a borderline NORMAL route");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.9, settings, calibrated).Route == ReviewerRoute.Copilot,
-    "Astra calibration cannot override high confidence Laya");
 
 var legacy = JsonSerializer.Deserialize<LocalValidationV2>("""
     {"required_tests_passed":true,"acceptance_criteria_passed":true,

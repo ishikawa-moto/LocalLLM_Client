@@ -111,7 +111,6 @@ internal static class SlackTests
             Denied(RestrictedExecution.DenyExternal,"egress boundary");Denied(RestrictedExecution.DenyAgentTools,"tools boundary");
             try{await CopilotReviewer.ReviewFinalAsync("public fixture",CancellationToken.None);throw new Exception("external review started");}catch(UnauthorizedAccessException){checks++;}
             try{await SolReviewer.HealthAsync(CancellationToken.None);throw new Exception("Sol started");}catch(UnauthorizedAccessException){checks++;}
-            try{await AstraMetaEvaluator.CompareAsync("PUBLIC",new("PASS",[]),new("PASS",[]),CancellationToken.None);throw new Exception("Astra packet created");}catch(UnauthorizedAccessException){checks++;}
             try{await new ReviewRunner(null!,null!,null!).RunAsync(["status"]);throw new Exception("review runner started");}catch(UnauthorizedAccessException){checks++;}
             Denied(()=>new HostEgress(null!).Prepare("public_task",[],[],[],[]),"Host export denied before packet construction");
             var tasks=Enumerable.Range(0,3).Select(_=>Task.Run(()=>Denied(RestrictedExecution.DenyExternal,"derived task inherits")));await Task.WhenAll(tasks);

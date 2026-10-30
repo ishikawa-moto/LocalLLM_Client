@@ -18,7 +18,6 @@
     <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-tokenizer.py" Link="scripts/context-tokenizer.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/qwen-chat-template.jinja" Link="scripts/qwen-chat-template.jinja" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../reviewer-routing.json" Link="reviewer-routing.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

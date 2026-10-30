@@ -16,7 +16,7 @@ internal static class ExternalReviewCoordinator
         var risk = request.EffectiveRisk;
         if (risk is not ("LOW" or "NORMAL" or "HIGH")) throw new InvalidDataException("Unsupported external review risk");
         var routing = new ReviewerRoutingDecision(risk == "LOW" ? ReviewerRoute.None : ReviewerRoute.Sol,
-            "host_risk_rule", null, 0.5, 0.5);
+            "host_risk_rule");
         if (routing.Route == ReviewerRoute.None)
             return Task.FromResult(new Outcome(routing, new("NOT_REQUIRED", []), new("NOT_REQUIRED", []),
                 true, false, false, 0, "NOT_REQUIRED"));
