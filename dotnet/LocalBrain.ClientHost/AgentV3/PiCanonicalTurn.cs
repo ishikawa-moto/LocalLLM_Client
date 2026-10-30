@@ -43,6 +43,8 @@ internal sealed class PiCanonicalTurn
         if (!ReferenceEquals(HostTaskJournal.Current, journal))
             throw new UnauthorizedAccessException("Pi execution requires the current Host task.");
         TaskCommandAuthorization.Require(journal, request);
+        if (request.EffectiveRisk == "HIGH" && !journal.HasApproval)
+            throw new UnauthorizedAccessException("High-risk task approval is unavailable or expired.");
         if (!StringComparer.OrdinalIgnoreCase.Equals(ProjectAllowlist.CurrentHead(journal.WindowsRoot), journal.ExpectedHead))
             throw new UnauthorizedAccessException("The authorized Git baseline changed.");
         return new PiCanonicalTurn(journal.Canonical).RunAsync(journal.TaskId,
