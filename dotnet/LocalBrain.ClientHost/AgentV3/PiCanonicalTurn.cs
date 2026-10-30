@@ -32,6 +32,23 @@ internal sealed class PiCanonicalTurn
 
     internal sealed record Result(bool CompletedWithoutModelError, bool ToolErrorObserved);
 
+    // Use the existing Host task grant; this does not launch Pi, establish
+    // process ownership, approve changes or authorize a production update.
+    internal static Task<Result> RunAuthorizedAsync(HostTaskJournal journal, AgentTaskRequest request,
+        PiRpcTurn turn, string prompt, Guid attemptId, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentNullException.ThrowIfNull(request);
+        token.ThrowIfCancellationRequested();
+        if (!ReferenceEquals(HostTaskJournal.Current, journal))
+            throw new UnauthorizedAccessException("Pi execution requires the current Host task.");
+        TaskCommandAuthorization.Require(journal, request);
+        if (!StringComparer.OrdinalIgnoreCase.Equals(ProjectAllowlist.CurrentHead(journal.WindowsRoot), journal.ExpectedHead))
+            throw new UnauthorizedAccessException("The authorized Git baseline changed.");
+        return new PiCanonicalTurn(journal.Canonical).RunAsync(journal.TaskId,
+            HostTaskJournal.WorkspaceId(journal.WindowsRoot), turn, prompt, attemptId, token);
+    }
+
     internal async Task<Result> RunAsync(string taskId, string workspaceId, PiRpcTurn turn, string prompt, Guid attemptId, CancellationToken token)
     {
         ArgumentNullException.ThrowIfNull(turn);

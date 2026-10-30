@@ -37,6 +37,14 @@ internal static class PiCanonicalTurnTests
                 store.CreateTask("task", "ws", CanonicalStore.Hash(Encoding.UTF8.GetBytes("{}")), "{}");
                 store.CreateTask("task2", "ws", CanonicalStore.Hash(Encoding.UTF8.GetBytes("{}")), "{}");
                 var adapter = new PiCanonicalTurn(store);
+                var authorizedRequest = AgentTaskRequest.Parse("""{"requirement":"Fixture task","acceptance_criteria":["check"],"risk":"LOW","approved_high_risk":false,"allowed_files":["fixture.txt"],"required_tests":[{"kind":"git_diff_check"}]}""");
+                using (var journal = new HostTaskJournal(store, Path.Combine(root,"authorized-work"), "authorized-fixture", authorizedRequest, new string('a',40)))
+                using (var denied = new MemoryStream()) {
+                    try {
+                        await PiCanonicalTurn.RunAuthorizedAsync(journal, authorizedRequest, new PiRpcTurn(new Responses(denied,""),denied,131072), "fixture", Guid.NewGuid(), CancellationToken.None);
+                        throw new Exception("Missing Host grant accepted");
+                    } catch (UnauthorizedAccessException) { Check(denied.Length == 0, "Missing Host grant denies before sending prompt"); }
+                }
                 async Task<(PiCanonicalTurn.Result, long)> Run(string events) {
                     using var sent = new MemoryStream();
                     var result = await adapter.RunAsync("task", "ws", new PiRpcTurn(new Responses(sent, events), sent, 131072), "fixture prompt", Guid.NewGuid(), CancellationToken.None);

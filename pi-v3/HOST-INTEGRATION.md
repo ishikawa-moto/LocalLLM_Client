@@ -55,6 +55,12 @@ or a static review does not establish that the final executable can run under
 the applicable policy. The exact policy-approved Windows fixture remains to be
 run. Do not use this adapter to bypass Host approval or isolation requirements.
 
+The candidate `RunAuthorizedAsync` entry checks the ambient Host journal, the
+existing task command grant and the current Git HEAD before sending a prompt.
+It is not wired to the Host coordinator and has only been built, not executed.
+These checks do not establish process ownership, eliminate a subsequent Git
+race, authorize publication, or replace Host lifecycle and isolation controls.
+
 A PC70 disposable WSL fixture passed a narrow handoff test: the C# archive
 inspector generated a manifest for a Japanese-named file, the seeding helper
 checked the archive digest and manifest and populated an empty bounded mount,
