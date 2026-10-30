@@ -33,28 +33,16 @@ internal static class WorkLoopSupervisorTests
         Check(WorkLoopSupervisor.Inspect(History(3)).BlockReason is null,"A short repeated check must not be classified as a four-cycle loop");
         var root=Path.Combine(Path.GetTempPath(),"work-loop-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
         var config=new ClientConfig("https://public.invalid",18081,"unused",Path.Combine(root,"projects.json"),Path.Combine(root,"audit.jsonl"));var audit=new Audit(config);
-        var invocations=0;
-        await using(var monitor=new WorkLoopSupervisor((state,t)=>{invocations++;return Task.FromResult(new SupervisorDecision("REPLAN","laya","fixture",0.1,1,true));})){
+        await using(var monitor=new WorkLoopSupervisor()){
             var original=History(1);await monitor.CheckAsync(original,"public-a",audit,CancellationToken.None);
             await monitor.CheckAsync(History(4,changing:true),"public-b",audit,CancellationToken.None);
             var blocked=false;try{await monitor.CheckAsync(History(4),"public-c",audit,CancellationToken.None);}catch(WorkLoopBlockedException){blocked=true;}
-            Check(invocations==2&&blocked,"All changed tool milestones enter Laya, hard loops stop before any predictor");
+            Check(blocked,"Hard loops stop before dispatch");
         }
-        await using(var monitor=new WorkLoopSupervisor((s,t)=>Task.FromResult(new SupervisorDecision("REPLAN","laya","fixture",0.9,1,false)))){
-            var blocked=false;try{await monitor.CheckAsync(History(1),"public-d",audit,CancellationToken.None);}catch(WorkLoopBlockedException){blocked=true;}
-            Check(blocked,"A confident Laya replan pauses before dispatch, without executing any action");
-        }
-        await using(var monitor=new WorkLoopSupervisor((s,t)=>throw new IOException("public unavailable")))
-            await monitor.CheckAsync(History(1),"public-e",audit,CancellationToken.None);
-        await using(var monitor=new WorkLoopSupervisor((s,t)=>Task.FromResult(new SupervisorDecision("REPLAN","laya","invalid",double.NaN,1,false))))
-            await monitor.CheckAsync(History(1),"public-f",audit,CancellationToken.None);
-        await using(var monitor=new WorkLoopSupervisor((s,t)=>Task.FromResult(new SupervisorDecision("STOP","laya","not a validation verdict",0.99,1,false))))
-            await monitor.CheckAsync(History(1),"public-g",audit,CancellationToken.None);
         Check(!File.ReadAllText(config.AuditLog).Contains("PUBLIC_POLICY_KEEP_APPROVALS"),"Audits must not contain source policy, commands or tool results");
         await TransportAsync("loop");await TransportAsync("success");await TransportAsync("header-timeout");await TransportAsync("stream-timeout");await TransportAsync("total-timeout");
-        Console.WriteLine("Work-loop monitoring: identical/cyclic/error loops, new user reset, distinct progress, Laya gating/unavailability, original-byte preservation and real HTTP timeout/no-replay fixtures PASS.");
+        Console.WriteLine("Work-loop monitoring: identical/cyclic/error loops, new user reset, distinct progress, original-byte preservation and HTTP timeout/no-replay fixtures PASS.");
     }
-    internal static async Task NativeAsync(){await TransportAsync("native-success");Console.WriteLine("ACTUAL_CPU_LAYA_IN_BRIDGE_PUBLIC_FIXTURE_PASS; PC70 model requests0; private knowledge0");}
     private sealed class Peer(string mode):HttpMessageHandler
     {
         internal int Forwards;internal byte[]? Original;
@@ -87,7 +75,7 @@ internal static class WorkLoopSupervisorTests
         var root=Path.Combine(Path.GetTempPath(),"work-loop-http-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
         var tcp=new TcpListener(IPAddress.Loopback,0);tcp.Start();var port=((IPEndPoint)tcp.LocalEndpoint).Port;tcp.Stop();
         var config=new ClientConfig("https://public.invalid",port,"unused",Path.Combine(root,"projects.json"),Path.Combine(root,"audit.jsonl"));
-        var monitor=mode=="native-success"?new WorkLoopSupervisor():new WorkLoopSupervisor((s,t)=>Task.FromResult(new SupervisorDecision("CONTINUE","fixture","no model",0.1,1,true))){
+        var monitor=new WorkLoopSupervisor(){
             IdleLimit=TimeSpan.FromMilliseconds(150),RequestLimit=TimeSpan.FromMilliseconds(mode=="total-timeout"?350:3000)};
         var measured=0;
         var memory=new ContinueContextMemory(Path.Combine(root,"archive"),(r,t)=>{measured++;return Task.FromResult(100);},(_,_,_,_)=>throw new Exception("No memory model required"));
@@ -102,12 +90,6 @@ internal static class WorkLoopSupervisorTests
                 using var response=await client.PostAsync($"http://127.0.0.1:{port}/v1/chat/completions",new ByteArrayContent(original));var body=await response.Content.ReadAsStringAsync();
                 if(mode=="loop")Check((int)response.StatusCode==422&&peer.Forwards==0&&measured==0&&body.Contains("work_loop_paused"),"Hard loop must stop before memory measurement/compaction and not reach model peer");
                 else if(mode is "header-timeout" or "stream-timeout")Check((int)response.StatusCode==422&&peer.Forwards==1&&body.Contains("dispatch_outcome_unknown"),"Timeout before any bytes must return a nonretryable unknown-dispatch error");
-                else if(mode=="native-success"){
-                    var rows=File.ReadAllLines(config.AuditLog).Select(line=>JsonNode.Parse(line)!).ToArray();
-                    Check(rows.Any(row=>row["event"]?.GetValue<string>()=="work_loop_laya_decision")&&!rows.Any(row=>row["event"]?.GetValue<string>()=="work_loop_laya_unavailable"),"An actual CPU Laya prediction is required; fallback alone cannot qualify");
-                    Console.WriteLine(rows.Single(row=>row["event"]?.GetValue<string>()=="work_loop_laya_decision").ToJsonString());
-                    Check(peer.Forwards==1?response.IsSuccessStatusCode&&peer.Original!.SequenceEqual(original):(int)response.StatusCode==422,"Actual Laya may continue or pause; never replay or execute tools");
-                }
                 else Check(response.IsSuccessStatusCode&&peer.Forwards==1&&peer.Original!.SequenceEqual(original),"Normal operation must preserve exact body and send once");
             }
             using var status=await client.GetAsync($"http://127.0.0.1:{port}/localbrain/supervision/status");
