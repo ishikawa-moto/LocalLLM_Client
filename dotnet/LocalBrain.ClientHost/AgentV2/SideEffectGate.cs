@@ -15,6 +15,8 @@ internal sealed class SideEffectGate : IAsyncDisposable
     internal sealed record Reply(bool Ok, string Status, string? ContentHash = null, bool Handoff = false,
         int Headroom = 0,string? Text=null,object? CommandState=null);
     internal sealed record Budget(bool Handoff, int Headroom);
+    internal static Budget EvaluateHostMeasuredBudget(int payloadTokens, int contextLimit = 32768) =>
+        EvaluateBudget(payloadTokens, contextLimit, nextTurn: 0, toolResult: 0, handoffPacket: 0);
     internal static Budget EvaluateBudget(int payloadTokens, int contextLimit = 32768,
         int outputReserve = 2048, int safetyReserve = 2048, int nextTurn = 1024,
         int toolResult = 4096, int handoffPacket = 4096)
@@ -78,7 +80,8 @@ internal sealed class SideEffectGate : IAsyncDisposable
             }
             if(request.Operation=="preflight") {
                 diagnosticStage="budget";
-                var budget=EvaluateBudget(request.PayloadTokens,request.ContextLimit);
+                var budget=hostMeasured?EvaluateHostMeasuredBudget(request.PayloadTokens,request.ContextLimit):
+                    EvaluateBudget(request.PayloadTokens,request.ContextLimit);
                 if(request.PayloadJson is null || Encoding.UTF8.GetByteCount(request.PayloadJson)>2*1024*1024)
                     throw new InvalidDataException("Provider payload evidence is unavailable");
                 diagnosticStage="payload_parse";

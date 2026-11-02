@@ -70,6 +70,10 @@ internal static class PiHostModelBroker
         using var message=new HttpRequestMessage(HttpMethod.Post,"/v1/chat/completions") {Content=new ByteArrayContent(body)};
         message.Content.Headers.ContentType=new MediaTypeHeaderValue("application/json");
         message.Headers.Add("X-LocalBrain-Managed-Permit",permit.Text);
+        var requestId=Guid.NewGuid().ToString("D");
+        message.Headers.Add("X-LocalBrain-Request-Id",requestId);
+        journal.Checkpoint(new {current_gateway_request_id=requestId});
+        try {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromMinutes(9));
         using var response=await http.SendAsync(message,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
         await using var input=await response.Content.ReadAsStreamAsync(deadline.Token);
@@ -79,6 +83,11 @@ internal static class PiHostModelBroker
             await buffer.WriteAsync(chunk.AsMemory(0,count),deadline.Token);
         }
         return JsonSerializer.Serialize(new {status=(int)response.StatusCode,content_type=response.Content.Headers.ContentType?.ToString()??"application/json",body_base64=Convert.ToBase64String(buffer.ToArray())});
+        } finally {
+            // The owning task clears this field when cancellation makes the
+            // lifecycle outcome unknown; do not race its terminal checkpoint.
+            if(!token.IsCancellationRequested)journal.Checkpoint(new {current_gateway_request_id=(string?)null});
+        }
     }
 
     private static async Task<string> DispatchToolAsync(JsonElement root,SideEffectGate gate,CancellationToken token)

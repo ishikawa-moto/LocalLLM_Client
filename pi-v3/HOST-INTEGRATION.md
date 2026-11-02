@@ -4,13 +4,23 @@ The existing authorized Coordinator now has an explicitly enabled, LOW-task
 development path through `PiHostRunner` and `PiCanonicalTurn`. It captures an
 isolated proposal as `candidate_ready`, with completion eligibility false and
 no application to the registered repository. The default remains disabled.
-`candidate_ready` currently holds that workspace until an explicit Host
-review/apply/discard operation is implemented; it does not automatically start
-the next task. Do not clear this hold by editing task state or treating the
-candidate as a passing result.
+`candidate_ready` holds that workspace until an explicit action. The existing
+`localbrain_agent_v2_cancel` with the exact task ID can discard a finished
+candidate after the Host confirms its owner is gone and validates its retained
+evidence. The discard records `cancelled` and keeps the candidate evidence; it
+does not apply or validate the result. Explicit review/apply remains unimplemented.
+Running or unknown attempts are not cleared by this discard path and require
+process reconciliation. Do not edit task state to clear the hold.
 Builds and WSL component checks do not establish Windows Host execution under
 Code Integrity or eligibility for PC73 deployment. The requirements below also
 describe the production boundary that remains unfinished.
+
+During an active model call, an explicit managed-task status request can query
+the existing Gateway for that task's current request ID. It returns only a
+Gateway-provided waiting or start notice when the identity and current Host
+configuration still match. Missing, unsupported, stale, or failed status reads
+produce no notice. This is an on-demand status read, not push progress; actual
+Continue UI rendering and the Windows Host/Gateway path remain unverified.
 
 1. The Windows Host resolves the requested repository through its registered
    allowlist, records the immutable request and baseline revision in the

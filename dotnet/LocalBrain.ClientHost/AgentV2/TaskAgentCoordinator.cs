@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
@@ -38,12 +39,16 @@ internal static class TaskAgentCoordinator
             var prior=Read<Job>(Path.Combine(current,"job.json"));
             var report=File.Exists(Path.Combine(current,"report.json"))?Read<Report>(Path.Combine(current,"report.json")):null;
             var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root));
-            if(canonical?.TaskId==prior.TaskId && (resume || prior.RequestHash!=hash)){
+            var candidateDiscarded=false;
+            if(canonical?.TaskId==prior.TaskId){
                 using var state=JsonDocument.Parse(canonical.StateJson);
-                if(state.RootElement.TryGetProperty("phase",out var priorPhase) && priorPhase.GetString() is "v3_preparing" or "v3_running" or "v3_unknown")
+                var priorPhase=state.RootElement.TryGetProperty("phase",out var phaseValue) && phaseValue.ValueKind==JsonValueKind.String?phaseValue.GetString():null;
+                candidateDiscarded=priorPhase=="cancelled" && report?.State=="cancelled" &&
+                    state.RootElement.TryGetProperty("candidate_disposition",out var disposition) && disposition.ValueKind==JsonValueKind.String && disposition.GetString()=="discarded";
+                if((resume || prior.RequestHash!=hash) && (priorPhase is "v3_preparing" or "v3_running" or "v3_unknown"))
                     throw new InvalidOperationException("A prior v3 attempt requires process reconciliation before another task or resume");
             }
-            if(prior.RequestHash==hash){
+            if(prior.RequestHash==hash && (resume || !candidateDiscarded)){
                 // An existing launch or terminal result is always observed, never silently replayed.
                 if(resume&&!OwnerAlive(current)&&report?.State=="blocked"&&report.ActiveSince is {} since&&
                     DateTimeOffset.UtcNow<since.AddMinutes(request.CommandExecution.MaxTaskMinutes)){
@@ -90,11 +95,15 @@ internal static class TaskAgentCoordinator
         var phase=r.State;
         if(!alive&&phase is ("running" or "awaiting_authorization" or "waiting_for_writer"))phase="owner_absent_inspect_before_resume";
         var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root));
-        var canonicalPhase="not_started";var canonicalComplete=false;string? candidateHash=null;
+        var canonicalPhase="not_started";var canonicalComplete=false;var candidateDiscarded=false;string? candidateHash=null;string? gatewayRequestId=null;
         if(canonical?.TaskId==job.TaskId){using var d=JsonDocument.Parse(canonical.StateJson);var s=d.RootElement;
             canonicalPhase=s.TryGetProperty("phase",out var p)?p.GetString()??"unknown":"unknown";
+            if(canonicalPhase=="cancelled" && s.TryGetProperty("candidate_disposition",out var disposition) &&
+                disposition.ValueKind==JsonValueKind.String && disposition.GetString()=="discarded"){phase="cancelled";candidateDiscarded=true;}
             if(canonicalPhase=="candidate_ready" && s.TryGetProperty("candidate_hash",out var candidate) && candidate.ValueKind==JsonValueKind.String)
                 candidateHash=candidate.GetString();
+            if(alive && canonicalPhase=="v3_running" && s.TryGetProperty("current_gateway_request_id",out var current) && current.ValueKind==JsonValueKind.String)
+                gatewayRequestId=current.GetString();
             canonicalComplete=canonicalPhase=="complete"&&LocalValidationV2.FromCanonical(s)?.IsComplete==true;
         }
         var complete=r.EligibleForCompletion&&r.State=="complete"&&canonicalComplete;
@@ -106,10 +115,11 @@ internal static class TaskAgentCoordinator
         }
         var commandRoot=Path.Combine(control??CanonicalStore.DefaultRoot,"command-jobs",job.TaskId);
         var commandDirs=Directory.Exists(commandRoot)?Directory.EnumerateDirectories(commandRoot).Take(1024).ToArray():[];
+        var gatewayNotice=gatewayRequestId is null?null:await AgentV3.GatewayTaskNotice.ReadAsync(dir,job,gatewayRequestId);
         return new{task_id=job.TaskId,phase,canonical_phase=canonicalPhase,eligible_for_completion=complete,worker_alive=alive,
             actor_turns=Math.Max(r.ActorTurns,canonical?.TaskId==job.TaskId?(int)canonical.ActorTurns:0),command_count=commandDirs.Length,
             unsettled_command_intents=commandDirs.Count(d=>!File.Exists(Path.Combine(d,"receipt.json"))),cancellation_requested=File.Exists(Path.Combine(dir,"cancel.json")),
-            reason=r.Reason,candidate_hash=candidateHash,updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
+            reason=candidateDiscarded?"candidate_discarded_evidence_retained":r.Reason,candidate_hash=candidateHash,gateway_status=gatewayNotice is null?null:new{state=gatewayNotice.State,notice=gatewayNotice.Text},updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
     }
     private static bool ValidateOutputs(string control,string task)
     {
@@ -123,10 +133,60 @@ internal static class TaskAgentCoordinator
     }
     internal static async Task<object> CancelAsync(string root,string taskId,string? control=null)
     {
-        var dir=CurrentDirectory(root,control)??throw new InvalidOperationException("No managed task");var job=Read<Job>(Path.Combine(dir,"job.json"));
-        if(job.TaskId!=taskId)throw new UnauthorizedAccessException("Cancellation must name the current exact task");
-        var path=Path.Combine(dir,"cancel.json");if(!File.Exists(path))TaskCommandGate.WriteNew(path,new{task_id=taskId,requested_at=DateTimeOffset.UtcNow});
-        return await StatusAsync(root,control);
+        var parent=WorkspaceDirectory(root,control);CanonicalStore.GuardPath(parent);
+        using(var submission=new FileStream(Path.Combine(parent,"submission.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)){
+            var dir=CurrentDirectory(root,control)??throw new InvalidOperationException("No managed task");var job=Read<Job>(Path.Combine(dir,"job.json"));
+            if(job.TaskId!=taskId || !string.Equals(Path.GetFullPath(job.Root),Path.GetFullPath(root),StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFullPath(job.ControlRoot),Path.GetFullPath(control??CanonicalStore.DefaultRoot),StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("Cancellation must name the current exact task and workspace");
+            var path=Path.Combine(dir,"cancel.json");if(!File.Exists(path))TaskCommandGate.WriteNew(path,new{task_id=taskId,requested_at=DateTimeOffset.UtcNow});
+            if(!OwnerAlive(dir))TryDiscardCandidate(dir,job);
+            return await StatusAsync(root,control);
+        }
+    }
+
+    // Canonical commits first; repeating cancel repairs a failed report write.
+    // The submission lock is already held and prevents a concurrent new task.
+    private static void TryDiscardCandidate(string dir,Job job)
+    {
+        var snapshot=CanonicalStore.ReadLatest(job.ControlRoot,HostTaskJournal.WorkspaceId(job.Root));
+        if(snapshot?.TaskId!=job.TaskId)return;
+        using(var parsed=JsonDocument.Parse(snapshot.StateJson)){
+            var state=parsed.RootElement;
+            var phase=state.TryGetProperty("phase",out var p)&&p.ValueKind==JsonValueKind.String?p.GetString():null;
+            var discarded=phase=="cancelled" && state.TryGetProperty("candidate_disposition",out var disposition) && disposition.GetString()=="discarded";
+            if(phase!="candidate_ready" && !discarded)return;
+        }
+        var workerPath=Path.Combine(dir,"worker.lock");CanonicalStore.GuardPath(workerPath);
+        using var worker=new FileStream(workerPath,FileMode.Open,FileAccess.ReadWrite,FileShare.None);
+        if(OwnerAlive(dir))throw new InvalidOperationException("Task owner is still alive; cancellation remains requested");
+        using var store=new CanonicalStore(job.ControlRoot);
+        var workspace=HostTaskJournal.WorkspaceId(job.Root);
+        var task=store.LatestTask(workspace);
+        if(task is null || task.TaskId!=job.TaskId || task.WorkspaceId!=workspace || task.RequestHash!=job.RequestHash)
+            throw new UnauthorizedAccessException("Canonical candidate task identity changed");
+        var stateNode=JsonNode.Parse(task.StateJson)?.AsObject()??throw new InvalidDataException("Invalid canonical task state");
+        var phaseNow=stateNode["phase"]?.GetValue<string>();
+        var alreadyDiscarded=phaseNow=="cancelled" && stateNode["candidate_disposition"]?.GetValue<string>()=="discarded";
+        if(phaseNow!="candidate_ready" && !alreadyDiscarded)
+            throw new InvalidOperationException("Candidate is not available for discard");
+        var hash=stateNode["candidate_hash"]?.GetValue<string>();
+        if(hash is null || hash.Length!=64 || !hash.All(c=>c is >= '0' and <= '9' or >= 'a' and <= 'f') ||
+            !store.HasCandidateArchive(job.TaskId,hash))
+            throw new InvalidDataException("Candidate evidence is not bound to this task");
+        _=store.ReadEvidence(hash); // Verifies the retained evidence content hash.
+        if(stateNode["applied"]?.GetValue<bool>()!=false || stateNode["eligible_for_completion"]?.GetValue<bool>()!=false)
+            throw new InvalidDataException("Candidate state is not an unapplied proposal");
+        if(!alreadyDiscarded){
+            stateNode["phase"]="cancelled";stateNode["candidate_disposition"]="discarded";
+            var metadata=JsonSerializer.SerializeToElement(new{candidate_hash=hash,applied=false,evidence_retained=true});
+            store.Checkpoint(new(job.TaskId,workspace,"windows_host","candidate_discard_"+hash,
+                "pi_v3_candidate_discarded","host_decision","host_verified",[hash],metadata),stateNode.ToJsonString());
+        }
+        var report=Read<Report>(Path.Combine(dir,"report.json"));
+        if(report.TaskId!=job.TaskId)throw new InvalidDataException("Managed report task identity changed");
+        if(report.State!="cancelled" || report.EligibleForCompletion || report.Reason!="candidate_discarded_evidence_retained")
+            Save(dir,report with{State="cancelled",EligibleForCompletion=false,Reason="candidate_discarded_evidence_retained",UpdatedAt=DateTimeOffset.UtcNow});
     }
     private static void Save(string dir,Report report)=>TaskCommandGate.WriteReplace(Path.Combine(dir,"report.json"),report);
     internal static async Task RunWorkerAsync(string dir,ClientConfig config)

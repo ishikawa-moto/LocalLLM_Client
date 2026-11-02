@@ -171,8 +171,8 @@ internal sealed class HostTaskJournal : IDisposable
         } catch(OperationCanceledException) when(token.IsCancellationRequested) {throw;}
         catch(Exception e) when(e is not OutOfMemoryException) {
             Record("taskmemory_unavailable",new {reason=e.GetType().Name,fallback="canonical_task_evidence"},"host_observed");
-            await memory.DisposeAsync();return [];
-        }
+            return [];
+        } finally {await memory.DisposeAsync();}
     }
     public async Task<string[]> RecallRefsAsync(TaskMemoryQ8 memory,string query,CancellationToken token) {
         var selected=await SelectMemoryRefsAsync(memory,query,token);

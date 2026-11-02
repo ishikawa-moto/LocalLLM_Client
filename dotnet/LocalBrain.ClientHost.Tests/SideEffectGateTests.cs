@@ -120,6 +120,10 @@ internal static class SideEffectGateTests
                 Check(!store.HasApproval(taskId,AgentTaskRunner.RequestHash(request),"changed"),"Approval accepted different HEAD");
             }
             Check(!SideEffectGate.EvaluateBudget(1000).Handoff && SideEffectGate.EvaluateBudget(20000).Handoff,"Budget reserves incorrect");
+            Check(!SideEffectGate.EvaluateHostMeasuredBudget(24576).Handoff &&
+                !SideEffectGate.EvaluateHostMeasuredBudget(28672).Handoff &&
+                SideEffectGate.EvaluateHostMeasuredBudget(28673).Handoff &&
+                SideEffectGate.EvaluateBudget(24576).Handoff,"Host-measured and legacy budget boundaries differ");
             foreach(var boundary in new[]{"started","frozen","staging","mutation"}) {
                 var crashParent=Path.Combine(parent,"crash-"+boundary);var crashRoot=Path.Combine(crashParent,"repo");Directory.CreateDirectory(crashRoot);
                 await File.WriteAllTextAsync(Path.Combine(crashRoot,".gitignore"),".localbrain/\n");

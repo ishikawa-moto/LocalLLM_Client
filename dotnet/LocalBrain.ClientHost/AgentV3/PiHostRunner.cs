@@ -70,7 +70,7 @@ internal static class PiHostRunner
         try {
             await RunControlAsync(options, ["/usr/bin/python3", driver, "prepare", "--root", options.RuntimeRoot, "--task", task], token);
         } catch {
-            try { journal.Checkpoint(new { phase = "v3_unknown", generation, eligible_for_completion = false, applied = false }); } catch { }
+            try { journal.Checkpoint(new { phase = "v3_unknown", generation, current_gateway_request_id = (string?)null, eligible_for_completion = false, applied = false }); } catch { }
             throw;
         }
         Process? bridge = null, process = null;
@@ -152,7 +152,9 @@ internal static class PiHostRunner
             journal.Checkpoint(new { phase = "candidate_ready", candidate_hash = candidateHash, generation,
                 eligible_for_completion = false, applied = false });
         } catch {
-            try { journal.Checkpoint(new { phase = "v3_unknown", generation, eligible_for_completion = false, applied = false }); } catch { }
+            lifetime.Cancel();
+            if (broker is not null) try { await broker.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+            try { journal.Checkpoint(new { phase = "v3_unknown", generation, current_gateway_request_id = (string?)null, eligible_for_completion = false, applied = false }); } catch { }
             throw;
         } finally {
             lifetime.Cancel();

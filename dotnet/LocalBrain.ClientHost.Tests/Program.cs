@@ -24,6 +24,7 @@ if(args.Length==0)await SlackArtifactDeliveryTests.RunAsync();
 if(args.Length==1&&args[0]=="--slack-adoption-proof"){await SlackAdoptionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-proof"){await SlackTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-https-proof"){await SlackApprovalTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-root-proof"){await SlackRootFileTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-process-proof"){await SlackProcessTests.RunAsync();await SlackConversationTests.RunAsync();await SlackReviewRegressionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--memory-crash-proof"){await TaskMemoryEpochCrashTests.RunAsync();await TaskMemoryNativeTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--ocr-store-proof"){OcrStoreTests.Run();return;}

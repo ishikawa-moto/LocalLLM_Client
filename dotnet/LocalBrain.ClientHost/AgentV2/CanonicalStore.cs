@@ -503,6 +503,14 @@ internal sealed partial class CanonicalStore : IDisposable
             while(reader.Read())result.Add(reader.GetString(0));return result.ToArray();
         }
     }
+    internal bool HasCandidateArchive(string taskId,string hash)
+    {
+        lock(gate) return Convert.ToInt64(Scalar("""
+            SELECT COUNT(*) FROM event_evidence x JOIN events e ON e.event_id=x.event_id
+            WHERE e.task_id=$task AND e.event_type='pi_v3_candidate_archive'
+              AND e.producer='pi_v3_host' AND x.hash=$hash;
+            """,null,("$task",taskId),("$hash",hash)))==1;
+    }
     internal void ReserveMemoryAccess(EventInput input,int maximum)
     {
         if(maximum is <1 or >32)throw new InvalidDataException("Invalid memory access limit");
