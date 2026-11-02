@@ -1,4 +1,25 @@
-# 最小移行によるサービス再開（PC70 開発候補）
+# 最小移行によるサービス再開
+
+## 2026-11-03 の再開状況
+
+PC73担当から、正式Host `049f0c378f681d73dfde74cc36020f74190c79b0` と専用Pi 1.4.0の配備、
+Host→Pi→Qwenの `LOCALBRAIN_PRODUCTION_PI_140_OK`（ToolErrors=0、exit=0）、実MCP読取、
+さらに人間がContinue画面から送信した公開確認への `LOCALBRAIN_CONTINUE_PROD_OK` の応答が報告されました。
+Continueの切替待ちは解消しました。これはPC73担当の実機報告であり、PC70からPC73を操作した結果ではありません。
+
+PC70の読み取り確認では現行Gateway `55a2069...` がREADY、active/queued=0、Browser ChatはHTTP 200です。
+正規のBrowser Chat入口は、非公開サイト設定のホスト名とChatポートから確認しました（実値はローカル証跡に保存）。
+Gateway候補 `f5df6bd...` は未配備のため、新優先順位の本番合格はまだ宣言しません。
+既存の正式ForwardはChat/Gatewayのペア更新とSlackを含む全DB読取を前提とし、
+今回のGateway単独更新・Slack内容非参照の条件にそのまま適用できません。
+新しい配備基盤は追加せず、Gateway更新だけを保留します。詳細は [配備引き継ぎ](GATEWAY-DEPLOYMENT-HANDOFF.md) を参照してください。
+
+PC70のSlack OCR mailbox、Bridge relay、CPU worker設定はいずれも未作成で、
+通常EXEの `ocr capabilities` も `enabled=false` でした。開発用OCR資産を本番稼働済みとは扱いません。
+Slackの既存正常経路は維持し、新OCR経路だけを無効のままにします。
+外部レビューのHost接続は引き続き未資格で、追加課金経路は使用しません。
+
+以下は開発・切替前に確認した範囲と設計上の条件です。上記の新しい実機報告と区別してください。
 
 新しい AgentV3 の候補転送・正式適用の完成を、既存サービス再開の条件にしません。
 既存の `TaskAgentCoordinator → PiRpcRunner → SideEffectGate → Bridge → Gateway`

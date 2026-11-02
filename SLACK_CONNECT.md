@@ -50,6 +50,30 @@ flowchart LR
 
 ### PC70 OCR転送の候補（既定無効）
 
+#### 配置と形式の確認（2026-11-03）
+
+`SlackRemoteOcr` はPC73の送信側で、既存 `GatewayClient` によりPC70へ
+`submit/status/result/cancel/forget` を送ります。PC73の許可IP・Host証明書pin・ownerが必要です。
+`SlackOcrWorker` はPC70の既存Bridge内の受信側で、`next/update` をポーリングします。
+このworkerのTCP接続先がループバック固定なのは意図した制約です。
+Gatewayもworker側にPC70証明書pinとループバック接続を要求するため、PC73にworkerを置いたり、
+その接続先をLANへ変更したりしません。PC73に新しいローカルrelayを設ける必要もありません。
+これは現行候補の実際の配置です。別途要求された「PC70 Mailbox→PC73 Scheduler/Worker」へ
+委任する完成済みの経路はありません。`ChatOcrProcessor` は同じPCの `OcrJobStore` を使います。
+その構成を採るための認証境界変更・新中継は今回追加せず、新OCR経路だけを保留します。
+
+内部mailbox契約は `md` 必須で、`html/json/csv` も扱えます。
+送信側の `formats=["md"]` はSlackへの出力形式をMarkdownに限定する指定ではありません。
+返却された構造化OCR結果から、既存 `SlackOcrArtifacts.Html` と `SlackFileResults` が
+静的HTMLの表・結合セル等を生成します。座標JSONの利用者向け添付は新規必須条件ではありません。
+認識・表品質の制約は残り、HTML化によって誤認識を修正したとは扱いません。
+
+PC70ではmailbox/relay/CPU workerの本番設定が未作成で、`ocr capabilities` は無効でした。
+既存Bridge・AppContainer/CPU worker・mTLSの一連の実機資格確認は未完了です。
+有効化前に、公開fixtureだけで既存AppContainerの通信禁止、正規PC73送信とPC70 workerの認証、
+結果のbinding・元スレッドへの返却を確認してください。設定作成だけで合格とはしません。
+通常Pythonへのfallbackや外部AI送信は行いません。
+
 PC73のSlack設定 `remoteOcr` は既定 `false` です。候補経路では明示的に `true` を設定し、PC70側でもServerの `slack-ocr.json` と、PC70 Hostの非公開 `%LOCALAPPDATA%\LocalBrain\control-plane\slack-ocr\config.json` の両方で `enabled: true` が必要です。後者の `root` はGit外の非公開ローカル絶対パスです。PC73ではローカルOCRを無効にしたままSlack Hostを動かせます。PC70では既存Bridgeが転送を受け持ち、同じBridgeの既存OCRスケジューラー・CPU 2スレッドとAppContainer workerを使用します。隔離できない場合に通常Pythonへ自動切替しません。
 
 PC73からの転送は既存の許可IP・Host証明書pin・ownerを検証するmTLSです。PC70のBridgeは接続先をループバックに固定し、既存クライアント証明書で認証します。Host設定のGateway名はTLS検証に使われ、Server証明書のSANと一致する必要があります。証明書検証を迂回しないでください。入力と結果はSlack専用の非公開領域で、転送入力の期限は2時間、結果は24時間です。Slack側に受領・保存された結果は従来のSlack保持条件に従います。
