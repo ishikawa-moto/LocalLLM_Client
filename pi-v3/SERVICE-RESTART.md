@@ -1,0 +1,60 @@
+# 最小移行によるサービス再開（PC70 開発候補）
+
+新しい AgentV3 の候補転送・正式適用の完成を、既存サービス再開の条件にしません。
+既存の `TaskAgentCoordinator → PiRpcRunner → SideEffectGate → Bridge → Gateway`
+を維持します。Windows の認可・承認・証跡・ファイル許可と既存の停止処理は変更していません。
+本資料は PC73 への配備済み・本番採用許可を意味しません。
+
+## 今回の最小変更
+
+- 既存 WSL `Ubuntu` の `/home/worker/.volta/bin/pi` が **1.4.0** でなければ実行しません。
+  バージョン更新は Host/モデルの実行要求では行わず、配備時に固定 lock を使用します。
+- Host 管理の `/home/worker/localbrain-v2/pi-1.4/settings.json` に、publish 出力の
+  `scripts/pi-settings.json`（既存 v3 の同一設定）を配置します。内容は標準 Compaction
+  `enabled=true / reserveTokens=8192 / keepRecentTokens=12000` のみです。未配置・不一致は停止します。
+- Pi 標準セッションは同ディレクトリの `sessions` に保存します。旧 `agent-v2-sessions`
+  と履歴は変更・削除・自動移行しません。Critic は既存どおり非永続・ツール無効です。
+- 発見された拡張・MCP・スキル・テンプレート・context ファイルと project trust を無効にし、
+  Host 同梱の provider・policy・Host ツールだけ明示的にロードします。
+  native bash/powershell/edit/write と codemode は有効にしません。任意シェルを追加する代替ではありません。
+- `host_memory_search` が Pi policy に拒否される不整合を修正しました。検索認可・上限・原文取得は
+  既存 Host のままです。未登録の旧 `obs_recall` は選択から外しました。
+- Laya の呼出しを復活させず、既存 Host の反復カウント・境界での abort を再利用します。
+
+## 開発成果の扱い
+
+|区分|扱い|
+|---|---|
+|A: そのまま再利用|既存 Host の権限、Canonical、TaskMemory/Recall、SecondBrain 読取、Bridge、Git、Pi 1.4 lock、標準 Compaction 設定、Gateway 接続|
+|B: 検証後に選択採用|Gateway 優先順位・状態通知、PC70 Slack OCR 接続、追加原文検索、Windows 上で未試験の新経路|
+|C: 当面の追加開発を保留|新規 AgentV3 の正式候補検証/適用、隔離・アーカイブ基盤の拡張、独自 Supervisor、Runner 高度化|
+
+既存の開発コミットと証跡は保存します。C の完成待ちで既存 Chat 等を停止しません。
+PC73 ピークメモリ比較試験と全面 cleanup は再開条件から外します。既存の実行上限は維持します。
+
+## 確認できた範囲と制約
+
+- PC70: installed Runner `925103450...` の既存 mTLS Gateway 接続を Work から直接利用し、
+  無害な単発 Qwen 応答を受領。続けて policy の小修正を1回委任し、Work が検査して取り込みました。
+  新しい常駐通信機構はありません。これは Runner の全ジョブ実行や Work 無人再開の検証ではありません。
+- Windows Node: 記憶検索の正常/不正入力、保護ファイルと native shell 拒否を確認しました。
+- PC70 WSL: 既存 provider と Host ツールの Pi 1.4 startup、標準 Compaction、private session、
+  project 拡張・設定を読まないことを確認しました。推論0回の部品試験であり Windows Host 実行ではありません。
+- Windows: Host/Test project のビルド成功。Code Integrity 下の新しい Host/テスト実行は未実施。
+  PC70 に配備済みの許可済み Client Host 実行ファイルも見つかっていません。制限は迂回しません。
+- Browser Chat は既存 PC70 `/health` が HTTP 200。既存サービスを変更・再起動せず確認しました。
+- Qwen 本番推論への接続は成功しましたが、Gateway 開発版の優先順位修正は本番未配備です。
+  Continue ＞ Slack 解析 ＞ Work の実機確認は管理者権限による別配備後に必要です。
+- Slack は会話要約なし・ローカル限定の方針を維持。PC70 AppContainer/mTLS の Windows 結合試験が
+  未完了なので、新 OCR 接続を本番で有効化しません。クラウド AI への代替送信はありません。
+- 外部レビューは軽微な LOW で不要。NORMAL/HIGH の契約内 Host 呼出しは未接続のまま保留です。
+  既存の OpenCode 経路は使いません。PC70 の ChatGPT 認証と Work からの Sol 呼出し記録は、
+  PC73 Host からの利用証明ではありません。Opus/Haiku の未確認認証・課金経路へ切り替えません。
+
+## 切替前の最小条件
+
+対象の既存サービス状態、現行 Host/設定/証明書の退避先と戻し方を確認し、許可された署名・実行経路で
+最終 Host の grant、許可ファイル、取消、結果返却を PC70 で確認します。モデルの回答は権限証明にしません。
+サービスごとに合格を判定し、新しい経路が不合格ならその機能だけ無効のままにします。
+`v3Development.enabled` は既定無効のままです。未検証の新経路を fallback として有効にしません。
+PC73 本番切替はこの開発変更だけでは実施しません。

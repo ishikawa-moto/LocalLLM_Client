@@ -15,6 +15,7 @@
     <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-provider.js" Link="scripts/localbrain-provider.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-policy.mjs" Link="scripts/localbrain-policy.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/localbrain-settings.json" Link="scripts/pi-settings.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-tokenizer.py" Link="scripts/context-tokenizer.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/qwen-chat-template.jinja" Link="scripts/qwen-chat-template.jinja" CopyToOutputDirectory="PreserveNewest" />

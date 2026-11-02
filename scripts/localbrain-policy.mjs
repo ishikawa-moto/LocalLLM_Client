@@ -4,7 +4,6 @@ import path from "node:path";
 // Pi tool hooks are a safety backstop. The Windows orchestrator decides which
 // tools to enable and must still require approval for externally impactful work.
 const FILE_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write"]);
-const OBSERVATION_ID = /^obs_[a-f0-9]{24}$/;
 const PRIVATE_NAME = /^(?:\.env(?:\..*)?|id_(?:rsa|ed25519)|.*\.(?:pfx|p12|key|pem))$/i;
 const PROTECTED_SEGMENT = /^(?:\.git|\.localbrain|node_modules)$/i;
 
@@ -33,6 +32,13 @@ export function checkToolCall(event, cwd) {
     // These are not Pi's native shell tools and cannot issue their own approval.
     return undefined;
   }
+  if(event.toolName === "host_memory_search") {
+    const input=event.input ?? {};
+    const query=input.query;
+    if(typeof query!=="string"||query.length<1||query.length>1024||!query.trim())
+      return {block:true,reason:"Invalid canonical task memory search"};
+    return undefined;
+  }
   if(event.toolName === "host_recall") {
     const input=event.input ?? {};
     return typeof input.evidenceHash === "string" && /^[a-f0-9]{64}$/.test(input.evidenceHash) &&
@@ -43,14 +49,6 @@ export function checkToolCall(event, cwd) {
     return { block: true, reason: "Native mutation tools are disabled; use the Windows Host tools" };
   if (event.toolName === "host_edit" || event.toolName === "host_write")
     event = { ...event, toolName: event.toolName === "host_edit" ? "edit" : "write" };
-  if (event.toolName === "obs_recall") {
-    const input = event.input ?? {};
-    if (typeof input.id !== "string" || !OBSERVATION_ID.test(input.id) ||
-        (input.offset !== undefined &&
-          (!Number.isSafeInteger(input.offset) || input.offset < 0)))
-      return { block: true, reason: "Invalid ObservationPack recall request" };
-    return undefined;
-  }
   if (!FILE_TOOLS.has(event.toolName))
     return { block: true, reason: "This tool is not in the LocalBrain WSL policy" };
   const root = fs.realpathSync.native(cwd);

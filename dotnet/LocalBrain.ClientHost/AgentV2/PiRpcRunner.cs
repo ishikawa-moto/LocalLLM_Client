@@ -23,6 +23,7 @@ internal static class PiRpcRunner
         if (allowMutations && (allowedMutationPaths is null or { Length: 0 } ||
             allowedMutationPaths.Sum(item => item.Length) > 8_000))
             throw new ArgumentException("Actor mutation allowlist is missing or too large");
+        await WslWorkspace.RequirePi140Async(token);
         var provider = await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,
             "scripts", "localbrain-provider.js"), token);
         var relay = await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,
@@ -33,6 +34,7 @@ internal static class PiRpcRunner
         var telemetryOptions = windowsRoot is null ? null : ContextTelemetryState.Options.Read(windowsRoot);
         var start = new ProcessStartInfo("wsl.exe");
         var launch = new List<string> { "-d", "Ubuntu", "--cd", workspace, "--exec", "/usr/bin/env",
+            $"PI_CODING_AGENT_DIR={WslWorkspace.PiAgentDirectory}",
             $"LOCALBRAIN_RELAY_EXE={relay}",
             $"LOCALBRAIN_ALLOWED_FILES={JsonSerializer.Serialize(allowedMutationPaths ?? [])}",
         };
@@ -42,8 +44,10 @@ internal static class PiRpcRunner
         if ((sideEffects is not null ? "/home/worker/localbrain-v2/verified-tokenizer.json" : telemetryOptions?.TokenizerJson) is { } tokenizer)
             launch.Add($"LOCALBRAIN_CONTEXT_TOKENIZER_JSON={tokenizer}");
         launch.AddRange([
-            "/home/worker/.volta/bin/pi", "--mode", "rpc",
-            "--offline", "--approve", "--provider", "localbrain", "--model", "local-qwen38",
+            WslWorkspace.PiExecutable, "--mode", "rpc",
+            "--offline", "--no-approve", "--no-extensions", "--no-mcp", "--no-skills",
+            "--no-prompt-templates", "--no-themes", "--no-context-files",
+            "--provider", "localbrain", "--model", "local-qwen38",
             "--extension", provider ]);
         if(windowsRoot is not null && HostTaskJournal.Current is {} rescueJournal && !string.Equals(windowsRoot,rescueJournal.WindowsRoot,StringComparison.OrdinalIgnoreCase)) {
             var registered=rescueJournal.Canonical.FindRescueWorkspace(windowsRoot,HostTaskJournal.RepositoryId(rescueJournal.WindowsRoot));
@@ -65,7 +69,6 @@ internal static class PiRpcRunner
         }
         if (freshCritic)
         {
-            start.ArgumentList.Add("--no-extensions");
             start.ArgumentList.Add("--no-session");
             start.ArgumentList.Add("--no-tools");
         }
@@ -80,7 +83,7 @@ internal static class PiRpcRunner
                 "scripts", "host-file-tools.mjs"), token);
             start.ArgumentList.Add("--extension"); start.ArgumentList.Add(hostTools);
             start.ArgumentList.Add("--session-dir");
-            start.ArgumentList.Add("/home/worker/localbrain-v2/agent-v2-sessions");
+            start.ArgumentList.Add(WslWorkspace.PiAgentDirectory + "/sessions");
             if (sessionId is not null)
             {
                 if (!Guid.TryParse(sessionId, out _)) throw new ArgumentException("Invalid Pi session ID");
@@ -89,8 +92,8 @@ internal static class PiRpcRunner
             }
             start.ArgumentList.Add("--tools");
             start.ArgumentList.Add(allowMutations
-                ? "read,ls,host_edit,host_write,host_recall,host_memory_search,obs_recall"+(HostTaskJournal.Current?.Commands is not null?",host_command_start,host_command_status,host_command_cancel":"")
-                : "read,ls,host_recall,host_memory_search,obs_recall");
+                ? "read,ls,host_edit,host_write,host_recall,host_memory_search"+(HostTaskJournal.Current?.Commands is not null?",host_command_start,host_command_status,host_command_cancel":"")
+                : "read,ls,host_recall,host_memory_search");
         }
 
         var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
