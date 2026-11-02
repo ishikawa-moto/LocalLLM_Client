@@ -5,8 +5,8 @@ This is a development record, not a PC73 deployment instruction.
 | Decision | Component | Current status |
 | --- | --- | --- |
 | Keep | Windows Host authorization, Canonical events, evidence and approval history | Existing v2 paths remain in place; v3 integration is unfinished. |
-| Keep | TaskMemory and SecondBrain | Existing paths remain; the proposed lightweight retrieval and knowledge reuse have not been integrated into v3. |
-| Replace | Pi execution and context management | Pi 1.4.0 is pinned; the isolated RPC launcher exists, but currently disables sessions and MCP and is not connected to the Host task lifecycle. |
+| Keep | TaskMemory and SecondBrain | The development Host prepares bounded original evidence and existing SecondBrain references. Task-scoped additional search/Recall tools use the Host gate, including a Pi socket extension; Windows runtime verification remains pending. |
+| Replace | Pi execution and context management | Pi 1.4.0 uses standard private sessions and compaction. An explicitly enabled LOW-task development branch is connected to the existing authorized Coordinator and returns a candidate, never a production update. Windows runtime verification remains pending; MCP is still disabled. |
 | Remove | Experimental frozen snapshot, ownership ledger, recovery and archive generation | Removed from the development branch; Git worktree publication and safe cleanup are still unimplemented. |
 | Remove after replacement | Laya, Astra, Slack conversation summarization and PC73 OCR | The development Host no longer launches the Laya worker; its Python worker and supervisor were removed. The tokenizer still references an existing environment named `laya-venv`. Astra comparison, calibration and routing configuration were removed; historical telemetry fields remain. Changes are built but not runtime-tested. |
 | Implement | Pi loop handling and authorized external handoff | A shell-loop event extension is loaded by the development launcher but is not connected to a Host handoff. The old OpenCode Sol route is disabled until subscription-only authentication is verified; no Opus or Haiku fallback is implemented. |

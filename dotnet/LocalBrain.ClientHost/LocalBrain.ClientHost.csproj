@@ -18,6 +18,10 @@
     <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-tokenizer.py" Link="scripts/context-tokenizer.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/qwen-chat-template.jinja" Link="scripts/qwen-chat-template.jinja" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/host-task-driver.py" Link="pi-v3/agent/host-task-driver.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/run-isolated.py" Link="pi-v3/agent/run-isolated.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/bridge/seed_workspace.py" Link="pi-v3/bridge/seed_workspace.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/bridge/model_bridge.py" Link="pi-v3/bridge/model_bridge.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

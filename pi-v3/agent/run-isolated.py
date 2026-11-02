@@ -11,14 +11,18 @@ import uuid
 from pathlib import Path
 
 
+def verify_bounded_mount(path, maximum):
+    if not os.path.ismount(path):
+        raise ValueError("directory must be a dedicated filesystem mount")
+    fs = os.statvfs(path)
+    if not 0 < fs.f_blocks * fs.f_frsize <= maximum:
+        raise ValueError("filesystem exceeds its size budget")
+
+
 def verify_resource_limits(workspace, max_workspace, max_memory, max_processes, max_cpu):
     # The Host must provision a dedicated, bounded filesystem and a systemd
     # scope before launching. Refuse to start if either boundary is missing.
-    if not os.path.ismount(workspace):
-        raise ValueError("workspace must be a dedicated filesystem mount")
-    fs = os.statvfs(workspace)
-    if not 0 < fs.f_blocks * fs.f_frsize <= max_workspace:
-        raise ValueError("workspace filesystem exceeds its size budget")
+    verify_bounded_mount(workspace, max_workspace)
     entries = Path("/proc/self/cgroup").read_text().splitlines()
     paths = [line[3:] for line in entries if line.startswith("0::/")]
     if len(paths) != 1 or ".." in Path(paths[0]).parts:
@@ -83,10 +87,12 @@ def main():
     provider = pi / "localbrain-provider.mjs"
     settings = pi / "localbrain-settings.json"
     loop_guard = pi / "localbrain-loop.mjs"
+    memory = pi / "localbrain-memory.mjs"
     for directory in (workspace, runtime, node, pi): checked(directory, "dir")
     checked_private_directory(sessions)
+    verify_bounded_mount(sessions, 16 * 1024 * 1024)
     verify_resource_limits(workspace, args.max_workspace_bytes, args.max_memory_bytes, args.max_processes, args.max_cpu_percent)
-    for regular in (bwrap, provider, settings, loop_guard, node / "bin/node", pi / "node_modules/@earendil-works/pi-coding-agent/package.json"):
+    for regular in (bwrap, provider, settings, loop_guard, memory, node / "bin/node", pi / "node_modules/@earendil-works/pi-coding-agent/package.json"):
         checked(regular, "file")
     socket_info = checked(socket, "socket")
     if socket_info.st_uid != os.getuid() or socket_info.st_mode & 0o077:
@@ -105,8 +111,9 @@ def main():
             "--setenv", "PATH", "/opt/node/bin:/usr/bin:/bin", "/opt/node/bin/node",
             "/opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", "--mode", "rpc", "--offline",
             "--session-dir", "/run/localbrain/sessions", "--no-mcp", "--no-skills", "--no-context-files", "--no-approve",
-            "--tools", "read,write,edit,bash,codemode,tool_search", "--extension", "/opt/pi/localbrain-provider.mjs",
+            "--tools", "read,write,edit,bash,codemode,tool_search,host_memory_search,host_recall", "--extension", "/opt/pi/localbrain-provider.mjs",
             "--extension", "/opt/pi/localbrain-loop.mjs",
+            "--extension", "/opt/pi/localbrain-memory.mjs",
             "--provider", "localbrain", "--model", "local-qwen38"]
     os.execve(str(bwrap), argv, {"PATH": "/usr/bin:/bin"})
 

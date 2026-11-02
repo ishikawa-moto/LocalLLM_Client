@@ -12,8 +12,10 @@ import base64
 import binascii
 import json
 import os
+import re
 import signal
 import stat
+import sys
 from pathlib import Path
 
 MAX_BODY = 8 * 1024 * 1024
@@ -23,10 +25,28 @@ DEADLINE = 600
 REQUEST_DEADLINE = 10
 
 
-def validate_request(line):
+def validate_request(line, host_stdio=False):
     if not line.endswith(b"\n") or len(line) > MAX_LINE:
         raise ValueError("invalid request framing")
-    request = json.loads(line)
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+    request = json.loads(line, object_pairs_hook=unique)
+    if host_stdio and isinstance(request, dict) and "operation" in request:
+        operation = request["operation"]
+        if operation == "memory_search" and set(request) == {"operation", "query"}:
+            query = request["query"]
+            if isinstance(query, str) and query.strip() and len(query.encode("utf-16-le")) <= 2048:
+                return json.dumps(request, separators=(",", ":")).encode() + b"\n"
+        elif operation == "recall" and set(request) == {"operation", "evidenceHash", "offset"}:
+            evidence, offset = request["evidenceHash"], request["offset"]
+            if isinstance(evidence, str) and re.fullmatch(r"[a-f0-9]{64}", evidence) and type(offset) is int and 0 <= offset <= 2147483647:
+                return json.dumps(request, separators=(",", ":")).encode() + b"\n"
+        raise ValueError("invalid tool request")
     if not isinstance(request, dict) or set(request) != {"method", "path", "contentType", "bodyBase64"}:
         raise ValueError("invalid request")
     if request["method"] != "POST" or request["path"] != "/v1/chat/completions" or request["contentType"] != "application/json":
@@ -119,22 +139,84 @@ async def handle(reader, writer, relay):
             writer.transport.abort()
 
 
-async def serve(socket_path, relay):
+async def handle_host_stdio(reader, writer, host_writer, state):
+    # The Host owns these streams and forwards model requests. No Windows
+    # executable is spawned from WSL in this mode.
+    response_task = disconnect_task = None
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout=REQUEST_DEADLINE)
+        state["pending"] = True
+        host_writer.write(validate_request(line, host_stdio=True))
+        await host_writer.drain()
+        response_task = asyncio.create_task(state["responses"].get())
+        disconnect_task = asyncio.create_task(reader.read(1))
+        done, _ = await asyncio.wait((response_task, disconnect_task), timeout=DEADLINE,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if disconnect_task in done or response_task not in done:
+            raise ConnectionError("client disconnected or Host response timed out")
+        response = response_task.result()
+        writer.write(response)
+        await writer.drain()
+    except (Exception, asyncio.CancelledError):
+        # A late Host response cannot be matched safely to another request.
+        state["stop"].set()
+        try:
+            writer.write(b'{"error":"model_bridge_failed"}\n')
+        except (ConnectionError, OSError):
+            pass
+    finally:
+        for pending in (response_task, disconnect_task):
+            if pending is not None and not pending.done():
+                pending.cancel()
+        await asyncio.gather(*(t for t in (response_task, disconnect_task) if t is not None),
+                             return_exceptions=True)
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), timeout=1)
+        except (ConnectionError, OSError, TimeoutError):
+            writer.transport.abort()
+
+
+async def read_host_responses(reader, state):
+    try:
+        while True:
+            line = await reader.readline()
+            if (not line.endswith(b"\n") or len(line) > MAX_REPLY or
+                    not state["pending"] or state["responses"].full() or
+                    not isinstance(json.loads(line), dict)):
+                raise ValueError("invalid or unsolicited Host response")
+            state["pending"] = False
+            state["responses"].put_nowait(line)
+    except (Exception, asyncio.CancelledError):
+        state["stop"].set()
+
+
+async def serve(socket_path, relay, host_stdio=False):
     parent = socket_path.parent
     info = parent.stat(follow_symlinks=False)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError("socket directory must be private and owned by the current user")
     if socket_path.exists() or socket_path.is_symlink():
         raise ValueError("socket path already exists")
-    if not os.path.isabs(relay) or Path(relay).name.lower() != "localbrain.exe":
+    if not host_stdio and (not relay or not os.path.isabs(relay) or Path(relay).name.lower() != "localbrain.exe"):
         raise ValueError("invalid relay executable")
+    host_reader = host_writer = None
+    if host_stdio:
+        loop = asyncio.get_running_loop()
+        host_reader = asyncio.StreamReader(limit=MAX_REPLY + 1)
+        await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(host_reader), sys.stdin.buffer)
+        transport, protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, sys.stdout.buffer)
+        host_writer = asyncio.StreamWriter(transport, protocol, host_reader, loop)
     clients = set()
+    state = {"pending": False, "responses": asyncio.Queue(maxsize=1), "stop": asyncio.Event()}
+    host_task = asyncio.create_task(read_host_responses(host_reader, state)) if host_stdio else None
     def accept(reader, writer):
         # Reject concurrent requests immediately; the Gateway owns inference queuing.
-        if clients:
+        if clients or state["stop"].is_set():
             writer.close()
             return
-        task = asyncio.create_task(handle(reader, writer, relay))
+        task = asyncio.create_task(handle_host_stdio(reader, writer, host_writer, state) if host_stdio
+                                   else handle(reader, writer, relay))
         clients.add(task)
         task.add_done_callback(clients.discard)
 
@@ -142,13 +224,16 @@ async def serve(socket_path, relay):
     socket_identity = socket_path.lstat()
     try:
         os.chmod(socket_path, 0o600)
-        await asyncio.Event().wait()
+        await state["stop"].wait()
     finally:
         server.close()
         for task in list(clients):
             task.cancel()
         if clients:
             await asyncio.gather(*clients, return_exceptions=True)
+        if host_task is not None:
+            host_task.cancel()
+            await asyncio.gather(host_task, return_exceptions=True)
         await server.wait_closed()
         try:
             current = socket_path.lstat()
@@ -161,13 +246,15 @@ async def serve(socket_path, relay):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", type=Path, required=True)
-    parser.add_argument("--relay", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--relay")
+    mode.add_argument("--host-stdio", action="store_true")
     args = parser.parse_args()
     if not args.socket.is_absolute():
         parser.error("socket path must be absolute")
     async def run():
         loop = asyncio.get_running_loop()
-        task = asyncio.create_task(serve(args.socket, args.relay))
+        task = asyncio.create_task(serve(args.socket, args.relay, args.host_stdio))
         loop.add_signal_handler(signal.SIGTERM, task.cancel)
         try:
             await task

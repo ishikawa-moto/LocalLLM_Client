@@ -37,6 +37,12 @@ internal static class TaskAgentCoordinator
         if(current is not null){
             var prior=Read<Job>(Path.Combine(current,"job.json"));
             var report=File.Exists(Path.Combine(current,"report.json"))?Read<Report>(Path.Combine(current,"report.json")):null;
+            var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root));
+            if(canonical?.TaskId==prior.TaskId && (resume || prior.RequestHash!=hash)){
+                using var state=JsonDocument.Parse(canonical.StateJson);
+                if(state.RootElement.TryGetProperty("phase",out var priorPhase) && priorPhase.GetString() is "v3_preparing" or "v3_running" or "v3_unknown")
+                    throw new InvalidOperationException("A prior v3 attempt requires process reconciliation before another task or resume");
+            }
             if(prior.RequestHash==hash){
                 // An existing launch or terminal result is always observed, never silently replayed.
                 if(resume&&!OwnerAlive(current)&&report?.State=="blocked"&&report.ActiveSince is {} since&&
@@ -84,9 +90,11 @@ internal static class TaskAgentCoordinator
         var phase=r.State;
         if(!alive&&phase is ("running" or "awaiting_authorization" or "waiting_for_writer"))phase="owner_absent_inspect_before_resume";
         var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root));
-        var canonicalPhase="not_started";var canonicalComplete=false;
+        var canonicalPhase="not_started";var canonicalComplete=false;string? candidateHash=null;
         if(canonical?.TaskId==job.TaskId){using var d=JsonDocument.Parse(canonical.StateJson);var s=d.RootElement;
             canonicalPhase=s.TryGetProperty("phase",out var p)?p.GetString()??"unknown":"unknown";
+            if(canonicalPhase=="candidate_ready" && s.TryGetProperty("candidate_hash",out var candidate) && candidate.ValueKind==JsonValueKind.String)
+                candidateHash=candidate.GetString();
             canonicalComplete=canonicalPhase=="complete"&&LocalValidationV2.FromCanonical(s)?.IsComplete==true;
         }
         var complete=r.EligibleForCompletion&&r.State=="complete"&&canonicalComplete;
@@ -101,7 +109,7 @@ internal static class TaskAgentCoordinator
         return new{task_id=job.TaskId,phase,canonical_phase=canonicalPhase,eligible_for_completion=complete,worker_alive=alive,
             actor_turns=Math.Max(r.ActorTurns,canonical?.TaskId==job.TaskId?(int)canonical.ActorTurns:0),command_count=commandDirs.Length,
             unsettled_command_intents=commandDirs.Count(d=>!File.Exists(Path.Combine(d,"receipt.json"))),cancellation_requested=File.Exists(Path.Combine(dir,"cancel.json")),
-            reason=r.Reason,updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
+            reason=r.Reason,candidate_hash=candidateHash,updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
     }
     private static bool ValidateOutputs(string control,string task)
     {
@@ -133,6 +141,7 @@ internal static class TaskAgentCoordinator
         using var stop=new CancellationTokenSource();
         var cancellation=Task.Run(async()=>{while(!stop.IsCancellationRequested){if(File.Exists(Path.Combine(dir,"cancel.json"))){stop.Cancel();break;}try{await Task.Delay(300,stop.Token);}catch(OperationCanceledException){break;}}});
         void Report(string state,string? reason=null,bool complete=false)=>Save(dir,new(job.TaskId,state,complete,turns,reason,DateTimeOffset.UtcNow,activeSince));
+        var v3Attempt=false;
         try{
             if(!string.Equals(Path.GetFullPath(typeof(TaskAgentCoordinator).Assembly.Location),Path.GetFullPath(job.RuntimeDll),StringComparison.OrdinalIgnoreCase)||
                 CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions))!=job.ConfigHash||
@@ -145,12 +154,18 @@ internal static class TaskAgentCoordinator
             activeSince??=DateTimeOffset.UtcNow;var remaining=activeSince.Value.AddMinutes(contract.MaxTaskMinutes)-DateTimeOffset.UtcNow;
             if(remaining<=TimeSpan.Zero){Report("time_budget_exhausted","The original finite task budget expired");return;}stop.CancelAfter(remaining);
             using var authority=TaskCommandAuthorization.Enter(grant);
-            var wsl=await WslWorkspace.ResolveAsync(new ProjectAllowlist(config),job.Root,stop.Token);
             // Wait for the existing logical writer before any task event or side effect.
             Directory.CreateDirectory(job.ControlRoot);
             while(true){stop.Token.ThrowIfCancellationRequested();try{using var lease=new FileStream(Path.Combine(job.ControlRoot,"writer.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);break;}
                 catch(IOException){Report("waiting_for_writer");await Task.Delay(2000,stop.Token);}}
             var priorTask=CanonicalStore.ReadLatest(job.ControlRoot,HostTaskJournal.WorkspaceId(job.Root));
+            if(config.V3Development?.Enabled==true && request.EffectiveRisk=="LOW"){
+                if(priorTask?.TaskId==job.TaskId)throw new InvalidOperationException("Prior v3 attempt requires reconciliation; no automatic replay");
+                v3Attempt=true;Report("running");
+                await AgentV3.PiHostRunner.RunAsync(dir,job.Root,job.TaskId,job.Head,request,config,job.ControlRoot,stop.Token);
+                Report("candidate_ready","Isolated proposal captured; review required; not applied");return;
+            }
+            var wsl=await WslWorkspace.ResolveAsync(new ProjectAllowlist(config),job.Root,stop.Token);
             var resume=priorTask?.TaskId==job.TaskId;var reviewRetries=0;
             while(true){
                 Report("running");var result=await AgentTaskRunner.RunAsync(job.Root,wsl,request,config,resume:resume,token:stop.Token,controlPlaneRoot:job.ControlRoot);turns=result.ActorTurns;
@@ -162,7 +177,8 @@ internal static class TaskAgentCoordinator
                 else if(result.Phase is not ("needs_work" or "handoff_ready" or "handoff_pending")){Report("blocked",result.Phase);break;}
                 resume=true;
             }
-        }catch(OperationCanceledException){Report(File.Exists(Path.Combine(dir,"cancel.json"))?"cancelled":"time_budget_exhausted","Owned model/command work cancelled; prior intents and receipts retained");}
+        }catch(OperationCanceledException){if(v3Attempt)Report("blocked","v3 cancellation outcome requires reconciliation; prior evidence retained");
+            else Report(File.Exists(Path.Combine(dir,"cancel.json"))?"cancelled":"time_budget_exhausted","Owned model/command work cancelled; prior intents and receipts retained");}
         catch(UnauthorizedAccessException e){Report("declined",e.Message);}
         catch(Exception e){Report("blocked",e.GetType().Name+": "+e.Message);}
         finally{stop.Cancel();await cancellation;}

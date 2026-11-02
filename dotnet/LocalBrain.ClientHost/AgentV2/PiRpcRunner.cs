@@ -89,8 +89,8 @@ internal static class PiRpcRunner
             }
             start.ArgumentList.Add("--tools");
             start.ArgumentList.Add(allowMutations
-                ? "read,ls,host_edit,host_write,host_recall,obs_recall"+(HostTaskJournal.Current?.Commands is not null?",host_command_start,host_command_status,host_command_cancel":"")
-                : "read,ls,host_recall,obs_recall");
+                ? "read,ls,host_edit,host_write,host_recall,host_memory_search,obs_recall"+(HostTaskJournal.Current?.Commands is not null?",host_command_start,host_command_status,host_command_cancel":"")
+                : "read,ls,host_recall,host_memory_search,obs_recall");
         }
 
         var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

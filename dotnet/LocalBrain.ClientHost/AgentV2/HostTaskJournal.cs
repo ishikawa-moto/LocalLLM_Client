@@ -119,7 +119,21 @@ internal sealed class HostTaskJournal : IDisposable
     {
         if(requiresApproval && !HasApproval)throw new UnauthorizedAccessException("Task approval is unavailable or expired");
     }
-    public string Recall(string hash,int offset)=>store.Recall(taskId,hash,offset);
+    public string Recall(string hash,int offset) {
+        Slack.RestrictedExecution.DenyAgentTools();
+        store.ReserveMemoryAccess(Input("taskmemory_recall_access",new {offset},"host_verified",[]),32);
+        return store.Recall(taskId,hash,offset);
+    }
+    internal TaskMemorySelection.Candidate[] SearchMemory(string query) {
+        Slack.RestrictedExecution.DenyAgentTools();
+        if(string.IsNullOrWhiteSpace(query) || query.Length>1024)throw new InvalidDataException("Memory search query outside Host bounds");
+        store.ReserveMemoryAccess(Input("taskmemory_search_access",new {query_hash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(query))},"host_verified",[]),8);
+        return store.RetrieveMemoryCandidates(taskId,query,8).Candidates.Select(c=>{
+            var length=Math.Min(240,c.Preview.Length);
+            if(length>0 && char.IsHighSurrogate(c.Preview[length-1]))length--;
+            return c with {EvidenceRefs=c.EvidenceRefs.Take(8).ToArray(),Preview=c.Preview[..length]};
+        }).ToArray();
+    }
     public string[] EvidenceRefs()=>store.TaskEvidence(taskId);
     public TaskMemoryQ8 CreateMemory()=>new(store.Root);
     internal CanonicalStore.EventReceipt CommitMemoryEpoch(TaskMemoryEpoch.Seed seed) {

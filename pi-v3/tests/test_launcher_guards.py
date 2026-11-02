@@ -1,5 +1,7 @@
 import importlib.util
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 path = Path(__file__).resolve().parent.parent / "agent" / "run-isolated.py"
@@ -19,6 +21,19 @@ with tempfile.TemporaryDirectory(prefix="localbrain-launcher-test-") as name:
     private = root / "sessions"
     private.mkdir(mode=0o700)
     launcher.checked_private_directory(private)
+    try:
+        launcher.verify_bounded_mount(private, 16 * 1024 * 1024)
+        raise AssertionError("sessions without a dedicated mount accepted")
+    except ValueError:
+        pass
+    with patch.object(launcher.os.path, "ismount", return_value=True), patch.object(
+        launcher.os, "statvfs", return_value=SimpleNamespace(f_blocks=4097, f_frsize=4096)
+    ):
+        try:
+            launcher.verify_bounded_mount(private, 16 * 1024 * 1024)
+            raise AssertionError("oversized sessions filesystem accepted")
+        except ValueError:
+            pass
     private.chmod(0o755)
     try:
         launcher.checked_private_directory(private)

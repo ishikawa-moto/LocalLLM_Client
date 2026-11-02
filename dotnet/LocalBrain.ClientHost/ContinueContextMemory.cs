@@ -155,8 +155,12 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
     }
     public async ValueTask DisposeAsync(){if(counter is not null)await counter.DisposeAsync();}
 
-    private sealed class PayloadCounter : IAsyncDisposable
+    internal sealed class PayloadCounter : IAsyncDisposable
     {
+        private readonly string? distribution,python,tokenizer,scriptPath;
+        internal PayloadCounter() {}
+        internal PayloadCounter(string distribution,string python,string tokenizer,string scriptPath)
+        {this.distribution=distribution;this.python=python;this.tokenizer=tokenizer;this.scriptPath=scriptPath;}
         private JsonlWorker? worker;
         internal async Task<int> MeasureAsync(JsonObject request,CancellationToken token)
         {
@@ -164,9 +168,9 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
             measurementDeadline.CancelAfter(TimeSpan.FromSeconds(30));token=measurementDeadline.Token;
             if(worker is null || !worker.IsRunning){
                 if(worker is not null)await worker.DisposeAsync();
-                var script=await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,"scripts","context-tokenizer.py"),token);
+                var script=scriptPath??await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,"scripts","context-tokenizer.py"),token);
                 var start=new ProcessStartInfo("wsl.exe");
-                foreach(var a in new[]{"-d","Ubuntu","--exec","/home/worker/localbrain-v2/laya-venv/bin/python","-u",script,"/home/worker/localbrain-v2/verified-tokenizer.json"})start.ArgumentList.Add(a);
+                foreach(var a in new[]{"-d",distribution??"Ubuntu","--exec",python??"/home/worker/localbrain-v2/laya-venv/bin/python","-u",script,tokenizer??"/home/worker/localbrain-v2/verified-tokenizer.json"})start.ArgumentList.Add(a);
                 worker=JsonlWorker.Start(start);
             }
             var reply=await worker.SendAsync(new(){["texts"]=Array.Empty<string>(),["messages"]=request["messages"],
