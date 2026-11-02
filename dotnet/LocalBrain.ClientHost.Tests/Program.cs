@@ -3,6 +3,20 @@ using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
 if(args.Length==1 && args[0]=="--pi-canonical-proof"){await PiCanonicalTurnTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--host-sidefx-proof"){await SideEffectGateTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--pi-runtime-options-proof"){
+    new PiRuntimeOptions().Validate();
+    var expected=new PiRuntimeOptions("/home/worker/private-pi/bin/pi","/home/worker/private-pi/agent");
+    var roundtrip=JsonSerializer.Deserialize<ClientConfig>(JsonSerializer.Serialize(
+        new ClientConfig("https://localhost.invalid",18081,"fixture","projects.json","audit.jsonl",PiRuntime:expected),ClientConfig.JsonOptions),ClientConfig.JsonOptions)!;
+    if(roundtrip.PiRuntime!=expected)throw new Exception("Trusted runtime configuration was not preserved");
+    foreach(var path in new string?[]{null,"","/","relative","/x//pi","/x/./pi","/x/../pi","/x/pi/","/x/pi\n","/x/pi;cmd"}){
+        foreach(var options in new[]{new PiRuntimeOptions(path!,"/agent"),new PiRuntimeOptions("/bin/pi",path!)}){
+            try{options.Validate();throw new Exception("Invalid runtime path accepted");}catch(InvalidDataException){}
+        }
+    }
+    Console.WriteLine("Trusted Pi runtime path and configuration checks passed");return;
+}
 if(args.Length==6&&args[0]=="--chat-ocr-interop-preserved"){await ChatOcrInteropTests.RunAsync(args[1],args[2],args[3],args[4],args[5]);return;}
 if(args.Length==4&&args[0]=="--chat-ocr-interop"){await ChatOcrInteropTests.RunAsync(args[1],args[2],args[3]);return;}
 if(args.Length==1&&args[0]=="--chat-ocr-proof"){await ChatOcrTests.RunAsync();return;}

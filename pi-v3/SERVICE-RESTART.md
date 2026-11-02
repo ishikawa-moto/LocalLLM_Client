@@ -7,9 +7,13 @@
 
 ## 今回の最小変更
 
-- 既存 WSL `Ubuntu` の `/home/worker/.volta/bin/pi` が **1.4.0** でなければ実行しません。
+- 既存 WSL `Ubuntu` の Pi が **1.4.0** でなければ実行しません。
   バージョン更新は Host/モデルの実行要求では行わず、配備時に固定 lock を使用します。
-- Host 管理の `/home/worker/localbrain-v2/pi-1.4/settings.json` に、publish 出力の
+- Host の信頼済み `clientsettings.json` の `piRuntime.piExecutable` と `piRuntime.agentDirectory`
+  で専用の実行先・保存先を選べます。モデルの task からは変更できません。
+  未指定は従来の `/home/worker/.volta/bin/pi` と `/home/worker/localbrain-v2/pi-1.4` です。
+  検証では専用の1.4.0を指定し、旧グローバル Pi を上書きしません。
+- Host 管理の `agentDirectory/settings.json` に、publish 出力の
   `scripts/pi-settings.json`（既存 v3 の同一設定）を配置します。内容は標準 Compaction
   `enabled=true / reserveTokens=8192 / keepRecentTokens=12000` のみです。未配置・不一致は停止します。
 - Pi 標準セッションは同ディレクトリの `sessions` に保存します。旧 `agent-v2-sessions`
@@ -40,8 +44,10 @@ PC73 ピークメモリ比較試験と全面 cleanup は再開条件から外し
 - Windows Node: 記憶検索の正常/不正入力、保護ファイルと native shell 拒否を確認しました。
 - PC70 WSL: 既存 provider と Host ツールの Pi 1.4 startup、標準 Compaction、private session、
   project 拡張・設定を読まないことを確認しました。推論0回の部品試験であり Windows Host 実行ではありません。
-- Windows: Host/Test project のビルド成功。Code Integrity 下の新しい Host/テスト実行は未実施。
-  PC70 に配備済みの許可済み Client Host 実行ファイルも見つかっていません。制限は迂回しません。
+- Windows: Host/Test project のビルドと通常 EXE による限定試験が成功しました。
+  「コード整合性が原因で Windows 試験を一律実行できない」という扱いは撤回しました。
+  Work 内でのファイル移動・名前付きパイプの拒否は、制約外の通常ユーザー実行で成功しています。
+  過去の失敗原因と現在の実行結果は [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md) に区別して記録しました。
 - Browser Chat は既存 PC70 `/health` が HTTP 200。既存サービスを変更・再起動せず確認しました。
 - Qwen 本番推論への接続は成功しましたが、Gateway 開発版の優先順位修正は本番未配備です。
   Continue ＞ Slack 解析 ＞ Work の実機確認は管理者権限による別配備後に必要です。
@@ -53,7 +59,7 @@ PC73 ピークメモリ比較試験と全面 cleanup は再開条件から外し
 
 ## 切替前の最小条件
 
-対象の既存サービス状態、現行 Host/設定/証明書の退避先と戻し方を確認し、許可された署名・実行経路で
+対象の既存サービス状態、現行 Host/設定/証明書の退避先と戻し方を確認し、通常の正式な EXE 実行で
 最終 Host の grant、許可ファイル、取消、結果返却を PC70 で確認します。モデルの回答は権限証明にしません。
 サービスごとに合格を判定し、新しい経路が不合格ならその機能だけ無効のままにします。
 `v3Development.enabled` は既定無効のままです。未検証の新経路を fallback として有効にしません。

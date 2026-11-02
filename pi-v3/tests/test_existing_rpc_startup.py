@@ -21,7 +21,8 @@ root = Path(tempfile.mkdtemp(prefix='existing-rpc-', dir=runtime.parent))
 root.chmod(0o700)
 extensions = root / 'extensions'
 extensions.mkdir()
-(extensions / 'node_modules').symlink_to(runtime / 'node_modules', target_is_directory=True)
+# Match the published Host scripts: dependencies resolve through Pi's standard
+# extension loader, without a separate node_modules beside these scripts.
 for name in ('localbrain-provider.js', 'localbrain-policy.mjs', 'host-file-tools.mjs', 'host-request.mjs', 'context-telemetry.mjs'):
     shutil.copyfile(client / 'scripts' / name, extensions / name)
 agent, work = root / 'agent', root / 'work'

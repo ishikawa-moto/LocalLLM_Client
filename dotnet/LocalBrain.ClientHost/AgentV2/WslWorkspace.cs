@@ -4,16 +4,14 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal static class WslWorkspace
 {
-    internal const string PiExecutable = "/home/worker/.volta/bin/pi";
-    internal const string PiAgentDirectory = "/home/worker/localbrain-v2/pi-1.4";
-
     // Read-only preflight of the existing runtime. Do not install, migrate old
     // sessions or silently fall back to a different Pi from a model request.
-    internal static async Task RequirePi140Async(CancellationToken token)
+    internal static async Task RequirePi140Async(CancellationToken token, PiRuntimeOptions runtime)
     {
-        if ((await RunAsync(["-d", "Ubuntu", "--exec", PiExecutable, "--version"], token)).Trim() != "1.4.0")
+        runtime.Validate();
+        if ((await RunAsync(["-d", "Ubuntu", "--exec", runtime.PiExecutable, "--version"], token)).Trim() != "1.4.0")
             throw new InvalidOperationException("The registered Pi runtime must be 1.4.0");
-        var settings = await RunAsync(["-d", "Ubuntu", "--exec", "/usr/bin/cat", PiAgentDirectory + "/settings.json"], token);
+        var settings = await RunAsync(["-d", "Ubuntu", "--exec", "/usr/bin/cat", runtime.AgentDirectory + "/settings.json"], token);
         using var document = System.Text.Json.JsonDocument.Parse(settings);
         var root = document.RootElement;
         if (root.ValueKind != System.Text.Json.JsonValueKind.Object || root.EnumerateObject().Count() != 1 ||

@@ -11,7 +11,8 @@ internal sealed record ClientConfig(
     string AuditLog,
     int HeartbeatSeconds = 60,
     bool PersonalValidation = false,
-    V3DevelopmentOptions? V3Development = null)
+    V3DevelopmentOptions? V3Development = null,
+    PiRuntimeOptions? PiRuntime = null)
 {
     public static ClientConfig Load()
     {
@@ -22,6 +23,7 @@ internal sealed record ClientConfig(
         if (!Uri.TryCreate(config.GatewayBaseUrl, UriKind.Absolute, out var uri) || uri.Scheme != "https")
             throw new InvalidOperationException("GatewayBaseUrl must be an HTTPS URL");
         config.V3Development?.Validate();
+        config.PiRuntime?.Validate();
         return config with {
             ProjectsFile = Expand(config.ProjectsFile, baseDir),
             AuditLog = Expand(config.AuditLog, baseDir)
@@ -40,6 +42,22 @@ internal sealed record ClientConfig(
 
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static string Expand(string value, string baseDir) => Path.GetFullPath(Environment.ExpandEnvironmentVariables(value), baseDir);
+}
+
+// Trusted Host configuration only. A private Pi installation lets validation
+// preserve the old global Pi; no installation or model-selected path is added.
+internal sealed record PiRuntimeOptions(
+    string PiExecutable = "/home/worker/.volta/bin/pi",
+    string AgentDirectory = "/home/worker/localbrain-v2/pi-1.4")
+{
+    internal void Validate()
+    {
+        foreach (var path in new[] { PiExecutable, AgentDirectory })
+            if (path is null || !System.Text.RegularExpressions.Regex.IsMatch(path,
+                    @"\A/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\z") ||
+                path.Split('/').Any(part => part is "." or ".."))
+                throw new InvalidDataException("Invalid trusted Pi runtime path");
+    }
 }
 
 // This is trusted Host configuration, never part of a model task request.

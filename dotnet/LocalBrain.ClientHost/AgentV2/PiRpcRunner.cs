@@ -23,7 +23,8 @@ internal static class PiRpcRunner
         if (allowMutations && (allowedMutationPaths is null or { Length: 0 } ||
             allowedMutationPaths.Sum(item => item.Length) > 8_000))
             throw new ArgumentException("Actor mutation allowlist is missing or too large");
-        await WslWorkspace.RequirePi140Async(token);
+        var runtime = ClientConfig.Load().PiRuntime ?? new PiRuntimeOptions();
+        await WslWorkspace.RequirePi140Async(token, runtime);
         var provider = await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,
             "scripts", "localbrain-provider.js"), token);
         var relay = await WslWorkspace.MapFileAsync(Path.Combine(AppContext.BaseDirectory,
@@ -34,7 +35,7 @@ internal static class PiRpcRunner
         var telemetryOptions = windowsRoot is null ? null : ContextTelemetryState.Options.Read(windowsRoot);
         var start = new ProcessStartInfo("wsl.exe");
         var launch = new List<string> { "-d", "Ubuntu", "--cd", workspace, "--exec", "/usr/bin/env",
-            $"PI_CODING_AGENT_DIR={WslWorkspace.PiAgentDirectory}",
+            $"PI_CODING_AGENT_DIR={runtime.AgentDirectory}",
             $"LOCALBRAIN_RELAY_EXE={relay}",
             $"LOCALBRAIN_ALLOWED_FILES={JsonSerializer.Serialize(allowedMutationPaths ?? [])}",
         };
@@ -44,7 +45,7 @@ internal static class PiRpcRunner
         if ((sideEffects is not null ? "/home/worker/localbrain-v2/verified-tokenizer.json" : telemetryOptions?.TokenizerJson) is { } tokenizer)
             launch.Add($"LOCALBRAIN_CONTEXT_TOKENIZER_JSON={tokenizer}");
         launch.AddRange([
-            WslWorkspace.PiExecutable, "--mode", "rpc",
+            runtime.PiExecutable, "--mode", "rpc",
             "--offline", "--no-approve", "--no-extensions", "--no-mcp", "--no-skills",
             "--no-prompt-templates", "--no-themes", "--no-context-files",
             "--provider", "localbrain", "--model", "local-qwen38",
@@ -83,7 +84,7 @@ internal static class PiRpcRunner
                 "scripts", "host-file-tools.mjs"), token);
             start.ArgumentList.Add("--extension"); start.ArgumentList.Add(hostTools);
             start.ArgumentList.Add("--session-dir");
-            start.ArgumentList.Add(WslWorkspace.PiAgentDirectory + "/sessions");
+            start.ArgumentList.Add(runtime.AgentDirectory + "/sessions");
             if (sessionId is not null)
             {
                 if (!Guid.TryParse(sessionId, out _)) throw new ArgumentException("Invalid Pi session ID");
