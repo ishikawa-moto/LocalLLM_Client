@@ -2,9 +2,12 @@
 
 ## 2026-11-03 の追加確認
 
-最初のUAC承認は**読み取りのみ**で、実施済みです。繰り返し実行しません。
-その後、PC73担当からユーザーの段階的本番配備許可と、Continue画面での実応答成功が通知されました。
-したがって、現在の保留理由を「一般的な配備許可がない」「Continue未確認」とは扱いません。
+読み取りUAC・PC70の手動管理者診断は実施済みで、現在は追加の読み取り承認待ちではありません。
+ユーザーの段階的本番配備許可も受領済みです。
+PC73の03:53固定文字列応答はVS Code標準ChatのAuto/GPT-6 Lunaだったと訂正されたため、Continue/Qwen証跡から除外しました。
+12:19の実Continue拡張（Plan / LocalBrain Qwen 27B）から新Hostのstatusツールを1回実行し、
+complete/eligible=true、done、tool error=0を確認したという報告を記録しています。
+このMCP確認と、Qwenによる固定文字列応答は区別します。
 今回の固定packetに対する保守時間の確認と、人間による正規UACは実行時に別途必要です。
 
 過去に実配備した `slack-admission-deploy-20261026-55a2069` のForward packetも確認しました。
@@ -13,11 +16,17 @@
 ForwardはChat/Gateway双方の停止・更新と新プロセス2個を要求し、検査はSlackを含む全DB行・DB/WALを読みます。
 ペア停止を許しても今回のSlack内容非参照条件や新payloadへの束縛は解決しません。
 
-既存OS操作を再利用するGateway専用main、Chatの不変確認、本文を読まないDB identity/schema検査、
-今回の146ファイル・新spec・fresh baselineに束縛したpacketと明示的な戻し手順が未完成です。
-新しい大規模配備機構を作らない方針に従い、この更新だけを保留しました。
-`Gateway-Priority-Draft.ps1` のApply/Restoreは実装されておらず、実行可能手順として提示しません。
-本番タスク操作・配備ファイル変更は0です。現行GatewayとBrowser Chatは稼働を維持しています。
+その後、Server `cb9a6f11d7fc6c0c9ff8928caee543fc0876254f` にGateway専用Apply/Restoreと本文を読まない
+DB identity/schema検査・packet builderを実装し、限定試験とソース検査を通過しました。
+旧 `Gateway-Priority-Draft.ps1` のApply/Restoreは依然無効で、新手順とは別物です。
+
+現在の障害は、正式packetへ取り込むfresh baselineを安全に資格確認できないことです。
+管理者実行でもtask PIDと正規LISTEN所有者の対応が不成立で、公開ネイティブAPIでもGateway状態0、Chat状態0/1を観測しました。
+状態0をLISTENへ読み替えたり、同じPID・HTTP200だけで照合を省略したりしません。
+既存Forward/Applyも同じTCP取得に依存しており、資格確認済みの別経路はありません。
+本番タスク操作・配備ファイル変更は0です。既存正常サービスは維持しています。
+原因をWindows、Kaspersky、Codex、コード整合性のいずれとも断定せず、OS修復・更新・再起動も実行していません。
+再開条件は、同じ所有保証を満たす正規の取得結果または正式な代替方式が確認できることです。
 
 以下の現行bindingと切替条件は維持します。実配備前には必ず最新状態を再照合してください。
 

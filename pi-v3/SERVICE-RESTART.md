@@ -3,16 +3,23 @@
 ## 2026-11-03 の再開状況
 
 PC73担当から、正式Host `049f0c378f681d73dfde74cc36020f74190c79b0` と専用Pi 1.4.0の配備、
-Host→Pi→Qwenの `LOCALBRAIN_PRODUCTION_PI_140_OK`（ToolErrors=0、exit=0）、実MCP読取、
-さらに人間がContinue画面から送信した公開確認への `LOCALBRAIN_CONTINUE_PROD_OK` の応答が報告されました。
-Continueの切替待ちは解消しました。これはPC73担当の実機報告であり、PC70からPC73を操作した結果ではありません。
+Host→Pi→Qwenの `LOCALBRAIN_PRODUCTION_PI_140_OK`（ToolErrors=0、exit=0）が報告されています。
+その後、03:53の `LOCALBRAIN_CONTINUE_PROD_OK` はVS Code標準ChatのAuto/GPT-6 Lunaによる応答だったと訂正されました。
+この文字列をContinue/Qwen経路の成功証跡には使いません。
+12:19には実Continue拡張でPlan / LocalBrain Qwen 27Bを選択し、新Hostの
+`localbrain_agent_v2_status` を1回実行、complete/eligible=true、done、tool error=0を確認したとの報告を受領しました。
+これはContinue GUIから正規Host MCPツールへの確認で、固定文字列へのQwen実応答確認とは区別します。
+証跡session IDは非公開の進捗記録に保存しています。いずれもPC73担当の報告で、PC70からPC73を操作した結果ではありません。
 
-PC70の読み取り確認では現行Gateway `55a2069...` がREADY、active/queued=0、Browser ChatはHTTP 200です。
+最新のPC70読み取り確認では現行Gateway `55a2069...` がHTTP応答し、active/queued=0、Qwenはアイドル停止中でした。
+Browser ChatはHTTP 200、既存Development RunnerタスクはRunningです。成功済み推論は繰り返していません。
 正規のBrowser Chat入口は、非公開サイト設定のホスト名とChatポートから確認しました（実値はローカル証跡に保存）。
 Gateway候補 `f5df6bd...` は未配備のため、新優先順位の本番合格はまだ宣言しません。
-既存の正式ForwardはChat/Gatewayのペア更新とSlackを含む全DB読取を前提とし、
-今回のGateway単独更新・Slack内容非参照の条件にそのまま適用できません。
-新しい配備基盤は追加せず、Gateway更新だけを保留します。詳細は [配備引き継ぎ](GATEWAY-DEPLOYMENT-HANDOFF.md) を参照してください。
+Server手順コミット `cb9a6f1...` にGateway単独の更新・明示的復旧を追加し、限定試験とソース検査を実施済みです。
+ただし、手動管理者実行と公開ネイティブAPIの双方でTCP状態値0/1の不整合があり、正規listenerの所有確認が未成立です。
+fresh baseline/正式packet検証・本番反映は保留です。同じUACや手動診断は繰り返しません。
+既存配備機構にも、この照合を代替する資格確認済みの経路は見つかっていません。
+詳細は [配備引き継ぎ](GATEWAY-DEPLOYMENT-HANDOFF.md) を参照してください。
 
 PC70のSlack OCR mailbox、Bridge relay、CPU worker設定はいずれも未作成で、
 通常EXEの `ocr capabilities` も `enabled=false` でした。開発用OCR資産を本番稼働済みとは扱いません。
