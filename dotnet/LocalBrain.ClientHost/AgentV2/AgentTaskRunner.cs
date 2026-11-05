@@ -390,7 +390,7 @@ internal static class AgentTaskRunner
         int actorTurns, string requestHash, int recoveryCount,
         string? forcedRoute, CancellationToken token,bool falseVerified=false,int replans=0,int stalledTests=0)
     {
-        if (forcedRoute is not (null or "sol"))
+        if (forcedRoute is not (null or "sol" or "copilot"))
             throw new InvalidOperationException("Saved external review route is no longer available; inspect the task before resuming.");
         var tests = new List<ToolRouter.TestResult>();
         foreach (var required in request.RequiredTests)
