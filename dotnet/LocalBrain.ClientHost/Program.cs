@@ -3,6 +3,10 @@ using LocalBrain.ClientHost.AgentV2;
 
 try
 {
+    // Explicit administrative test command. Never loads production configuration or opens DefaultRoot.
+    if (args.FirstOrDefault() == "review-qualification") {
+        await ReviewQualification.RunAsync(args.Skip(1).ToArray()); return;
+    }
     if(args.FirstOrDefault()=="slack"){
         try{await LocalBrain.ClientHost.Slack.SlackCommands.Run(args.Skip(1).ToArray());}
         catch(OperationCanceledException){}

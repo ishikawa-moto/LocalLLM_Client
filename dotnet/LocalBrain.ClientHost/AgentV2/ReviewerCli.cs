@@ -12,7 +12,7 @@ internal static class ReviewerCli
     internal sealed record Endpoint(string Path, string Sha256, bool SubscriptionVerified = false,
         bool PacketBoundaryVerified = false);
     internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null);
-    internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null);
+    internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null, string Diagnostic = "");
     internal static string Model(string provider) => provider switch {
         "sol" => "gpt-6.1-sol", "copilot" => "claude-opus-5.5",
         _ => throw new InvalidDataException("Unknown reviewer")
@@ -47,12 +47,53 @@ internal static class ReviewerCli
             start.ArgumentList.Add("-");
         } else if (provider == "copilot") {
             start.Environment["COPILOT_ALLOW_ALL"] = "false";
+            // Empty per-invocation configuration/state; do not load user plugins, hooks,
+            // sessions or memories. Existing OS credential-store auth may still work;
+            // file-backed auth is never copied or replaced and must fail closed if unavailable.
+            start.Environment["COPILOT_HOME"] = System.IO.Path.Combine(work,"copilot-home");
             foreach (var arg in new[] { "--prompt", "Review only the evidence supplied on stdin. No tools. Return only PASS/ISSUES JSON.",
                 "--model", Model(provider), "--reasoning-effort", effort, "--silent", "--no-ask-user", "--no-custom-instructions",
-                "--no-remote", "--no-remote-export", "--disable-builtin-mcps", "--available-tools=", "--deny-tool=*",
+                "--sync-session=off", "--disable-builtin-mcps", "--available-tools=", "--deny-tool=*",
                 "--no-auto-update", "--disable-client-telemetry", "--output-format=text" }) start.ArgumentList.Add(arg);
         } else throw new InvalidDataException("Unknown reviewer");
         return start;
+    }
+    // This is not a production-dispatch override. Only the explicit, isolated qualification
+    // command can construct a Session; normal InvokeAsync still requires both endpoint flags.
+    internal static async Task<Reply> ProbeAsync(ReviewQualification.Session session, string provider,
+        string packet, CancellationToken token)
+    {
+        Slack.RestrictedExecution.DenyExternal();
+        var journal = HostTaskJournal.Current ?? throw new UnauthorizedAccessException("Host journal required");
+        session.RequireJournal(journal);
+        if (Encoding.UTF8.GetByteCount(packet)>64_000 || ReviewerEvidence.ContainsSecret(packet))
+            throw new UnauthorizedAccessException("Probe packet is not exportable");
+        var endpoint = session.Endpoint(provider);
+        if(packet!=session.ProbePacket(provider))throw new UnauthorizedAccessException("Only the exact public probe packet is eligible");
+        var reply = await DispatchAsync(journal, endpoint, provider, packet, "high", [], [], false, token,
+            qualificationProbe:true);
+        journal.Record("qualification_transport_result",new {provider,reply.Status,reply.Reason,reply.ExitCode,
+            packet_hash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(packet)), qualification_only=true},"host_observed");
+        return reply;
+    }
+    internal static Task<Reply> QualifiedTrialReviewAsync(ReviewQualification.Session session,string provider,
+        string packet,bool injectPrimaryIdentityFailure)
+    {
+        var journal=HostTaskJournal.Current??throw new UnauthorizedAccessException("Host journal required");
+        session.RequireJournal(journal); session.RequireBoundary(provider);
+        if(packet!=session.PublicPacket)throw new UnauthorizedAccessException("Only the prepared public packet is eligible");
+        var endpoint=session.Endpoint(provider);
+        if(injectPrimaryIdentityFailure) {
+            if(provider!="sol")throw new InvalidDataException("Only primary identity failure injection is supported");
+            endpoint=endpoint with {Sha256=new string('0',64)};
+        }
+        return TrialAsync();
+        async Task<Reply> TrialAsync() {
+            var reply=await DispatchAsync(journal,endpoint,provider,packet,"high",[],["addition.py"],false,CancellationToken.None);
+            journal.Record("qualification_transport_result",new{provider,reply.Status,reply.Reason,reply.ExitCode,
+                injected_primary_identity_failure=injectPrimaryIdentityFailure,packet_hash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(packet))},"host_observed");
+            return reply;
+        }
     }
     internal static Settings Load(string root)
     {
@@ -88,7 +129,8 @@ internal static class ReviewerCli
         return result;
     }
     private static async Task<Reply> DispatchAsync(HostTaskJournal journal, Endpoint endpoint, string provider,
-        string packet, string effort, string[]? sources, string[]? files, bool plan, CancellationToken token)
+        string packet, string effort, string[]? sources, string[]? files, bool plan, CancellationToken token,
+        bool qualificationProbe = false)
     {
         if (string.IsNullOrWhiteSpace(endpoint.Path) || !System.IO.Path.IsPathFullyQualified(endpoint.Path) || !string.Equals(System.IO.Path.GetExtension(endpoint.Path),".exe",StringComparison.OrdinalIgnoreCase))
             return new("UNAVAILABLE", Reason:"ABSOLUTE_EXE_REQUIRED");
@@ -107,8 +149,10 @@ internal static class ReviewerCli
                     RedirectStandardOutput=true,RedirectStandardError=true,WorkingDirectory=work.FullName };
                 auth.Environment.Clear(); foreach(var pair in start.Environment) auth.Environment[pair.Key]=pair.Value;
                 auth.ArgumentList.Add("login"); auth.ArgumentList.Add("status");
-                var signedIn=await ExecuteAsync(auth,null,TimeSpan.FromSeconds(20),token);
-                if (signedIn.ExitCode!=0 || !(signedIn.Answer.Contains("Logged in using ChatGPT",StringComparison.Ordinal)))
+                var signedIn=await ExecuteAsync(auth,null,TimeSpan.FromSeconds(20),token,journal,provider,"auth_preflight",digest);
+                var verified=signedIn.ExitCode==0 && signedIn.Answer.Contains("Logged in using ChatGPT",StringComparison.Ordinal);
+                journal.Record("reviewer_auth_preflight",new {provider,authentication="ChatGPT",verified,signedIn.ExitCode},"host_observed");
+                if (!verified)
                     return new("UNAVAILABLE",Reason:"CHATGPT_LOGIN_REQUIRED");
             }
             // A redacted requirement/diff cannot establish acceptance. Retain the prepared manifest
@@ -118,8 +162,20 @@ internal static class ReviewerCli
             // Policy denial/manual approval is deliberately NOT caught or converted to fallback.
             using var dispatch=journal.BeginExternalPacket(packet,provider,sources,files);
             journal.ReviewStarted(provider); Slack.RestrictedExecution.DenyExternal();
-            var response=await ExecuteAsync(start,Instructions(plan)+
-                dispatch.Packet,TimeSpan.FromMinutes(5),token);
+            var input=(qualificationProbe ? ReviewQualification.ProbeInstructions : Instructions(plan))+dispatch.Packet;
+            var inputHash=journal.Canonical.PutEvidence(Encoding.UTF8.GetBytes(input));
+            journal.Record("reviewer_cli_input",new {provider,packet_hash=prepared.Manifest.ExportHash,
+                manifest_hash=prepared.ManifestHash,stdin_hash=inputHash,qualification_only=qualificationProbe},"host_verified");
+            var response=await ExecuteAsync(start,input,TimeSpan.FromMinutes(5),token,journal,provider,
+                qualificationProbe?"boundary_probe":"review",digest);
+            if(qualificationProbe) {
+                // Diagnostic evidence is untrusted and cannot certify a preventive denial.
+                journal.Record("qualification_cli_output",new {provider,response.Status,response.Reason,response.ExitCode,
+                    output=HostEgress.Redact(response.Answer[..Math.Min(16_000,response.Answer.Length)]).Text,
+                    output_truncated=response.Answer.Length>16_000,
+                    diagnostic=HostEgress.Redact(response.Diagnostic).Text},"external_unverified");
+                return response with {Answer="",Diagnostic=""};
+            }
             if(response.Status!="OK" || response.ExitCode!=0)return response with{Status="UNAVAILABLE",Answer=""};
             return provider=="sol" ? DecodeCodex(response.Answer) with {ExitCode=response.ExitCode} : response;
         } finally { work.Delete(recursive:true); }
@@ -171,11 +227,18 @@ internal static class ReviewerCli
         }
         return text.ToString();
     }
-    private static async Task<Reply> ExecuteAsync(ProcessStartInfo start,string? input,TimeSpan duration,CancellationToken token)
+    private static async Task<Reply> ExecuteAsync(ProcessStartInfo start,string? input,TimeSpan duration,CancellationToken token,
+        HostTaskJournal? journal=null,string? provider=null,string? purpose=null,string? binaryHash=null)
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(duration);
         using var process=Process.Start(start)??throw new IOException("Reviewer process failed to start");
         try {
+            journal?.Record("reviewer_cli_started",new {provider,purpose,executable=start.FileName,sha256=binaryHash,
+                pid=process.Id,parent_pid=Environment.ProcessId,user=Environment.UserDomainName+"\\"+Environment.UserName,
+                arguments=start.ArgumentList.ToArray(),environment_names=start.Environment.Keys.Order().ToArray(),
+                requested_model=provider is null?null:Model(provider),
+                authentication_policy=provider=="sol"?"ChatGPT (login status preflight required)":"existing Copilot credential store; no token/BYOK environment inherited",
+                actual_model_verified=false},"host_observed");
             var output=ReadBoundedAsync(process.StandardOutput,96_000,timeout.Token);
             var diagnostic=ReadBoundedAsync(process.StandardError,16_000,timeout.Token);
             if(start.RedirectStandardInput){if(input is not null)await process.StandardInput.WriteAsync(input.AsMemory(),timeout.Token);process.StandardInput.Close();}
@@ -187,8 +250,9 @@ internal static class ReviewerCli
             await Task.WhenAny(all,exit);if(all.IsFaulted)await all;
             await exit;await all;
             var answer=await output;var stderr=await diagnostic;
+            journal?.Record("reviewer_cli_exited",new {provider,purpose,pid=process.Id,process.ExitCode},"host_observed");
             return new(process.ExitCode==0?"OK":"UNAVAILABLE",input is null?answer+stderr:answer,
-                process.ExitCode==0?"":FailureReason(answer+stderr),process.ExitCode);
+                process.ExitCode==0?"":FailureReason(answer+stderr),process.ExitCode,purpose=="boundary_probe"?stderr:"");
         } catch(OperationCanceledException) when(!token.IsCancellationRequested) { return new("UNAVAILABLE",Reason:"CLI_TIMEOUT"); }
         finally {
             if(!process.HasExited){process.Kill(entireProcessTree:true);await process.WaitForExitAsync(CancellationToken.None);}
