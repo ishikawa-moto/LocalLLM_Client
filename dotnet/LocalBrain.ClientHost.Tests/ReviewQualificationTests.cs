@@ -6,6 +6,38 @@ using LocalBrain.ClientHost.AgentV2;
 
 internal static class ReviewQualificationTests
 {
+    internal static void RunPermissionOptionsProof()
+    {
+        var checks=0;
+        void Check(bool value,string reason){if(!value)throw new Exception(reason);checks++;}
+        var names=new[]{"OPENAI_API_KEY","GH_TOKEN","GITHUB_TOKEN","COPILOT_GITHUB_TOKEN",
+            "COPILOT_PROVIDER_BASE_URL","LOCALBRAIN_CLIENT_CONFIG","CODEX_APP_TOOLS_PIPE_PATH","OTEL_EXPORTER_OTLP_ENDPOINT"};
+        var saved=names.ToDictionary(n=>n,Environment.GetEnvironmentVariable);
+        try {
+            // Synthetic values remain in this test process and are never sent to a child.
+            foreach(var name in names)Environment.SetEnvironmentVariable(name,"PUBLIC_SYNTHETIC_TEST_VALUE");
+            foreach(var provider in new[]{"sol","copilot"}) {
+                var start=ReviewerCli.StartInfo("C:\\public-fixture\\reviewer.exe","C:\\public-fixture\\empty-work",provider,"high");
+                Check(!start.UseShellExecute && start.RedirectStandardInput,"Packet transport escaped stdin-only launch");
+                foreach(var name in names)Check(!start.Environment.ContainsKey(name),"Inherited secret/Host capability environment");
+                Check(!start.ArgumentList.Any(a=>a is "--allow-all" or "--yolo" or "--allow-all-tools" or "--allow-all-paths" or
+                    "--dangerously-bypass-approvals-and-sandbox"),"Restriction was bypassed");
+                if(provider=="copilot") {
+                    foreach(var arg in new[]{"--available-tools=","--deny-tool=shell","--deny-tool=write","--deny-tool=url","--disallow-temp-dir"})
+                        Check(start.ArgumentList.Contains(arg),"Required packet-only policy option absent: "+arg);
+                    Check(!start.ArgumentList.Any(a=>a.StartsWith("--available-tools=",StringComparison.Ordinal)&&a!="--available-tools="),"Probe exposed tools");
+                    Check(start.Environment["COPILOT_HOME"]=="C:\\public-fixture\\empty-work\\copilot-home" &&
+                        start.Environment["COPILOT_ALLOW_ALL"]=="false","User config isolation lost");
+                } else {
+                    foreach(var arg in new[]{"features.shell_tool=false","features.code_mode_host=false","features.hooks=false",
+                        "permissions.review_packet.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\"}","approval_policy=\"never\""})
+                        Check(start.ArgumentList.Contains(arg),"Sol restriction was relaxed: "+arg);
+                }
+            }
+        } finally {foreach(var name in names)Environment.SetEnvironmentVariable(name,saved[name]);}
+        Console.WriteLine(JsonSerializer.Serialize(new{status="PASS",checks,external_inference=false,cli_processes_started=0,
+            canonical_opened=false,scope="launch options/environment only; NOT effective provider or OS denial proof"}));
+    }
     internal static void RunJsonProof()
     {
         var checks=0;string? originalException=null;

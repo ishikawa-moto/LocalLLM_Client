@@ -2,6 +2,7 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
+if(args.Length==1 && args[0]=="--review-permission-options-proof"){ReviewQualificationTests.RunPermissionOptionsProof();return;}
 if(args.Length==1 && args[0]=="--review-qualification-json-proof"){ReviewQualificationTests.RunJsonProof();return;}
 if(args.Length==2 && args[0]=="--review-qualification-proof"){await ReviewQualificationTests.RunAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--pi-canonical-proof"){await PiCanonicalTurnTests.RunAsync();return;}

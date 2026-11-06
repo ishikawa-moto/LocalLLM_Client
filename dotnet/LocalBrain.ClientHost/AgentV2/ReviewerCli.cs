@@ -54,6 +54,9 @@ internal static class ReviewerCli
             foreach (var arg in new[] { "--prompt", "Review only the evidence supplied on stdin. No tools. Return only PASS/ISSUES JSON.",
                 "--model", Model(provider), "--reasoning-effort", effort, "--silent", "--no-ask-user", "--no-custom-instructions",
                 "--sync-session=off", "--disable-builtin-mcps", "--available-tools=", "--deny-tool=*",
+                // Explicit documented families supplement the unqualified wildcard.
+                // Availability/permission flags are not preventive-denial receipts.
+                "--deny-tool=shell", "--deny-tool=write", "--deny-tool=url", "--disallow-temp-dir",
                 "--no-auto-update", "--disable-client-telemetry", "--output-format=text" }) start.ArgumentList.Add(arg);
         } else throw new InvalidDataException("Unknown reviewer");
         return start;

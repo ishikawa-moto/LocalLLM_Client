@@ -119,3 +119,40 @@ transport results. The console JSON keeps qualification `status` separate from
 `transport_status`, `transport_reason` and `transport_exit_code`. A console-output
 failure after dispatch must never trigger replay: inspect the retained Canonical
 approval, CLI start/exit and transport/case events first.
+
+## Permission hardening follow-up
+
+Copilot adds the documented `--deny-tool=shell`, `--deny-tool=write` and
+`--deny-tool=url` families and `--disallow-temp-dir`. The earlier wildcard is
+retained as an unqualified additional rule; the Host does not assume that `*`
+means every permission family. `--available-tools=` remains empty for both
+ordinary candidate reviews and qualification, through the same `StartInfo`.
+No tools, sandbox bypass, extra paths, certificate proxy, or credentials are enabled.
+
+`--review-permission-options-proof` on the normal test EXE checks these options
+and actually injects synthetic secret/capability environment names in the test
+process to verify they are absent from both providers' child specifications.
+It starts no CLI and opens no Canonical store. A separate native `help permissions`
+invocation can confirm argument acceptance without a prompt, but neither result
+is an effective permission decision or qualification PASS.
+
+Keep three layers distinct: available tool schemas, pre-execution permission/OS
+decisions, and output/fixture inspection after a run. No model tool request was
+observed for the retained Sol shell/read/write cases; the model also reported
+NOT_REQUESTED. A native Code Mode discovery error does not identify or deny those
+three target accesses. The after-run canary/marker comparison is detection, not
+prevention. Do not rewrite the retained Canonical cases to promote these facts.
+
+Copilot's sandbox documentation explicitly distinguishes OS-sandboxed subprocesses
+from built-in file operations checked in software. The existing Host validation
+AppContainer capture has capability0, NUL stdin and a multi-process build Job;
+it is not a qualified authenticated packet transport or a child-process-denial
+boundary. Reusing it for reviewers requires a separate compatibility decision
+for stdin, network, credentials and a witnessed preventive policy, without
+copying credentials or changing production security. No such OS change is made
+by this small option hardening. Until those prerequisites hold, the Opus model
+probe, normal public reviews, fallback and stable adoption remain BLOCKED.
+
+References: [GitHub tool control layers](https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/allowing-tools),
+[GitHub sandbox scope](https://docs.github.com/en/copilot/concepts/security-governance-and-network-settings/understanding-local-sandboxing),
+[Windows process attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
