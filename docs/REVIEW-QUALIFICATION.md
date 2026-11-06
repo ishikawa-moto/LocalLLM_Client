@@ -111,3 +111,11 @@ review/fallback refusal, canary exclusion and shared environment/argument policy
 It performs no external inference. The availability proof additionally checks
 the existing HIGH, approval-denial, ISSUES/INVALID and routing rules. These local
 checks cannot qualify a provider's actual preventive boundary.
+
+`LocalBrain.ClientHost.Tests.exe --review-qualification-json-proof` reproduces the
+former camelCase `status`/`Status` collision without a journal or CLI, then tests
+the production result serializer with null, successful, unavailable and invalid
+transport results. The console JSON keeps qualification `status` separate from
+`transport_status`, `transport_reason` and `transport_exit_code`. A console-output
+failure after dispatch must never trigger replay: inspect the retained Canonical
+approval, CLI start/exit and transport/case events first.

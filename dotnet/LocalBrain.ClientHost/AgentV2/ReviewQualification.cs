@@ -196,9 +196,12 @@ internal static class ReviewQualification
                 status=unchanged?"NOT TESTED":"FAIL",reason=unchanged?"No documented preventive-denial receipt adapter; model claims and output filtering cannot qualify":"Dedicated fixture changed; stop qualification",
                 before,after=session.TargetState()},"host_observed");
         }
-        Console.WriteLine(JsonSerializer.Serialize(new {status="BLOCKED",reply?.Status,reply?.Reason,
-            qualification_only=true,events=session.Store.EventIds(journal.TaskId)},Json));Environment.ExitCode=2;
+        Console.WriteLine(SerializeProbeResult(reply,session.Store.EventIds(journal.TaskId)));Environment.ExitCode=2;
     }
+    internal static string SerializeProbeResult(ReviewerCli.Reply? reply,string[] events) =>
+        JsonSerializer.Serialize(new {status="BLOCKED",transport_status=reply?.Status,
+            transport_reason=reply?.Reason,transport_exit_code=reply?.ExitCode,
+            qualification_only=true,events},Json);
     private static void Approve(Session session,HostTaskJournal journal,HostEgress.Prepared export,string provider) {
         if(Console.IsInputRedirected || Console.IsOutputRedirected)throw new UnauthorizedAccessException("Export approval requires an interactive human terminal");
         Console.WriteLine("ISOLATED QUALIFICATION ONLY. Provider: "+provider+"; model: "+ReviewerCli.Model(provider));

@@ -6,6 +6,31 @@ using LocalBrain.ClientHost.AgentV2;
 
 internal static class ReviewQualificationTests
 {
+    internal static void RunJsonProof()
+    {
+        var checks=0;string? originalException=null;
+        void Check(bool value,string reason){if(!value)throw new Exception(reason);checks++;}
+        // Reproduce only the old serialization shape: no journal, CLI, approval or inference.
+        try {JsonSerializer.Serialize(new {status="BLOCKED",Status="OK",Reason="",qualification_only=true,events=Array.Empty<string>()},ClientConfig.JsonOptions);}
+        catch(InvalidOperationException error) {originalException=error.ToString();}
+        Check(originalException?.Contains("collides with another property",StringComparison.Ordinal)==true,"Original camelCase collision was not reproduced");
+        var eventIds=new[]{"preserved_event_id"};
+        ReviewerCli.Reply?[] replies=[null,new("OK",ExitCode:0),new("UNAVAILABLE",Reason:"CLI_FAILURE",ExitCode:1),new("INVALID",Reason:"REVIEW_TOOL_EVENT",ExitCode:0)];
+        foreach(var reply in replies) {
+            // Exercise the exact helper called by the real post-dispatch console output.
+            var json=ReviewQualification.SerializeProbeResult(reply,eventIds);
+            using var doc=JsonDocument.Parse(json);var root=doc.RootElement;
+            Check(root.EnumerateObject().Count()==6 && root.EnumerateObject().Select(p=>p.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()==6,"Probe JSON has colliding/unexpected keys");
+            Check(root.GetProperty("status").GetString()=="BLOCKED","Transport success promoted qualification status");
+            Check(root.GetProperty("transport_status").GetString()==reply?.Status,"Transport status lost");
+            Check(root.GetProperty("transport_reason").GetString()==reply?.Reason,"Transport reason lost");
+            var exit=root.GetProperty("transport_exit_code");
+            Check(reply?.ExitCode is int code?exit.GetInt32()==code:exit.ValueKind==JsonValueKind.Null,"Transport exit code lost");
+            Check(root.GetProperty("qualification_only").GetBoolean() && root.GetProperty("events")[0].GetString()==eventIds[0],"Qualification scope/evidence changed");
+        }
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks,external_inference=false,
+            cli_processes_started=0,canonical_opened=false,original_exception=originalException},ClientConfig.JsonOptions));
+    }
     internal static async Task RunAsync(string python)
     {
         var checks=0;
