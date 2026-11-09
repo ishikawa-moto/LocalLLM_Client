@@ -64,7 +64,9 @@ internal static class TaskAgentCoordinator
         if(resume)throw new InvalidOperationException("No matching managed task exists; do not fabricate a new resume");
         var snapshot=await GitEvidence.CaptureAsync(root,request.AllowedFiles);
         if(snapshot.ChangedFiles.Length!=0)throw new InvalidOperationException("A new managed task requires a clean Git working tree; preserve existing work");
-        var taskId=Guid.NewGuid().ToString("N");var dir=Path.Combine(parent,taskId);Directory.CreateDirectory(dir);
+        var taskId=Guid.NewGuid().ToString("N");var dir=Path.Combine(parent,taskId);
+        if (runnerSummary) TaskCommandAuthorization.RequireNativeReceiptPath(dir);
+        Directory.CreateDirectory(dir);
         var configBytes=JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions);File.WriteAllBytes(Path.Combine(dir,"worker-config.json"),configBytes);
         var auth=TaskCommandAuthorization.Prepare(dir,root,taskId,request,snapshot.Head);
         var dll=typeof(TaskAgentCoordinator).Assembly.Location;
