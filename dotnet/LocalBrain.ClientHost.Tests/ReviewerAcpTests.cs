@@ -1,9 +1,74 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using LocalBrain.ClientHost.AgentV2;
 
 internal static class ReviewerAcpTests
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInfo
+    {
+        public int Size;
+        public IntPtr Reserved, Desktop, Title;
+        public uint X, Y, Width, Height, CharsX, CharsY, Fill, Flags;
+        public ushort Show, ReservedSize;
+        public IntPtr ReservedBytes, Input, Output, Error;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInfo
+    {
+        public IntPtr Process, Thread;
+        public uint ProcessId, ThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(string executable, IntPtr command, IntPtr processAttrs,
+        IntPtr threadAttrs, bool inherit, uint flags, IntPtr environment, string? cwd,
+        ref StartupInfo startup, out ProcessInfo child);
+
+    [DllImport("kernel32.dll")] private static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
+    internal static async Task VerifyJobScopeAsync(string root)
+    {
+        ReviewQualification.GuardRoot(root);
+        if (Directory.Exists(root)) throw new IOException("Fresh fixture root required");
+        var work = Directory.CreateDirectory(Path.Combine(root, "reviewer")).FullName;
+        const string canary = "PUBLIC_JOB_SCOPE_CANARY";
+        File.WriteAllText(Path.Combine(root, "outside-read.txt"), canary);
+        var start = new ProcessStartInfo(Environment.ProcessPath!) { WorkingDirectory = work,
+            UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("--review-acp-fixture");
+        start.ArgumentList.Add("os_scope");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var reviewer = await ReviewerCopilotAcp.OpenAsync(start, deadline.Token);
+        var result = await reviewer.ReviewAsync("PUBLIC_SCOPE_CHECK");
+        if (result.Status != "OK" || result.Answer != canary ||
+            File.ReadAllText(Path.Combine(root, "outside-write.txt")) != "PUBLIC_JOB_SCOPE_WRITE" ||
+            File.ReadAllText(Path.Combine(work, "breakaway-error.txt")) != "5")
+            throw new Exception("Unexpected sealed Job scope");
+        Console.WriteLine(JsonSerializer.Serialize(new { breakaway_win32 = 5, in_process_read = true,
+            in_process_write = true, model_requests = 0, fixture_only = true }));
+    }
+
+    private static string ProbeJobScope()
+    {
+        var root = Path.GetDirectoryName(Environment.CurrentDirectory)!;
+        ReviewQualification.GuardRoot(root);
+        var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>() };
+        // Attempt breakaway with a suspended image; terminate without running it if admitted.
+        if (CreateProcessW(Environment.ProcessPath!, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                false, 0x01000004, IntPtr.Zero, null, ref startup, out var child)) {
+            try { TerminateProcess(child.Process, 1); }
+            finally { CloseHandle(child.Thread); CloseHandle(child.Process); }
+            throw new Exception("Breakaway unexpectedly admitted");
+        }
+        File.WriteAllText("breakaway-error.txt", Marshal.GetLastWin32Error().ToString());
+        using var output = new FileStream(Path.Combine(root, "outside-write.txt"), FileMode.CreateNew, FileAccess.Write);
+        output.Write("PUBLIC_JOB_SCOPE_WRITE"u8);
+        return File.ReadAllText(Path.Combine(root, "outside-read.txt"));
+    }
     internal static async Task RunAsync(string root)
     {
         ReviewQualification.GuardRoot(root);
@@ -67,7 +132,7 @@ internal static class ReviewerAcpTests
             if (id == 1) response = new { jsonrpc = "2.0", id, result = new { protocolVersion = 1 } };
             else if (id == 4) {
                 File.WriteAllText("prompt.txt", "PUBLIC_FIXTURE_RECEIVED");
-                if (failure == "sealed") {
+                if (failure is "sealed" or "os_scope") {
                     try {
                         using var child = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--review-acp-linger")
                             { UseShellExecute = false });
@@ -75,7 +140,8 @@ internal static class ReviewerAcpTests
                     } catch (System.ComponentModel.Win32Exception error) {
                         File.WriteAllText("spawn-error.txt", error.NativeErrorCode.ToString());
                     }
-                    var text = frame.RootElement.GetProperty("params").GetProperty("prompt")[0].GetProperty("text").GetString();
+                    var text = failure == "os_scope" ? ProbeJobScope() :
+                        frame.RootElement.GetProperty("params").GetProperty("prompt")[0].GetProperty("text").GetString();
                     Console.WriteLine(JsonSerializer.Serialize(new { jsonrpc = "2.0", method = "session/update",
                         @params = new { sessionId = "fixture-3", update = new { sessionUpdate = "agent_message_chunk",
                             content = new { type = "text", text } } } }));
