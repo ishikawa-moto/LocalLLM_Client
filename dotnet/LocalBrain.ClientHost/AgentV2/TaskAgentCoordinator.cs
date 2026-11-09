@@ -72,20 +72,23 @@ internal static class TaskAgentCoordinator
         TaskCommandGate.WriteNew(Path.Combine(dir,"job.json"),job);
         Save(dir,new(taskId,"queued",false,0,null,DateTimeOffset.UtcNow));
         TaskCommandGate.WriteReplace(Path.Combine(parent,"current-job.json"),new{task_id=taskId});
-        if(launch)Launch(dir,job,control);
+        if(launch)Launch(dir,job,control,detachProtocol:runnerSummary);
         return await StatusAsync(root,control,runnerSummary);
     }
-    private static void Launch(string dir,Job job,string? control,bool resuming=false)
+    private static void Launch(string dir,Job job,string? control,bool resuming=false,bool detachProtocol=false)
     {
         // Reserve before CreateProcess. Uncertain launch outcomes must be inspected, never retried.
         TaskCommandGate.WriteNew(Path.Combine(dir,resuming?"worker-resume-launch-intent.json":"worker-launch-intent.json"),new{job.TaskId,job.RuntimeHash,created_at=DateTimeOffset.UtcNow});
         var executable=Environment.ProcessPath??throw new InvalidOperationException("Host executable unavailable");
-        var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true};
+        var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
+            RedirectStandardOutput=detachProtocol,RedirectStandardError=detachProtocol};
         if(Path.GetFileNameWithoutExtension(executable).Equals("dotnet",StringComparison.OrdinalIgnoreCase))start.ArgumentList.Add(job.RuntimeDll);
         start.ArgumentList.Add("agent-task-worker");start.ArgumentList.Add(dir);
         start.Environment["LOCALBRAIN_CLIENT_CONFIG"]=Path.Combine(dir,"worker-config.json");
         
         using var p=Process.Start(start)??throw new IOException("Managed worker did not start");p.StandardInput.Close();
+        // The Runner worker persists its state in the job directory, independent of MCP stdio.
+        if(detachProtocol){p.StandardOutput.Close();p.StandardError.Close();}
         // Worker writes the authoritative identity itself while holding its exclusive owner lock.
     }
     internal static async Task<object> StatusAsync(string root,string? control=null,bool runnerSummary=false)
