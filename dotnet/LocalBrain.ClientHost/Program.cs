@@ -3,6 +3,12 @@ using LocalBrain.ClientHost.AgentV2;
 
 try
 {
+    if (args.FirstOrDefault() == "runner-mcp")
+    {
+        if (args.Length != 2) throw new ArgumentException("runner-mcp requires one absolute trial directory");
+        await RunnerMcpScope.StartAsync(args[1]);
+        return;
+    }
     // Explicit administrative test command. Never loads production configuration or opens DefaultRoot.
     if (args.FirstOrDefault() == "review-qualification") {
         await ReviewQualification.RunAsync(args.Skip(1).ToArray()); return;

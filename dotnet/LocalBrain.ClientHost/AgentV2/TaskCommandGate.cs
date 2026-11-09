@@ -21,6 +21,7 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     private readonly Dictionary<string,Running> live=new(StringComparer.Ordinal);private readonly HashSet<string> imported=new();
     private readonly SemaphoreSlim gate=new(1,1);private bool disposed;
     internal string Root {get;}
+    internal bool AllowsCommands => contract.MaxCommands > 0;
     internal TaskCommandGate(HostTaskJournal journal,AgentTaskRequest request)
     {
         this.journal=journal;contract=request.CommandExecution??throw new UnauthorizedAccessException("No task command contract");
@@ -33,6 +34,7 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     internal async Task<object> StartAsync(TaskCommandRequest request,CancellationToken token)
     {
         Slack.RestrictedExecution.DenyAgentTools();
+        if (!AllowsCommands) throw new UnauthorizedAccessException("This grant authorizes file work only");
         await gate.WaitAsync(token);try{
             ObjectDisposedException.ThrowIf(disposed,this);TaskCommandAuthorization.Validate(grant);request.Validate(contract);
             var cwd=ResolveCwd(request.WorkingDirectory);_ = ResolveOutputs(cwd,request.ExpectedOutputs??[]);

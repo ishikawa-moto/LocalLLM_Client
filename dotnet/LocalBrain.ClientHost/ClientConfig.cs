@@ -14,10 +14,10 @@ internal sealed record ClientConfig(
     V3DevelopmentOptions? V3Development = null,
     PiRuntimeOptions? PiRuntime = null)
 {
-    public static ClientConfig Load()
+    public static ClientConfig Load(string? explicitPath = null)
     {
         var baseDir = AppContext.BaseDirectory;
-        var path = Environment.GetEnvironmentVariable("LOCALBRAIN_CLIENT_CONFIG") ?? Path.Combine(baseDir, "clientsettings.json");
+        var path = explicitPath ?? Environment.GetEnvironmentVariable("LOCALBRAIN_CLIENT_CONFIG") ?? Path.Combine(baseDir, "clientsettings.json");
         var config = JsonSerializer.Deserialize<ClientConfig>(File.ReadAllText(path), JsonOptions)
             ?? throw new InvalidOperationException("clientsettings.json is invalid");
         if (!Uri.TryCreate(config.GatewayBaseUrl, UriKind.Absolute, out var uri) || uri.Scheme != "https")

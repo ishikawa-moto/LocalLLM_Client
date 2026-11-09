@@ -20,7 +20,7 @@ internal sealed record TaskCommandContract(
             WorkingDirectories.Any(p=>!Relative(p)) || OutputDirectories is null or {Length:>20} ||
             OutputDirectories.Any(p=>string.IsNullOrWhiteSpace(p)||p.Length>500||p.IndexOfAny(['\0','\r','\n'])>=0) ||
             MaxCommandSeconds is <1 or >86400 || MaxTaskMinutes is <1 or >1440 || MaxActorTurns is <3 or >300 ||
-            MaxCommands is <1 or >1024 || MaxOutputBytes is <4096 or >8388608)
+            MaxCommands is <0 or >1024 || MaxOutputBytes is <4096 or >8388608)
             throw new InvalidDataException("Invalid task command scope or finite budgets");
     }
     internal static bool Relative(string p)=>!string.IsNullOrWhiteSpace(p)&&p.Length<=260&&!Path.IsPathRooted(p)&&

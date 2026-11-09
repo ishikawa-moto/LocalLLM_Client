@@ -29,7 +29,7 @@ internal static class TaskAgentCoordinator
         if(!Guid.TryParseExact(id,"N",out _))throw new InvalidDataException("Invalid managed task identity");
         var dir=Path.Combine(workspace,id!);CanonicalStore.GuardPath(dir);return dir;
     }
-    internal static async Task<object> SubmitAsync(string root,AgentTaskRequest request,ClientConfig config,bool resume=false,string? control=null,bool launch=true)
+    internal static async Task<object> SubmitAsync(string root,AgentTaskRequest request,ClientConfig config,bool resume=false,string? control=null,bool launch=true,bool runnerSummary=false)
     {
         if(request.CommandExecution is null)throw new InvalidDataException("Managed tasks require an explicit command_execution scope");
         var parent=WorkspaceDirectory(root,control);CanonicalStore.GuardPath(parent);Directory.CreateDirectory(parent);
@@ -56,7 +56,7 @@ internal static class TaskAgentCoordinator
                     if(File.Exists(Path.Combine(current,"cancel.json")))return await StatusAsync(root,control);
                     if(launch)Launch(current,prior,control,resuming:true);
                 }
-                return await StatusAsync(root,control);
+                return await StatusAsync(root,control,runnerSummary);
             }
             if(OwnerAlive(current)||report is null||report.State is not ("complete" or "cancelled" or "declined" or "blocked" or "time_budget_exhausted"))
                 throw new InvalidOperationException("A managed task already owns this workspace; observe/cancel it before submitting another task");
@@ -73,7 +73,7 @@ internal static class TaskAgentCoordinator
         Save(dir,new(taskId,"queued",false,0,null,DateTimeOffset.UtcNow));
         TaskCommandGate.WriteReplace(Path.Combine(parent,"current-job.json"),new{task_id=taskId});
         if(launch)Launch(dir,job,control);
-        return await StatusAsync(root,control);
+        return await StatusAsync(root,control,runnerSummary);
     }
     private static void Launch(string dir,Job job,string? control,bool resuming=false)
     {
@@ -88,7 +88,7 @@ internal static class TaskAgentCoordinator
         using var p=Process.Start(start)??throw new IOException("Managed worker did not start");p.StandardInput.Close();
         // Worker writes the authoritative identity itself while holding its exclusive owner lock.
     }
-    internal static async Task<object> StatusAsync(string root,string? control=null)
+    internal static async Task<object> StatusAsync(string root,string? control=null,bool runnerSummary=false)
     {
         var dir=CurrentDirectory(root,control);if(dir is null)return new{phase="managed_not_started",eligible_for_completion=false};
         var job=Read<Job>(Path.Combine(dir,"job.json"));var r=Read<Report>(Path.Combine(dir,"report.json"));var alive=OwnerAlive(dir);
@@ -113,6 +113,22 @@ internal static class TaskAgentCoordinator
                 s.TryGetProperty("command_evidence_inventory",out var inventory)&&inventory.GetString()==TaskCommandGate.InventoryHash(control??CanonicalStore.DefaultRoot,job.TaskId)&&
                 s.GetProperty("changed_files").EnumerateArray().Select(f=>f.GetString()).SequenceEqual(snap.ChangedFiles,StringComparer.OrdinalIgnoreCase)&&ValidateOutputs(control??CanonicalStore.DefaultRoot,job.TaskId);
         }
+        if (runnerSummary)
+        {
+            using var state = canonical?.TaskId == job.TaskId ? JsonDocument.Parse(canonical.StateJson) : null;
+            var request = AgentTaskRequest.Parse(job.RequestJson);
+            var changed = state is not null && state.RootElement.TryGetProperty("changed_files", out var files)
+                ? files.EnumerateArray().Select(f => f.GetString()).Where(f => f is not null &&
+                    request.AllowedFiles.Contains(f, StringComparer.OrdinalIgnoreCase)).ToArray() : [];
+            var diffHash = state is not null && state.RootElement.TryGetProperty("review_diff_sha256", out var hash)
+                ? hash.GetString() : null;
+            var validation = state is null ? null : LocalValidationV2.FromCanonical(state.RootElement);
+            return new { task_id = job.TaskId, phase, canonical_phase = canonicalPhase, eligible_for_completion = complete,
+                worker_alive = alive, base_commit = job.Head, changed_files = changed, diff_sha256 = diffHash,
+                required_tests_passed = validation?.RequiredTestsPassed, local_review_passed = validation?.LocalReviewPassed,
+                cancellation_requested = File.Exists(Path.Combine(dir, "cancel.json")),
+                details_retained_locally = r.Reason is not null || !complete };
+        }
         var commandRoot=Path.Combine(control??CanonicalStore.DefaultRoot,"command-jobs",job.TaskId);
         var commandDirs=Directory.Exists(commandRoot)?Directory.EnumerateDirectories(commandRoot).Take(1024).ToArray():[];
         var gatewayNotice=gatewayRequestId is null?null:await AgentV3.GatewayTaskNotice.ReadAsync(dir,job,gatewayRequestId);
@@ -131,7 +147,7 @@ internal static class TaskAgentCoordinator
             foreach(var pair in new[]{("stdout.bin",r.StdoutHash),("stderr.bin",r.StderrHash)})if(!File.Exists(Path.Combine(dir,pair.Item1))||CanonicalStore.Hash(File.ReadAllBytes(Path.Combine(dir,pair.Item1)))!=pair.Item2)return false;
         }return true;
     }
-    internal static async Task<object> CancelAsync(string root,string taskId,string? control=null)
+    internal static async Task<object> CancelAsync(string root,string taskId,string? control=null,bool runnerSummary=false)
     {
         var parent=WorkspaceDirectory(root,control);CanonicalStore.GuardPath(parent);
         using(var submission=new FileStream(Path.Combine(parent,"submission.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)){
@@ -141,7 +157,7 @@ internal static class TaskAgentCoordinator
                 throw new UnauthorizedAccessException("Cancellation must name the current exact task and workspace");
             var path=Path.Combine(dir,"cancel.json");if(!File.Exists(path))TaskCommandGate.WriteNew(path,new{task_id=taskId,requested_at=DateTimeOffset.UtcNow});
             if(!OwnerAlive(dir))TryDiscardCandidate(dir,job);
-            return await StatusAsync(root,control);
+            return await StatusAsync(root,control,runnerSummary);
         }
     }
 
