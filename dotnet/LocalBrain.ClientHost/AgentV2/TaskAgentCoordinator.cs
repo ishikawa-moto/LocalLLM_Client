@@ -230,8 +230,20 @@ internal static class TaskAgentCoordinator
                 AgentTaskRunner.RequestHash(request)!=job.RequestHash||!string.Equals(new ProjectAllowlist(config).Resolve(job.Root),job.Root,StringComparison.OrdinalIgnoreCase)||ProjectAllowlist.CurrentHead(job.Root)!=job.Head)
                 throw new UnauthorizedAccessException("Managed task baseline/runtime/config changed before execution");
             Report("awaiting_authorization");var grant=TaskCommandAuthorization.Read(job.Authorization);
-            if(grant is null){if(File.Exists(job.Authorization.Input+".launch-intent"))throw new InvalidOperationException("Existing native confirmation launch has no result; observe it without relaunching");TaskCommandAuthorization.Launch(job.Authorization);}
-            while(grant is null){await Task.Delay(500,stop.Token);grant=TaskCommandAuthorization.Read(job.Authorization);}
+            if (grant is null && File.Exists(job.Authorization.Input+".launch-intent"))
+                throw new InvalidOperationException("Existing native confirmation launch has no result; observe it without relaunching");
+            using (var dialog = grant is null ? TaskCommandAuthorization.Launch(job.Authorization) : null)
+            {
+                while (grant is null)
+                {
+                    await Task.Delay(500, stop.Token);
+                    if (File.Exists(Path.Combine(dir, "cancel.json"))) throw new OperationCanceledException(stop.Token);
+                    grant = TaskCommandAuthorization.Read(job.Authorization);
+                    if (grant is null && dialog?.HasExited == true)
+                        grant = TaskCommandAuthorization.Read(job.Authorization) ??
+                            throw new InvalidOperationException($"Native confirmation exited {dialog.ExitCode} without a receipt; task did not start");
+                }
+            }
             activeSince??=DateTimeOffset.UtcNow;var remaining=activeSince.Value.AddMinutes(contract.MaxTaskMinutes)-DateTimeOffset.UtcNow;
             if(remaining<=TimeSpan.Zero){Report("time_budget_exhausted","The original finite task budget expired");return;}stop.CancelAfter(remaining);
             using var authority=TaskCommandAuthorization.Enter(grant);

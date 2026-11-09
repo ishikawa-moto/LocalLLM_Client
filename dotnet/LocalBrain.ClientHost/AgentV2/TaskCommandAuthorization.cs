@@ -56,7 +56,7 @@ internal static class TaskCommandAuthorization
             !string.Equals(grant.Pending.Root,journal.WindowsRoot,StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("Grant belongs to another task, request, HEAD or workspace");
         return grant;
     }
-    internal static void Launch(Pending pending)
+    internal static Process Launch(Pending pending)
     {
         if(!OperatingSystem.IsWindows()||!Environment.UserInteractive)throw new UnauthorizedAccessException("Task command grant needs the Windows desktop");
         var script=Path.Combine(AppContext.BaseDirectory,"Confirm-TaskCommands.ps1");CanonicalStore.GuardPath(script);
@@ -68,6 +68,6 @@ internal static class TaskCommandAuthorization
         var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe")){UseShellExecute=false,CreateNoWindow=true};
         using var self=Process.GetCurrentProcess();
         foreach(var a in new[]{"-NoProfile","-NonInteractive","-STA","-WindowStyle","Hidden","-ExecutionPolicy","Bypass","-File",script,"-InputPath",pending.Input,"-OwnerPid",self.Id.ToString(),"-OwnerBirth",self.StartTime.ToUniversalTime().Ticks.ToString()})start.ArgumentList.Add(a);
-        using var process=Process.Start(start)??throw new IOException("Task grant dialog did not start");
+        return Process.Start(start)??throw new IOException("Task grant dialog did not start");
     }
 }
