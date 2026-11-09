@@ -2,6 +2,10 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
+if(args.Length==2 && args[0]=="--review-child-policy-proof"){await ReviewerChildPolicyTests.RunAsync(args[1]);return;}
+if(args.Length==3 && args[0]=="--review-child-policy-attempt"){await ReviewerChildPolicyTests.AttemptAsync(args[1],args[2]);return;}
+if(args.Length==2 && args[0]=="--review-child-policy-marker"){ReviewerChildPolicyTests.WriteMarker(args[1]);return;}
+if(args.Length>=3 && args[0]=="--review-child-policy-local-transport"){await ReviewerChildPolicyTests.LocalTransportAsync(args[1],args[2..]);return;}
 if(args.Length==2 && args[0]=="--review-host-boundary-proof"){await ReviewerHostBoundaryTests.RunAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--review-permission-options-proof"){ReviewQualificationTests.RunPermissionOptionsProof();return;}
 if(args.Length==1 && args[0]=="--review-qualification-json-proof"){ReviewQualificationTests.RunJsonProof();return;}

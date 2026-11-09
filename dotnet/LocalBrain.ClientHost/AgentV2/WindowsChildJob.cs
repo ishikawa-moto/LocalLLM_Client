@@ -14,6 +14,7 @@ internal sealed class WindowsChildJob : IDisposable
     public Process Process {get;private set;}=null!;
     public StreamReader Output {get;private set;}=null!;
     public StreamReader Error {get;private set;}=null!;
+    public Stream? Input {get;private set;}
     [StructLayout(LayoutKind.Sequential)] private struct BasicLimits {
         public long ProcessTime,JobTime;public uint Flags;public UIntPtr MinWorkingSet,MaxWorkingSet;
         public uint ActiveProcesses;public UIntPtr Affinity;public uint Priority,Scheduling;
@@ -34,11 +35,13 @@ internal sealed class WindowsChildJob : IDisposable
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool SetInformationJobObject(SafeFileHandle job,int type,ref ExtendedLimits info,uint length);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref UIntPtr bytes);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,UIntPtr attribute,IntPtr value,UIntPtr bytes,IntPtr previous,IntPtr returned);
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern bool GetProcessMitigationPolicy(IntPtr process,int policy,out uint value,UIntPtr size);
     [DllImport("kernel32.dll")] private static extern void DeleteProcThreadAttributeList(IntPtr list);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool CreatePipe(out SafeFileHandle read,out SafeFileHandle write,ref SecurityAttributes attributes,uint size);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool SetHandleInformation(SafeFileHandle handle,uint mask,uint flags);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern SafeFileHandle CreateFileW(string name,uint access,uint share,ref SecurityAttributes attributes,uint disposition,uint flags,IntPtr template);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool CreateProcessW(string? application,StringBuilder command,IntPtr processAttributes,IntPtr threadAttributes,bool inherit,uint flags,IntPtr environment,string? directory,ref StartupInfoEx startup,out ProcessInformation process);
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool ConvertStringSidToSid(string text,out IntPtr sid);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr value);
@@ -66,18 +69,28 @@ internal sealed class WindowsChildJob : IDisposable
         }
         return result.Append('\\',slashes*2).Append('"').ToString();
     }
-    internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) {
+    internal static WindowsChildJob StartReviewer(ProcessStartInfo start) => Start(start,reviewer:true);
+
+    internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
+        Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
+
+    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false) {
         if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
-        var job=new WindowsChildJob(ocrLimits);SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null;
+        var job=new WindowsChildJob(ocrLimits);SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
         IntPtr attributes=IntPtr.Zero,jobValue=IntPtr.Zero,handlesValue=IntPtr.Zero,environment=IntPtr.Zero,sid=IntPtr.Zero,capabilities=IntPtr.Zero;
         var initialized=false;ProcessInformation child=default;
         try {
             var security=new SecurityAttributes{Length=Marshal.SizeOf<SecurityAttributes>(),Inherit=1};
             Check(CreatePipe(out readOut,out writeOut,ref security,0));Check(CreatePipe(out readError,out writeError,ref security,0));
             Check(SetHandleInformation(readOut,1,0));Check(SetHandleInformation(readError,1,0));
-            input=CreateFileW("NUL",0x80000000,3,ref security,3,0,IntPtr.Zero);
-            if(input.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
-            var attributeCount=ocrLimits is null?2:3;
+            if(reviewer && start.RedirectStandardInput) {
+                Check(CreatePipe(out input,out writeInput,ref security,0));
+                Check(SetHandleInformation(writeInput,1,0));
+            } else {
+                input=CreateFileW("NUL",0x80000000,3,ref security,3,0,IntPtr.Zero);
+                if(input.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            var attributeCount=ocrLimits is null && !reviewer?2:3;
             UIntPtr size=UIntPtr.Zero;InitializeProcThreadAttributeList(IntPtr.Zero,attributeCount,0,ref size);
             attributes=Marshal.AllocHGlobal(checked((int)size.ToUInt64()));
             Check(InitializeProcThreadAttributeList(attributes,attributeCount,0,ref size));initialized=true;
@@ -88,7 +101,12 @@ internal sealed class WindowsChildJob : IDisposable
             Marshal.WriteIntPtr(handlesValue,IntPtr.Size,writeOut.DangerousGetHandle());
             Marshal.WriteIntPtr(handlesValue,IntPtr.Size*2,writeError.DangerousGetHandle());
             Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x20002,handlesValue,(UIntPtr)(IntPtr.Size*3),IntPtr.Zero,IntPtr.Zero));
-            if(ocrLimits is not null){
+            if(reviewer) {
+                // PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROCESS_CREATION_CHILD_PROCESS_RESTRICTED.
+                capabilities=Marshal.AllocHGlobal(sizeof(uint));
+                Marshal.WriteInt32(capabilities,1);
+                Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x2000E,capabilities,(UIntPtr)sizeof(uint),IntPtr.Zero,IntPtr.Zero));
+            } else if(ocrLimits is not null){
                 Check(ConvertStringSidToSid(ocrLimits.AppContainerSid,out sid));
                 capabilities=Marshal.AllocHGlobal(Marshal.SizeOf<SecurityCapabilities>());
                 Marshal.StructureToPtr(new SecurityCapabilities{Sid=sid},capabilities,false);
@@ -102,8 +120,15 @@ internal sealed class WindowsChildJob : IDisposable
             // Its path is quoted only when needed; arguments still use exact CRT escaping.
             var executable=start.FileName.Contains(' ')?"\""+start.FileName+"\"":start.FileName;
             var command=new StringBuilder(executable+string.Concat(start.ArgumentList.Select(a=>" "+Quote(a))));
+            // Reviewers start suspended and detached from the console; stdin is a private pipe.
+            var consoleFlags=reviewer?0x0000000Cu:0x08000000u;
             Check(CreateProcessW(Path.IsPathFullyQualified(start.FileName)?start.FileName:null,command,IntPtr.Zero,IntPtr.Zero,true,
-                0x80000|0x08000000|0x400|(ocrLimits is null?0u:0x4000u),environment,string.IsNullOrEmpty(start.WorkingDirectory)?null:start.WorkingDirectory,ref info,out child));
+                0x80000|consoleFlags|0x400|(ocrLimits is null?0u:0x4000u),environment,string.IsNullOrEmpty(start.WorkingDirectory)?null:start.WorkingDirectory,ref info,out child));
+            if(reviewer) {
+                // ProcessChildProcessPolicy. A failed read or missing restriction leaves the Job unopened to input.
+                Check(GetProcessMitigationPolicy(child.Process,13,out var policy,(UIntPtr)sizeof(uint)));
+                if((policy&1)==0)throw new IOException("Reviewer child creation is not blocked");
+            }
             createdFixture?.Invoke(checked((int)child.ProcessId));
             job.Process=Process.GetProcessById(checked((int)child.ProcessId));
             // Keep a managed process handle before closing CreateProcess's handle.
@@ -113,11 +138,16 @@ internal sealed class WindowsChildJob : IDisposable
             writeOut.Dispose();writeError.Dispose();input.Dispose();
             job.Output=new StreamReader(new FileStream(readOut,FileAccess.Read),start.StandardOutputEncoding??Encoding.UTF8);readOut=null;
             job.Error=new StreamReader(new FileStream(readError,FileAccess.Read),start.StandardErrorEncoding??Encoding.UTF8);readError=null;
+            if(writeInput is not null) {
+                job.Input=new FileStream(writeInput,FileAccess.Write,bufferSize:1);
+                writeInput=null;
+            }
+            if(reviewer)Check(ResumeThread(child.Thread)!=uint.MaxValue);
             return job;
         }catch{job.Dispose();throw;}
         finally {
             if(child.Thread!=IntPtr.Zero)CloseHandle(child.Thread);if(child.Process!=IntPtr.Zero)CloseHandle(child.Process);
-            readOut?.Dispose();writeOut?.Dispose();readError?.Dispose();writeError?.Dispose();input?.Dispose();
+            readOut?.Dispose();writeOut?.Dispose();readError?.Dispose();writeError?.Dispose();input?.Dispose();writeInput?.Dispose();
             if(initialized)DeleteProcThreadAttributeList(attributes);
             if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);if(jobValue!=IntPtr.Zero)Marshal.FreeHGlobal(jobValue);
             if(handlesValue!=IntPtr.Zero)Marshal.FreeHGlobal(handlesValue);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
@@ -125,5 +155,5 @@ internal sealed class WindowsChildJob : IDisposable
         }
     }
     public void Terminate()=>handle.Dispose();
-    public void Dispose(){Terminate();Output?.Dispose();Error?.Dispose();Process?.Dispose();}
+    public void Dispose(){Terminate();Input?.Dispose();Output?.Dispose();Error?.Dispose();Process?.Dispose();}
 }

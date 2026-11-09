@@ -234,20 +234,26 @@ internal static class ReviewerCli
     private static async Task<Reply> ExecuteAsync(ProcessStartInfo start,string? input,TimeSpan duration,CancellationToken token,
         HostTaskJournal? journal=null,string? provider=null,string? purpose=null,string? binaryHash=null)
     {
+        token.ThrowIfCancellationRequested();
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(duration);
-        using var process=Process.Start(start)??throw new IOException("Reviewer process failed to start");
+        using var job=WindowsChildJob.StartReviewer(start);
+        var process=job.Process;
         try {
             journal?.Record("reviewer_cli_started",new {provider,purpose,executable=start.FileName,sha256=binaryHash,
                 pid=process.Id,parent_pid=Environment.ProcessId,user=Environment.UserDomainName+"\\"+Environment.UserName,
                 arguments=start.ArgumentList.ToArray(),environment_names=start.Environment.Keys.Order().ToArray(),
                 requested_model=provider is null?null:Model(provider),
                 authentication_policy=provider=="sol"?"ChatGPT (login status preflight required)":"existing Copilot credential store; no token/BYOK environment inherited",
-                actual_model_verified=false},"host_observed");
-            var output=ReadBoundedAsync(process.StandardOutput,96_000,timeout.Token);
-            var diagnostic=ReadBoundedAsync(process.StandardError,16_000,timeout.Token);
-            if(start.RedirectStandardInput){if(input is not null)await process.StandardInput.WriteAsync(input.AsMemory(),timeout.Token);process.StandardInput.Close();}
+                actual_model_verified=false,windows_child_creation_blocked=true},"host_observed");
+            var output=ReadBoundedAsync(job.Output,96_000,timeout.Token);
+            var diagnostic=ReadBoundedAsync(job.Error,16_000,timeout.Token);
             _ = output.ContinueWith(_ => timeout.Cancel(),CancellationToken.None,TaskContinuationOptions.OnlyOnFaulted,TaskScheduler.Default);
             _ = diagnostic.ContinueWith(_ => timeout.Cancel(),CancellationToken.None,TaskContinuationOptions.OnlyOnFaulted,TaskScheduler.Default);
+            if(job.Input is { } pipe) {
+                if(input is not null)
+                    await pipe.WriteAsync(Encoding.UTF8.GetBytes(input),timeout.Token).AsTask().WaitAsync(timeout.Token);
+                pipe.Dispose();
+            }
             var all=Task.WhenAll(output,diagnostic);
             // An output overflow must stop the owned process immediately, not leave it blocked on a full pipe.
             var exit=process.WaitForExitAsync(timeout.Token);
@@ -259,7 +265,8 @@ internal static class ReviewerCli
                 process.ExitCode==0?"":FailureReason(answer+stderr),process.ExitCode,purpose=="boundary_probe"?stderr:"");
         } catch(OperationCanceledException) when(!token.IsCancellationRequested) { return new("UNAVAILABLE",Reason:"CLI_TIMEOUT"); }
         finally {
-            if(!process.HasExited){process.Kill(entireProcessTree:true);await process.WaitForExitAsync(CancellationToken.None);}
+            job.Terminate();
+            await process.WaitForExitAsync(CancellationToken.None);
         }
     }
 }
