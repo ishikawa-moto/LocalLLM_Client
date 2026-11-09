@@ -101,4 +101,47 @@ internal static class ReviewerChildPolicyTests
         Console.Error.Write(await error);
         Environment.ExitCode = reviewer.Process.ExitCode;
     }
+
+    // ACP initialization and a new empty session exercise the native launch and model
+    // resolution without session/prompt, tool requests, or exporting a review packet.
+    internal static async Task CopilotMetadataAsync(string exe, string expectedHash, string root)
+    {
+        ReviewQualification.GuardRoot(root);
+        if (!Path.IsPathFullyQualified(exe) || Path.GetFileName(exe) != "copilot.exe" || Directory.Exists(root))
+            throw new UnauthorizedAccessException("Expected an installed Copilot binary and a fresh trial root");
+        CanonicalStore.GuardPath(exe);
+        using var binary = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (!string.Equals(Convert.ToHexString(SHA256.HashData(binary)), expectedHash, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Unexpected Copilot SHA-256");
+        Directory.CreateDirectory(root);
+        var start = ReviewerCli.StartInfo(exe, root, "copilot", "high");
+        start.ArgumentList.Insert(0, "--acp");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        using var reviewer = WindowsChildJob.StartReviewer(start);
+        var init = await CallAsync(1, "initialize", new { protocolVersion = 1, clientCapabilities = new { } });
+        var session = await CallAsync(2, "session/new", new { cwd = root, mcpServers = Array.Empty<string>() });
+        reviewer.Input!.Dispose();
+        await reviewer.Process.WaitForExitAsync(deadline.Token);
+        var found = session.TryGetProperty("result", out var result) &&
+            result.TryGetProperty("sessionId", out _) &&
+            result.GetRawText().Contains("\"claude-opus-5.5\"", StringComparison.Ordinal);
+        var errorCode = session.TryGetProperty("error", out var error) ? error.GetProperty("code").GetInt32() : (int?)null;
+        Console.WriteLine(JsonSerializer.Serialize(new { provider = "copilot", requested_model = ReviewerCli.Model("copilot"),
+            init_ok = init.TryGetProperty("result", out _), model_present_in_session = found,
+            acp_error_code = errorCode, cli_exit = reviewer.Process.ExitCode, model_requests = 0,
+            windows_child_creation_blocked = true }));
+        if (!found || reviewer.Process.ExitCode != 0) Environment.ExitCode = 2;
+
+        async Task<JsonElement> CallAsync(int id, string method, object parameters)
+        {
+            var frame = JsonSerializer.Serialize(new { jsonrpc = "2.0", id, method, @params = parameters }) + "\n";
+            await reviewer.Input!.WriteAsync(Encoding.UTF8.GetBytes(frame), deadline.Token).AsTask().WaitAsync(deadline.Token);
+            while (await reviewer.Output.ReadLineAsync(deadline.Token).AsTask().WaitAsync(deadline.Token) is { } line) {
+                using var json = JsonDocument.Parse(line);
+                if (json.RootElement.TryGetProperty("id", out var value) && value.TryGetInt32(out var responseId) && responseId == id)
+                    return json.RootElement.Clone();
+            }
+            throw new IOException("ACP response was missing");
+        }
+    }
 }
