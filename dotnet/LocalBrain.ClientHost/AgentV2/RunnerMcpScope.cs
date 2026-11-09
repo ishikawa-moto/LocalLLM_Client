@@ -16,7 +16,9 @@ internal sealed class RunnerMcpScope(string workspace)
         var settings = Path.Combine(root, "clientsettings.json");
         var projects = Path.Combine(root, "projects.json");
         var audit = Path.Combine(root, "audit.jsonl");
-        foreach (var path in new[] { repo, control, settings, projects, audit, Path.Combine(repo, ".git") })
+        var piAgent = Path.Combine(root, "pi-agent");
+        foreach (var path in new[] { repo, control, settings, projects, audit, Path.Combine(repo, ".git"),
+                     piAgent, Path.Combine(piAgent, "sessions") })
             CanonicalStore.GuardPath(path);
         if (!Directory.Exists(Path.Combine(repo, ".git")))
             throw new UnauthorizedAccessException("Runner requires a dedicated standalone Git checkout");
@@ -24,6 +26,9 @@ internal sealed class RunnerMcpScope(string workspace)
         if (!SamePath(config.ProjectsFile, projects) || !SamePath(config.AuditLog, audit) ||
             config.PiRuntime is null || config.V3Development?.Enabled == true || !config.PersonalValidation)
             throw new UnauthorizedAccessException("Runner requires trial-local files, private Pi and trusted Git validation");
+        if (!Directory.Exists(piAgent) || config.PiRuntime.AgentDirectory !=
+            await WslWorkspace.MapPathAsync(piAgent, CancellationToken.None))
+            throw new UnauthorizedAccessException("Runner Pi agent directory must be the trial's pi-agent directory");
         var allowlist = new ProjectAllowlist(config);
         var entries = allowlist.Read();
         if (entries.Count != 1 || !SamePath(entries[0], repo) || !SamePath(allowlist.Resolve(repo), repo))
