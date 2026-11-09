@@ -23,6 +23,10 @@ internal sealed class WindowsChildJob : IDisposable
     [StructLayout(LayoutKind.Sequential)] private struct ExtendedLimits {
         public BasicLimits Basic;public IoCounters Io;public UIntPtr ProcessMemory,JobMemory,PeakProcessMemory,PeakJobMemory;
     }
+    [StructLayout(LayoutKind.Sequential)] private struct Accounting {
+        public long UserTime,KernelTime,PeriodUserTime,PeriodKernelTime;
+        public uint PageFaults,TotalProcesses,ActiveProcesses,TerminatedProcesses;
+    }
     [StructLayout(LayoutKind.Sequential)] private struct SecurityAttributes {public int Length;public IntPtr Descriptor;public int Inherit;}
     [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] private struct StartupInfo {
         public int Size;public IntPtr Reserved,Desktop,Title;public uint X,Y,Width,Height,CharsX,CharsY,Fill,Flags;
@@ -33,6 +37,10 @@ internal sealed class WindowsChildJob : IDisposable
     [StructLayout(LayoutKind.Sequential)] private struct SecurityCapabilities {public IntPtr Sid,Capabilities;public uint Count,Reserved;}
     [DllImport("kernel32.dll",SetLastError=true)] private static extern SafeFileHandle CreateJobObject(IntPtr attributes,string? name);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool SetInformationJobObject(SafeFileHandle job,int type,ref ExtendedLimits info,uint length);
+    [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] private static extern bool QueryLimits(SafeFileHandle job,int type,out ExtendedLimits info,uint length,IntPtr returned);
+    [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] private static extern bool QueryAccounting(SafeFileHandle job,int type,out Accounting info,uint length,IntPtr returned);
+    [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] private static extern bool QueryProcessIds(SafeFileHandle job,int type,IntPtr info,uint length,IntPtr returned);
+    [DllImport("kernel32.dll",SetLastError=true)] private static extern bool IsProcessInJob(SafeProcessHandle process,SafeFileHandle job,out bool member);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref UIntPtr bytes);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,UIntPtr attribute,IntPtr value,UIntPtr bytes,IntPtr previous,IntPtr returned);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool GetProcessMitigationPolicy(IntPtr process,int policy,out uint value,UIntPtr size);
@@ -70,11 +78,12 @@ internal sealed class WindowsChildJob : IDisposable
         return result.Append('\\',slashes*2).Append('"').ToString();
     }
     internal static WindowsChildJob StartReviewer(ProcessStartInfo start) => Start(start,reviewer:true);
+    internal static WindowsChildJob StartReviewerBootstrap(ProcessStartInfo start) => Start(start,reviewer:true,bootstrap:true);
 
     internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
         Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
 
-    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false) {
+    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false) {
         if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
         var job=new WindowsChildJob(ocrLimits);SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
         IntPtr attributes=IntPtr.Zero,jobValue=IntPtr.Zero,handlesValue=IntPtr.Zero,environment=IntPtr.Zero,sid=IntPtr.Zero,capabilities=IntPtr.Zero;
@@ -90,7 +99,8 @@ internal sealed class WindowsChildJob : IDisposable
                 input=CreateFileW("NUL",0x80000000,3,ref security,3,0,IntPtr.Zero);
                 if(input.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            var attributeCount=ocrLimits is null && !reviewer?2:3;
+            var denyChildCreation=reviewer && !bootstrap;
+            var attributeCount=ocrLimits is null && !denyChildCreation?2:3;
             UIntPtr size=UIntPtr.Zero;InitializeProcThreadAttributeList(IntPtr.Zero,attributeCount,0,ref size);
             attributes=Marshal.AllocHGlobal(checked((int)size.ToUInt64()));
             Check(InitializeProcThreadAttributeList(attributes,attributeCount,0,ref size));initialized=true;
@@ -101,7 +111,7 @@ internal sealed class WindowsChildJob : IDisposable
             Marshal.WriteIntPtr(handlesValue,IntPtr.Size,writeOut.DangerousGetHandle());
             Marshal.WriteIntPtr(handlesValue,IntPtr.Size*2,writeError.DangerousGetHandle());
             Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x20002,handlesValue,(UIntPtr)(IntPtr.Size*3),IntPtr.Zero,IntPtr.Zero));
-            if(reviewer) {
+            if(denyChildCreation) {
                 // PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROCESS_CREATION_CHILD_PROCESS_RESTRICTED.
                 capabilities=Marshal.AllocHGlobal(sizeof(uint));
                 Marshal.WriteInt32(capabilities,1);
@@ -124,7 +134,7 @@ internal sealed class WindowsChildJob : IDisposable
             var consoleFlags=reviewer?0x0000000Cu:0x08000000u;
             Check(CreateProcessW(Path.IsPathFullyQualified(start.FileName)?start.FileName:null,command,IntPtr.Zero,IntPtr.Zero,true,
                 0x80000|consoleFlags|0x400|(ocrLimits is null?0u:0x4000u),environment,string.IsNullOrEmpty(start.WorkingDirectory)?null:start.WorkingDirectory,ref info,out child));
-            if(reviewer) {
+            if(denyChildCreation) {
                 // ProcessChildProcessPolicy. A failed read or missing restriction leaves the Job unopened to input.
                 Check(GetProcessMitigationPolicy(child.Process,13,out var policy,(UIntPtr)sizeof(uint)));
                 if((policy&1)==0)throw new IOException("Reviewer child creation is not blocked");
@@ -153,6 +163,62 @@ internal sealed class WindowsChildJob : IDisposable
             if(handlesValue!=IntPtr.Zero)Marshal.FreeHGlobal(handlesValue);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
             if(capabilities!=IntPtr.Zero)Marshal.FreeHGlobal(capabilities);if(sid!=IntPtr.Zero)LocalFree(sid);
         }
+    }
+    internal async Task SealReviewerBootstrapAsync(CancellationToken token)
+    {
+        using var drain = CancellationTokenSource.CreateLinkedTokenSource(token);
+        drain.CancelAfter(TimeSpan.FromSeconds(3));
+        try {
+            while (ActiveReviewerProcesses() != 1)
+                await Task.Delay(50,drain.Token);
+        } catch (OperationCanceledException) when (!token.IsCancellationRequested) {
+            throw new IOException("Reviewer authentication helpers did not exit: " + DescribeJobMembers());
+        }
+        // Set the cap before the second membership check so a racing helper fails closed.
+        var limits = new ExtendedLimits { Basic = new BasicLimits { Flags = 0x2008, ActiveProcesses = 1 } };
+        Check(SetInformationJobObject(handle,9,ref limits,(uint)Marshal.SizeOf<ExtendedLimits>()));
+        RequireSealedReviewer();
+    }
+
+    internal void RequireSealedReviewer()
+    {
+        Check(QueryLimits(handle,9,out var limits,(uint)Marshal.SizeOf<ExtendedLimits>(),IntPtr.Zero));
+        if (limits.Basic.Flags != 0x2008 || limits.Basic.ActiveProcesses != 1)
+            throw new IOException("Reviewer Job restrictions are not effective");
+        if (ActiveReviewerProcesses() != 1)
+            throw new IOException("Reviewer Job does not contain exactly the live reviewer");
+    }
+
+    private uint ActiveReviewerProcesses()
+    {
+        Check(IsProcessInJob(Process.SafeHandle,handle,out var member));
+        Check(QueryAccounting(handle,1,out var state,(uint)Marshal.SizeOf<Accounting>(),IntPtr.Zero));
+        if (!member || Process.HasExited || state.ActiveProcesses == 0)
+            throw new IOException("Reviewer is absent from its Job");
+        return state.ActiveProcesses;
+    }
+
+    private string DescribeJobMembers()
+    {
+        const int capacity = 16;
+        var size = 8 + capacity * IntPtr.Size;
+        var buffer = Marshal.AllocHGlobal(size);
+        try {
+            if (!QueryProcessIds(handle,3,buffer,(uint)size,IntPtr.Zero)) return "process list unavailable";
+            var count = Math.Clamp(Marshal.ReadInt32(buffer,4),0,capacity);
+            var names = new List<string>();
+            for (var index = 0; index < count; index++) {
+                var id = Marshal.ReadIntPtr(buffer,8+index*IntPtr.Size).ToInt64();
+                if (id is <= 0 or > int.MaxValue) continue;
+                try {
+                    using var process = Process.GetProcessById((int)id);
+                    names.Add(process.ProcessName);
+                } catch (ArgumentException) { }
+                catch (Win32Exception) { }
+                catch (InvalidOperationException) { }
+            }
+            return $"active={ActiveReviewerProcesses()} listed={count} images={string.Join(',',names)}";
+        } finally { Marshal.FreeHGlobal(buffer); }
     }
     public void Terminate()=>handle.Dispose();
     public void Dispose(){Terminate();Input?.Dispose();Output?.Dispose();Error?.Dispose();Process?.Dispose();}

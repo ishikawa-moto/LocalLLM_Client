@@ -7,6 +7,10 @@ if(args.Length==3 && args[0]=="--review-child-policy-attempt"){await ReviewerChi
 if(args.Length==2 && args[0]=="--review-child-policy-marker"){ReviewerChildPolicyTests.WriteMarker(args[1]);return;}
 if(args.Length>=3 && args[0]=="--review-child-policy-local-transport"){await ReviewerChildPolicyTests.LocalTransportAsync(args[1],args[2..]);return;}
 if(args.Length==4 && args[0]=="--review-copilot-model-metadata"){await ReviewerChildPolicyTests.CopilotMetadataAsync(args[1],args[2],args[3]);return;}
+if(args.Length==3 && args[0]=="--review-copilot-staged-proof"){await ReviewerChildPolicyTests.StagedCopilotAsync(args[1],args[2]);return;}
+if(args.Length==2 && args[0]=="--review-copilot-fail-closed"){await ReviewerAcpTests.RunAsync(args[1]);return;}
+if(args.Length==3 && args[0]=="--acp" && args[1]=="--review-acp-fixture"){await ReviewerAcpTests.FixtureAsync(args[2]);return;}
+if(args.Length==1 && args[0]=="--review-acp-linger"){await Task.Delay(TimeSpan.FromSeconds(30));return;}
 if(args.Length==2 && args[0]=="--review-host-boundary-proof"){await ReviewerHostBoundaryTests.RunAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--review-permission-options-proof"){ReviewQualificationTests.RunPermissionOptionsProof();return;}
 if(args.Length==1 && args[0]=="--review-qualification-json-proof"){ReviewQualificationTests.RunJsonProof();return;}

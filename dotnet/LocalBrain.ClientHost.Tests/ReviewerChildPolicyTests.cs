@@ -144,4 +144,36 @@ internal static class ReviewerChildPolicyTests
             throw new IOException("ACP response was missing");
         }
     }
+
+    internal static async Task StagedCopilotAsync(string exe, string mode)
+    {
+        var root = Environment.CurrentDirectory;
+        ReviewQualification.GuardRoot(root);
+        CanonicalStore.GuardPath(exe);
+        if (!Path.IsPathFullyQualified(exe) || Path.GetFileName(exe) != "copilot.exe" || mode is not ("metadata" or "loopback"))
+            throw new UnauthorizedAccessException("Expected fixed Copilot test");
+        var start = ReviewerCli.StartInfo(exe, root, "copilot", "high");
+        if (mode == "loopback") {
+            var endpoint = Environment.GetEnvironmentVariable("COPILOT_PROVIDER_BASE_URL");
+            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Host != "127.0.0.1" || uri.Scheme != "http")
+                throw new UnauthorizedAccessException("Expected loopback test endpoint");
+            foreach (var name in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                         "COPILOT_OFFLINE", "COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_TYPE", "COPILOT_PROVIDER_MODEL_ID" })
+                start.Environment[name] = Environment.GetEnvironmentVariable(name);
+            if (start.Environment["COPILOT_OFFLINE"] != "true")
+                throw new UnauthorizedAccessException("Expected offline test mode");
+        }
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        using var session = mode == "loopback"
+            ? await ReviewerCopilotAcp.OpenLoopbackFixtureAsync(start, deadline.Token)
+            : await ReviewerCopilotAcp.OpenAsync(start, deadline.Token);
+        if (mode == "metadata") {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "SEALED", session.Pid, model_requests = 0 }));
+            return;
+        }
+        var input = await Console.In.ReadToEndAsync(deadline.Token);
+        var reply = await session.ReviewAsync(input);
+        Console.WriteLine(JsonSerializer.Serialize(reply));
+        if (reply.Status != "OK") Environment.ExitCode = 2;
+    }
 }
