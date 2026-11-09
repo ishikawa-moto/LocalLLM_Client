@@ -49,7 +49,9 @@ internal static class ExternalReviewAvailabilityTests
             args.Contains("forced_login_method=\"chatgpt\"") && args.Contains("--ignore-user-config") && args.Contains("--ephemeral"),"Packet-only CLI restrictions lost");
         Check(!start.Environment.Keys.Any(k=>k.StartsWith("OPENAI_",StringComparison.OrdinalIgnoreCase)||k.StartsWith("LOCALBRAIN_",StringComparison.OrdinalIgnoreCase)||k.StartsWith("OTEL_",StringComparison.OrdinalIgnoreCase)),"Inherited secrets/telemetry");
         var opusStart=ReviewerCli.StartInfo("C:\\public\\copilot.exe","C:\\public","copilot","high");
-        Check(opusStart.ArgumentList.Contains("--available-tools=") && opusStart.ArgumentList.Contains("--deny-tool=*"),"Opus generic file access reintroduced");
+        Check(opusStart.ArgumentList.Contains("--available-tools=ask_user") && opusStart.ArgumentList.Contains("--no-ask-user") &&
+            opusStart.ArgumentList.Contains("--deny-tool=read") && !opusStart.ArgumentList.Contains("--prompt"),
+            "Opus tool restrictions or stdin packet input changed");
         const string answer="{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"verdict\\\":\\\"PASS\\\",\\\"issues\\\":[]}\"}}\n{\"type\":\"turn.completed\"}";
         Check(ReviewerCli.DecodeCodex(answer).Status=="OK","CLI JSONL answer rejected");
         Check(ReviewerCli.DecodeCodex("{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n"+answer).Status=="INVALID","Tool event passed");

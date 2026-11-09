@@ -51,12 +51,13 @@ internal static class ReviewerCli
             // sessions or memories. Existing OS credential-store auth may still work;
             // file-backed auth is never copied or replaced and must fail closed if unavailable.
             start.Environment["COPILOT_HOME"] = System.IO.Path.Combine(work,"copilot-home");
-            foreach (var arg in new[] { "--prompt", "Review only the evidence supplied on stdin. No tools. Return only PASS/ISSUES JSON.",
-                "--model", Model(provider), "--reasoning-effort", effort, "--silent", "--no-ask-user", "--no-custom-instructions",
-                "--sync-session=off", "--disable-builtin-mcps", "--available-tools=", "--deny-tool=*",
-                // Explicit documented families supplement the unqualified wildcard.
-                // Availability/permission flags are not preventive-denial receipts.
-                "--deny-tool=shell", "--deny-tool=write", "--deny-tool=url", "--disallow-temp-dir",
+            // Piped stdin supplies the whole prompt. --prompt would replace it.
+            // An empty available-tools value keeps the default tools. Allow only
+            // ask_user, which --no-ask-user then removes.
+            foreach (var arg in new[] { "--model", Model(provider), "--reasoning-effort", effort, "--silent",
+                "--no-ask-user", "--no-custom-instructions", "--sync-session=off", "--disable-builtin-mcps",
+                "--available-tools=ask_user", "--deny-tool=read", "--deny-tool=shell", "--deny-tool=write",
+                "--deny-tool=url", "--disallow-temp-dir",
                 "--no-auto-update", "--disable-client-telemetry", "--output-format=text" }) start.ArgumentList.Add(arg);
         } else throw new InvalidDataException("Unknown reviewer");
         return start;

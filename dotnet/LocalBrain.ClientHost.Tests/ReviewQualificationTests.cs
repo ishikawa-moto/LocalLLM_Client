@@ -23,9 +23,11 @@ internal static class ReviewQualificationTests
                 Check(!start.ArgumentList.Any(a=>a is "--allow-all" or "--yolo" or "--allow-all-tools" or "--allow-all-paths" or
                     "--dangerously-bypass-approvals-and-sandbox"),"Restriction was bypassed");
                 if(provider=="copilot") {
-                    foreach(var arg in new[]{"--available-tools=","--deny-tool=shell","--deny-tool=write","--deny-tool=url","--disallow-temp-dir"})
+                    foreach(var arg in new[]{"--available-tools=ask_user","--no-ask-user","--deny-tool=read","--deny-tool=shell","--deny-tool=write","--deny-tool=url","--disallow-temp-dir"})
                         Check(start.ArgumentList.Contains(arg),"Required packet-only policy option absent: "+arg);
-                    Check(!start.ArgumentList.Any(a=>a.StartsWith("--available-tools=",StringComparison.Ordinal)&&a!="--available-tools="),"Probe exposed tools");
+                    Check(!start.ArgumentList.Any(a=>a is "--prompt" or "--deny-tool=*" ||
+                        a.StartsWith("--available-tools=",StringComparison.Ordinal)&&a!="--available-tools=ask_user"),
+                        "Probe replaced stdin, used an invalid deny rule, or exposed other tools");
                     Check(start.Environment["COPILOT_HOME"]=="C:\\public-fixture\\empty-work\\copilot-home" &&
                         start.Environment["COPILOT_ALLOW_ALL"]=="false","User config isolation lost");
                 } else {
@@ -123,7 +125,8 @@ internal static class ReviewQualificationTests
         var opus=ReviewerCli.StartInfo(exe,parent,"copilot","high");
         Check(opus.Environment["COPILOT_HOME"]==Path.Combine(parent,"copilot-home") && opus.Environment["COPILOT_ALLOW_ALL"]=="false","Copilot configuration not isolated");
         Check(opus.ArgumentList.Contains("--sync-session=off") && !opus.ArgumentList.Contains("--no-remote") && !opus.ArgumentList.Contains("--no-remote-export"),"Unsupported Copilot flags remain");
-        Check(opus.ArgumentList.Contains("--available-tools=") && opus.ArgumentList.Contains("--deny-tool=*"),"Probe relaxed production tool restrictions");
+        Check(opus.ArgumentList.Contains("--available-tools=ask_user") && opus.ArgumentList.Contains("--no-ask-user") &&
+            opus.ArgumentList.Contains("--deny-tool=read"),"Probe relaxed production tool restrictions");
         foreach(var start in new[]{sol,opus})Check(!start.Environment.Keys.Any(k=>k.StartsWith("OPENAI_",StringComparison.OrdinalIgnoreCase) ||
             k.StartsWith("OTEL_",StringComparison.OrdinalIgnoreCase) || k.StartsWith("LOCALBRAIN_",StringComparison.OrdinalIgnoreCase) ||
             k is "GH_TOKEN" or "GITHUB_TOKEN" or "COPILOT_GITHUB_TOKEN" or "COPILOT_PROVIDER_BASE_URL"),"Inherited secret/capability environment");
