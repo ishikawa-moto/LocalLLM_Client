@@ -16,4 +16,6 @@ Submit with `localbrain_agent_v2_run`. Supply the dedicated workspace, LOW risk,
 
 Use `localbrain_agent_v2_status` for the current task. The result contains its task ID, phase, completion gate, changed files, base commit, diff hash and validation flags. Retrieve the patch separately from the dedicated Git checkout after the worker exits. Inspect the local job record for a blocked reason. An identical submission observes the prior result. Use `localbrain_agent_v2_cancel` with the exact workspace and task ID, then wait for a terminal state before changing the checkout. A dialog exit without a receipt ends the task as blocked and retains its launch record.
 
-For rollback, remove the session-specific MCP overrides after its task reaches a terminal state. Retain the checkout, task receipts and Canonical evidence. Review and commit the allowed diff on its task branch before considering any separately approved integration.
+Before accepting a change, inspect the diff and run independent checks for the task's acceptance criteria. `git_diff_check` checks patch formatting, and the local Critic gives a model verdict. A task can be `complete` while its output fails a behavioral check. Preserve the result for diagnosis if an independent check fails.
+
+For rollback, remove the session-specific MCP overrides after its task reaches a terminal state. Retain the checkout, task receipts and Canonical evidence. Commit only an independently accepted diff on its task branch before considering any separately approved integration.
