@@ -100,6 +100,7 @@ if(args.Length==1 && args[0]=="--work-loop-proof"){await WorkLoopSupervisorTests
 if(args.Length==1 && args[0]=="--supervisor-rules-proof"){await SupervisorRulesTests.RunAsync();return;}
 if(args.Length==1 && args[0]=="--external-review-availability-proof"){await ExternalReviewAvailabilityTests.RunAsync();return;}
 if(args.Length==2 && args[0]=="--external-rescue-proof"){await HostRescueTests.ExternalProofAsync(args[1]);return;}
+if(args.Length==2 && args[0]=="--public-rescue-prepare"){await PublicRescueFixture.PrepareAsync(args[1]);return;}
 if(args.Length==3 && args[0]=="--external-review-public-live"){await ExternalReviewAvailabilityTests.LiveAsync(args[1],args[2]);return;}
 if(args.Length==2 && args[0]=="--continue-memory-native-proof") {await ContinueContextMemoryTests.NativeAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--continue-memory-proof") {await ContinueContextMemoryTests.RunAsync();return;}
