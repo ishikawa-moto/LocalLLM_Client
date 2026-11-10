@@ -93,7 +93,7 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -118,6 +118,13 @@ internal static class AgentV2Commands
             if(command=="learning-preview") {
                 var candidate=new DifferentialLearning(journal).RequireCandidate(boundHash);
                 Console.WriteLine(JsonSerializer.Serialize(candidate,ClientConfig.JsonOptions));
+                return;
+            }
+            if(command=="learning-adoption-preview") {
+                var body=new DifferentialLearning(journal).DraftAdoptionBody(boundHash);
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    candidate_hash=boundHash, body, adoption_status="QUARANTINED_NOT_ADOPTED"
+                },ClientConfig.JsonOptions));
                 return;
             }
             if(command=="adoption-prepare-human"){

@@ -139,6 +139,31 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         return candidate;
     }
 
+    internal string DraftAdoptionBody(string candidateHash)
+    {
+        var candidate = RequireCandidate(candidateHash);
+        var packet = RequirePacket(candidate.packet_hash);
+        var claims = candidate.claims;
+        // Quote claims so model-supplied lines cannot masquerade as Host provenance.
+        var body = $"""
+            Adoption draft (quarantined)
+            Candidate SHA-256: {candidateHash}
+            Packet SHA-256: {candidate.packet_hash}
+            Unverified model claims:
+              Cause: {JsonSerializer.Serialize(claims.cause)}
+              Trigger: {JsonSerializer.Serialize(claims.trigger)}
+              Action: {JsonSerializer.Serialize(claims.action)}
+            Failure provenance: {packet.failure_provenance}
+            Candidate provenance: {packet.candidate_provenance}
+            Passing tests do not establish causality. Current repository evidence takes precedence.
+            """;
+        if (Encoding.UTF8.GetByteCount(body) > 4096)
+            throw new InvalidDataException("Adoption draft exceeds local review budget");
+        if (body.Contains("[REDACTED:", StringComparison.OrdinalIgnoreCase) || HostEgress.Redact(body).Count != 0)
+            throw new UnauthorizedAccessException("Adoption draft contains sensitive or redacted content");
+        return body;
+    }
+
     internal async Task<string> ExtractAsync(string ticketHash,string validationHash,CancellationToken token=default) {
         var hash=Assemble(ticketHash,validationHash);var packet=RequirePacket(hash);
         string Diff(string id) {var bytes=Store.ReadEvidence(id);return bytes.Length<=16_000?HostEgress.Redact(new UTF8Encoding(false,true).GetString(bytes)).Text:"[Diff exceeds local inference budget; use hash-bound state changes only]";}
