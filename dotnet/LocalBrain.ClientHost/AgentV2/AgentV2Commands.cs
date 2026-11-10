@@ -94,7 +94,7 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -103,6 +103,12 @@ internal static class AgentV2Commands
                 :store.LatestTask(canonicalWorkspaceId)??throw new InvalidDataException("No canonical task");
             var request=AgentTaskRequest.Parse(store.TaskRequest(task.TaskId));var state=JsonDocument.Parse(task.StateJson);
             var head=state.RootElement.GetProperty("git_head").GetString()??throw new InvalidDataException("No canonical HEAD");
+            var submissionLock=Path.Combine(TaskAgentCoordinator.WorkspaceDirectory(root,controlRoot),"submission.lock");
+            if(request.CommandExecution is not null)CanonicalStore.GuardPath(submissionLock);
+            using var managedLease=request.CommandExecution is null?null:
+                new FileStream(submissionLock,FileMode.Open,FileAccess.ReadWrite,FileShare.None);
+            using var managedGrant=request.CommandExecution is null?null:
+                TaskAgentCoordinator.EnterStoppedTaskGrant(root,task.TaskId,controlRoot);
             using var journal=new HostTaskJournal(store,root,task.TaskId,request,head);
             if(config.PersonalValidation)journal.EnablePersonalValidation();
             if(command=="egress-pending") {
@@ -172,6 +178,22 @@ internal static class AgentV2Commands
                 var result=await rescue.RunExternalAsync(boundHash,developmentCodex:args.ElementAtOrDefault(4));
                 Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
                 if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
+                return;
+            }
+            if(command=="rescue-advice-prepare") {
+                if(args.Length!=3 || Console.IsOutputRedirected)
+                    throw new InvalidOperationException("Advice preview requires a ticket and an interactive terminal");
+                var export=rescue.PrepareAdvice(boundHash);
+                Console.WriteLine(JsonSerializer.Serialize(new{manifest_hash=export.ManifestHash,
+                    manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
+                return;
+            }
+            if(command=="rescue-advice-run") {
+                if(args.Length!=4 && (args.Length!=6 || args[4]!="--development-codex"))
+                    throw new ArgumentException("rescue-advice-run requires a ticket and approved manifest hash");
+                var advice=await rescue.RunAdviceAsync(boundHash,args[3],args.ElementAtOrDefault(5));
+                Console.WriteLine(JsonSerializer.Serialize(advice,ClientConfig.JsonOptions));
+                if(advice.Verdict!="GUIDANCE")Environment.ExitCode=2;
                 return;
             }
             if(command=="rescue-export") {

@@ -123,14 +123,15 @@ internal static class SolReviewer
         return Task.FromException<string>(new InvalidOperationException("Sol rescue subscription route is not verified"));
     }
 
-    private static Rescue ParseRescue(string answer, int attempts)
+    internal static Rescue ParseRescue(string answer, int attempts)
     {
-        if (Secret.IsMatch(answer)) return new("INVALID", [], attempts);
+        if (Secret.IsMatch(answer) || ReviewerEvidence.ContainsSecret(answer) ||
+            Encoding.UTF8.GetByteCount(answer)>8_000) return new("INVALID", [], attempts);
         try
         {
             using var document = JsonDocument.Parse(answer.Trim());
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
+            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count()!=2 ||
                 !root.TryGetProperty("verdict", out var verdict) || verdict.ValueKind != JsonValueKind.String ||
                 !root.TryGetProperty("steps", out var steps) || steps.ValueKind != JsonValueKind.Array ||
                 steps.GetArrayLength() > 3 || steps.EnumerateArray().Any(item =>

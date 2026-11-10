@@ -29,6 +29,17 @@ internal static class TaskAgentCoordinator
         if(!Guid.TryParseExact(id,"N",out _))throw new InvalidDataException("Invalid managed task identity");
         var dir=Path.Combine(workspace,id!);CanonicalStore.GuardPath(dir);return dir;
     }
+    internal static IDisposable EnterStoppedTaskGrant(string root,string taskId,string? control)
+    {
+        var current=CurrentDirectory(root,control)??throw new UnauthorizedAccessException("No managed task owns this workspace");
+        var job=Read<Job>(Path.Combine(current,"job.json"));
+        var report=Read<Report>(Path.Combine(current,"report.json"));
+        if(job.TaskId!=taskId || report.TaskId!=taskId || OwnerAlive(current) ||
+            File.Exists(Path.Combine(current,"cancel.json")) || report.State is not ("blocked" or "complete"))
+            throw new UnauthorizedAccessException("Managed administrative actions require the exact stopped, authorized task");
+        return TaskCommandAuthorization.Enter(TaskCommandAuthorization.Read(job.Authorization)??
+            throw new UnauthorizedAccessException("The original task grant is unavailable"));
+    }
     internal static async Task<object> SubmitAsync(string root,AgentTaskRequest request,ClientConfig config,bool resume=false,string? control=null,bool launch=true,bool runnerSummary=false)
     {
         if(request.CommandExecution is null)throw new InvalidDataException("Managed tasks require an explicit command_execution scope");

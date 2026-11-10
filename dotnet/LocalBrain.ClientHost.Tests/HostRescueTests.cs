@@ -65,6 +65,15 @@ internal static class HostRescueTests
         },"Unapproved packet was authorized by HostEgress");
         await Reject(()=>rescue.RunExternalAsync(fixture.TicketHash,developmentCodex:"codex.exe"),
             "Development transport bypassed the registered publisher requirement");
+        var advice=rescue.PrepareAdvice(fixture.TicketHash);
+        Check(advice.ManifestHash!=prepared.ManifestHash && advice.Payload.Contains("GUIDANCE") &&
+            rescue.PrepareAdvice(fixture.TicketHash).ManifestHash==advice.ManifestHash,
+            "Advice must have its own stable, human-approvable manifest");
+        await Reject(()=>rescue.RunAdviceAsync(fixture.TicketHash,prepared.ManifestHash,null),
+            "Code-candidate approval was accepted for advice");
+        Check(SolReviewer.ParseRescue("""{"verdict":"GUIDANCE","steps":["Use the approved file and run the required test."]}""",1).Verdict=="GUIDANCE" &&
+            SolReviewer.ParseRescue("""{"verdict":"GUIDANCE","steps":["Fix file"],"command":"test"}""",1).Verdict=="INVALID",
+            "Advice parsing did not enforce the bounded response");
         var result=await rescue.RunExternalAsync(fixture.TicketHash);
         Check(result is {Status:"UNAVAILABLE",Reason:"HOST_ROUTE_NOT_QUALIFIED"},"Unqualified provider was not rejected");
         var events=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id)).ToArray();
@@ -72,7 +81,7 @@ internal static class HostRescueTests
             "codex_rescue_external_response" or "codex_candidate_application_intent"),"An unqualified external run performed a side effect");
         Check(File.ReadAllText(Path.Combine(ticket.RescueRoot,"greeting.txt"))=="START\n" &&
             File.ReadAllText(Path.Combine(fixture.MainRoot,"greeting.txt"))=="BROKEN\n","A blocked run modified a worktree");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=13,actual_model_requests=0,task_id=fixture.TaskId,
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=16,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {

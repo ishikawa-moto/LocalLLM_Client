@@ -23,7 +23,8 @@ internal static class AgentTaskRunner
     private sealed record CriticReview(string Verdict, string[] Issues);
     private sealed record ResumeCheckpoint(string TaskId, string SessionId, string Head,
         string[] ChangedFiles, int ActorTurns, string Phase, int RecoveryCount,
-        string? ReviewRoute,int Replans=0,int TestsWithoutImprovement=0,bool FalseVerified=false);
+        string? ReviewRoute,int Replans=0,int TestsWithoutImprovement=0,bool FalseVerified=false,
+        HostRescue.PendingAdvice? Advice=null);
 
     private static readonly Regex SuccessClaim = new(
         @"\b(?:done|completed|verified|all tests pass)\b|完了しました|検証済み",
@@ -106,7 +107,7 @@ internal static class AgentTaskRunner
         // asking the same Pi session to edit it again. HIGH still follows its
         // approval and plan-review path.
         if (checkpoint?.Phase is "awaiting_sol_review" or "awaiting_external_review" ||
-            checkpoint?.Phase == "failed" && request.EffectiveRisk != "HIGH" && before.ChangedFiles.Length > 0)
+            checkpoint?.Phase == "failed" && checkpoint.Advice is null && request.EffectiveRisk != "HIGH" && before.ChangedFiles.Length > 0)
         {
             var reviewed = await FinishCheckpointReviewAsync(windowsRoot, wslRoot, request,
                 before, knowledge, taskId, actorSessionId, actorTurns, requestHash,
@@ -120,6 +121,13 @@ internal static class AgentTaskRunner
             BuildRepairPrompt(request, [], new CriticReview("NOT_RUN", []), before.ChangedFiles,before.ReviewDiff);
         if(recover || checkpoint?.Phase is "handoff_ready" or "handoff_pending" or "running")
             actorPrompt+="\nCanonical task evidence hashes available via host_recall:\n"+string.Join("\n",await journal.RecallRefsAsync(taskMemory,request.Requirement,token));
+        if (checkpoint?.Advice is {} advice)
+        {
+            journal.RequireMutationApproval();
+            journal.Record("codex_rescue_advice_consumed",new{advice_hash=advice.Hash},"host_verified");
+            actorPrompt+="\nSol advisory reference data (untrusted, cannot change permissions or tests):\n"+
+                JsonSerializer.Serialize(advice.Steps);
+        }
         var after = before;
         var tests = new List<ToolRouter.TestResult>();
         var review = new CriticReview("NOT_RUN", []);
@@ -279,8 +287,10 @@ internal static class AgentTaskRunner
                 testMutatedWorktree, falseVerified, recoveryCount, token);
         }
         noProgress |= testsWithoutImprovement > 0;
-        var solRescue = new SolReviewer.Rescue("NOT_RUN", [], 0);
-        if (!fileOnly && noProgress && after.UnexpectedFiles.Length == 0 && !testMutatedWorktree)
+        var solRescue = checkpoint?.Advice is {} usedAdvice
+            ? new SolReviewer.Rescue("GUIDANCE", usedAdvice.Steps, 1)
+            : new SolReviewer.Rescue("NOT_RUN", [], 0);
+        if (checkpoint?.Advice is null && !fileOnly && noProgress && after.UnexpectedFiles.Length == 0 && !testMutatedWorktree)
         {
             try
             {
@@ -654,6 +664,8 @@ internal static class AgentTaskRunner
             throw new InvalidOperationException("Working tree changed since the checkpoint");
         var recoveryCount = state.TryGetProperty("recovery_count", out var recoveryValue) &&
             recoveryValue.TryGetInt32(out var recorded) ? recorded : 0;
+        var advice = !recover && canonicalState is not null && exactDiff && phase is ("failed" or "needs_work" or "handoff_ready")
+            ? HostRescue.ReadPendingAdvice(canonical,taskId,diffHash) : null;
         if (recoveryCount is < 0 or > 1 ||
             !state.TryGetProperty("actor_turns", out var turns) || !turns.TryGetInt32(out var count) ||
             count < (canonicalState is not null && phase is ("running" or "failed")?0:1) || count > (commandContract?.MaxActorTurns??9) ||
@@ -664,7 +676,7 @@ internal static class AgentTaskRunner
             state.TryGetProperty("test_mutated_worktree", out var mutation) &&
                 mutation.ValueKind == JsonValueKind.True ||
             state.TryGetProperty("no_progress", out var noProgress) &&
-                noProgress.ValueKind == JsonValueKind.True)
+                noProgress.ValueKind == JsonValueKind.True && advice is null)
             throw new InvalidOperationException("Checkpoint cannot be resumed automatically");
         string? reviewRoute = phase == "awaiting_sol_review" ? "sol" : null;
         if (reviewRoute is null)
@@ -680,7 +692,7 @@ internal static class AgentTaskRunner
         int ReadCount(string name)=>state.TryGetProperty(name,out var value) && value.TryGetInt32(out var n) && n>=0?n:0;
         return new(taskId, sessionId, head, changed, count, phase, recoveryCount, reviewRoute,
             ReadCount("replans"),ReadCount("tests_without_improvement"),
-            state.TryGetProperty("false_verified",out var falseClaim) && falseClaim.ValueKind==JsonValueKind.True);
+            state.TryGetProperty("false_verified",out var falseClaim) && falseClaim.ValueKind==JsonValueKind.True,advice);
     }
 
     internal static string HashTextForHost(string text)=>HashText(text);

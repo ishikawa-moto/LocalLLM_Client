@@ -29,10 +29,15 @@ internal sealed class RunnerMcpScope(string workspace)
         }
         if (command is not ("run" or "resume" or "managed-status" or "managed-cancel" or
             "validation-register" or "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or
+            "rescue-advice-prepare" or "rescue-advice-run" or "rescue-promote" or
             "learning-extract" or "learning-adoption-preview" or "learning-adoption-prepare" or
             "adoption-confirm" or "adoption-dispatch"))
             throw new ArgumentException("Unsupported trial Agent command");
-        await AgentV2Commands.RunAsync([command, repo, .. args.Skip(1)], allowlist, config, control);
+        const string configVariable = "LOCALBRAIN_CLIENT_CONFIG";
+        var previous = Environment.GetEnvironmentVariable(configVariable);
+        Environment.SetEnvironmentVariable(configVariable, Path.Combine(Path.GetFullPath(directory), "clientsettings.json"));
+        try { await AgentV2Commands.RunAsync([command, repo, .. args.Skip(1)], allowlist, config, control); }
+        finally { Environment.SetEnvironmentVariable(configVariable, previous); }
     }
 
     private static async Task<(string Repo, string Control, ClientConfig Config, ProjectAllowlist Allowlist)> LoadAsync(string directory)

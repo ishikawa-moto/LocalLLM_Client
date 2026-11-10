@@ -99,6 +99,68 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal sealed record ExternalResult(string Status,string? CandidateHash=null,string? ValidationHash=null,string? Reason=null);
 
+    internal HostEgress.Prepared PrepareAdvice(string ticketHash)
+    {
+        Slack.RestrictedExecution.DenyExternal();
+        var ticket=Load(ticketHash);
+        journal.RequireMutationApproval();
+        var existing=Events("codex_rescue_advice_prepared").SingleOrDefault();
+        if (existing is not null)
+        {
+            if (existing.Input.EvidenceRefs[0]!=ticketHash)
+                throw new UnauthorizedAccessException("Sol advice was prepared for another rescue assignment");
+            var existingHash=existing.Input.EvidenceRefs[1];
+            var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(Store.ReadEvidence(existingHash))!;
+            return new(manifest,existingHash,new UTF8Encoding(false,true).GetString(Store.ReadEvidence(manifest.ExportHash)));
+        }
+        var packet=PreparedExport(ticket);
+        if (packet.Manifest.PolicyMode!="manual" || packet.Manifest.RedactionCount!=0)
+            throw new UnauthorizedAccessException("Sol advice requires an exact manual export");
+        var input=System.Text.Json.Nodes.JsonNode.Parse(packet.Payload)!.AsObject();
+        input["response_schema"]="Return exactly {\"verdict\":\"GUIDANCE\",\"steps\":[\"concrete next step\"]} or {\"verdict\":\"UNRESOLVED\",\"steps\":[]}. Use only the enclosed data. Recommend at most three steps within the write scope and named tests. Do not use tools or edit files.";
+        var advice=journal.PrepareExternalPacket(input.ToJsonString(),"codex_protocol",files:Request.AllowedFiles);
+        Record("codex_rescue_advice_prepared",new{ticket_hash=ticketHash,manifest_hash=advice.ManifestHash},
+            [ticketHash,advice.ManifestHash],key:ticket.AssignmentId+"_advice_prepared");
+        return advice;
+    }
+
+    internal async Task<SolReviewer.Rescue> RunAdviceAsync(string ticketHash,string manifestHash,
+        string? developmentCodex,CancellationToken token=default)
+    {
+        var ticket=Load(ticketHash);
+        var export=PrepareAdvice(ticketHash);
+        if (export.ManifestHash!=manifestHash)
+            throw new UnauthorizedAccessException("Sol advice approval is for a different manifest");
+        if (Events("external_dispatch_authorized").Any(e=>e.Input.EvidenceRefs.Contains(manifestHash)))
+            throw new InvalidOperationException("Sol advice was already dispatched for this task");
+        if (AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.MainRoot,null,token))!=ticket.FailureStateHash)
+            throw new UnauthorizedAccessException("Task worktree changed before Sol advice");
+        var diff=await GitEvidence.CaptureAsync(ticket.MainRoot,Request.AllowedFiles,token);
+        var reply=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex);
+        var advice=reply.Status=="OK"?SolReviewer.ParseRescue(reply.Answer,1):new(reply.Status,[],1);
+        if (reply.Status!="OK") return advice;
+        var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(advice));
+        Record("codex_rescue_advice",new{ticket_hash=ticketHash,manifest_hash=manifestHash,
+            diff_hash=AgentTaskRunner.HashTextForHost(diff.ReviewDiff),status=advice.Verdict,reply.ExitCode},
+            [ticketHash,manifestHash,hash],"untrusted_candidate",key:ticket.AssignmentId+"_advice");
+        return advice;
+    }
+
+    internal sealed record PendingAdvice(string Hash,string[] Steps);
+
+    internal static PendingAdvice? ReadPendingAdvice(CanonicalStore store,string taskId,string diffHash)
+    {
+        var events=store.EventIds(taskId).Select(id=>store.ReadTaskEvent(taskId,id))
+            .Where(e=>e.Input.Producer=="windows_host").ToArray();
+        if (events.Any(e=>e.Input.EventType=="codex_rescue_advice_consumed")) return null;
+        var result=events.SingleOrDefault(e=>e.Input.EventType=="codex_rescue_advice");
+        if (result is null || result.Input.Metadata.GetProperty("status").GetString()!="GUIDANCE" ||
+            result.Input.Metadata.GetProperty("diff_hash").GetString()!=diffHash) return null;
+        var hash=result.Input.EvidenceRefs[2];
+        var advice=JsonSerializer.Deserialize<SolReviewer.Rescue>(store.ReadEvidence(hash))!;
+        return advice.Verdict=="GUIDANCE"?new(hash,advice.Steps):null;
+    }
+
     internal async Task<ExternalResult> RunExternalAsync(string ticketHash,CancellationToken token=default,
         string? developmentCodex=null)
     {
