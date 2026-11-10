@@ -17,19 +17,22 @@ using Microsoft.Extensions.Logging;
 internal static class SolEgressRelayTests
 {
     private const string Good="sol.fixture.test", BadCertificate="bad.fixture.test";
+    private const string DeviceIssuer="auth.openai.com", DevicePath="/api/accounts/deviceauth/usercode";
 
     internal static async Task RunAsync(string? fixtureBundle=null)
     {
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(65));
         var token=timeout.Token;
+        var deviceFixture=fixtureBundle is not null;
+        var hostname=deviceFixture?DeviceIssuer:Good;
         using var rootKey=RSA.Create(2048);
         var rootRequest=new CertificateRequest("CN=LocalBrain relay fixture CA",rootKey,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
         rootRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true,false,0,true));
         rootRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign,true));
         var now=DateTimeOffset.UtcNow;
         using var root=rootRequest.CreateSelfSigned(now.AddMinutes(-5),now.AddHours(1));
-        using var originCert=Leaf(root,Good);
-        using var relayCert=Leaf(root,Good);
+        using var originCert=Leaf(root,hostname);
+        using var relayCert=Leaf(root,hostname);
         using var wrongNameRelayCert=Leaf(root,BadCertificate);
         var calls=0;
         var builder=WebApplication.CreateSlimBuilder(new WebApplicationOptions {Args=[]});
@@ -39,6 +42,13 @@ internal static class SolEgressRelayTests
         await using var origin=builder.Build();
         origin.Run(async context=>{
             Interlocked.Increment(ref calls);
+            if(deviceFixture) {
+                if(context.Request.Host.Value!=DeviceIssuer || !HttpMethods.IsPost(context.Request.Method) ||
+                    context.Request.Path!=DevicePath || context.Request.Headers.ContainsKey("Authorization"))
+                    throw new InvalidDataException("Unexpected device fixture request");
+                context.Response.StatusCode=418;
+                return;
+            }
             if(context.Request.Path=="/redirect") {
                 context.Response.Redirect("https://unapproved.fixture.test/other");
                 return;
@@ -56,7 +66,8 @@ internal static class SolEgressRelayTests
         var originUri=new Uri(origin.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single());
         var upstream=Handler(root);
         upstream.ConnectCallback=async (connection,cancellation)=>{
-            if(connection.DnsEndPoint.Host is not (Good or BadCertificate) || connection.DnsEndPoint.Port!=443)
+            if(connection.DnsEndPoint.Host!=hostname && (deviceFixture || connection.DnsEndPoint.Host!=BadCertificate) ||
+                connection.DnsEndPoint.Port!=443)
                 throw new IOException("Fixture destination escaped");
             var socket=new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.Tcp);
             try {
@@ -64,16 +75,21 @@ internal static class SolEgressRelayTests
                 return new NetworkStream(socket,ownsSocket:true);
             } catch {socket.Dispose();throw;}
         };
-        await using var relay=await SolEgressRelay.StartAsync([
+        SolEgressRelay.Route[] routes=deviceFixture?[
+            new(DeviceIssuer,"POST",DevicePath,new Uri($"https://{DeviceIssuer}{DevicePath}"))
+        ]:[
             new(Good,"POST","/responses",new Uri($"https://{Good}/responses"),BearerAllowed:true),
             new(Good,"GET","/redirect",new Uri($"https://{Good}/redirect")),
             new(BadCertificate,"GET","/responses",new Uri($"https://{BadCertificate}/responses"))
-        ],new Dictionary<string,X509Certificate2>{{Good,relayCert},{BadCertificate,wrongNameRelayCert}},upstream,token);
+        ];
+        var certificates=new Dictionary<string,X509Certificate2>{{hostname,relayCert}};
+        if(!deviceFixture)certificates.Add(BadCertificate,wrongNameRelayCert);
+        await using var relay=await SolEgressRelay.StartAsync(routes,certificates,upstream,token);
         if(fixtureBundle is not null) {
             fixtureBundle=Path.GetFullPath(fixtureBundle);
             ReviewQualification.GuardRoot(fixtureBundle);
-            using(var ca=new FileStream(Path.Combine(fixtureBundle,"relay-fixture-root.cer"),FileMode.CreateNew))
-                ca.Write(root.Export(X509ContentType.Cert));
+            using(var ca=new StreamWriter(new FileStream(Path.Combine(fixtureBundle,"relay-fixture-root.pem"),FileMode.CreateNew)))
+                await ca.WriteAsync(root.ExportCertificatePem());
             Console.WriteLine(JsonSerializer.Serialize(new {port=relay.ProxyAddress.Port}));
             await Console.Out.FlushAsync(token);
             if(await Console.In.ReadLineAsync(token) is not null)throw new IOException("Fixture control input must be EOF");
@@ -118,31 +134,6 @@ internal static class SolEgressRelayTests
         }
         Console.WriteLine(JsonSerializer.Serialize(new { status="PASS",external_requests=0,upstream_requests=calls,
             approved_tls=true,wrong_certificate_denied=true,unapproved_connect_denied=true,inner_authority_denied=true,redirect_denied=true }));
-    }
-
-    internal static async Task<bool> RunIsolatedClientAsync(int port)
-    {
-        var proxy=new Uri($"http://127.0.0.1:{port}");
-        using var root=X509CertificateLoader.LoadCertificateFromFile(
-            Path.Combine(Environment.CurrentDirectory,"relay-fixture-root.cer"));
-        using var handler=Handler(root);
-        handler.UseProxy=true;
-        handler.Proxy=new WebProxy(proxy);
-        using var client=new HttpClient(handler);
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var token=timeout.Token;
-        using var post=new HttpRequestMessage(HttpMethod.Post,$"https://{Good}/responses") {
-            Content=new StringContent("{}",Encoding.UTF8,"application/json")
-        };
-        post.Headers.TryAddWithoutValidation("Authorization","Bearer synthetic-only");
-        using var result=await client.SendAsync(post,token);
-        Check(result.StatusCode==HttpStatusCode.OK && await result.Content.ReadAsStringAsync(token)=="data: fixture\n\n",
-            "Approved synthetic TLS route did not reach the isolated client");
-        using var wrongPath=await client.GetAsync($"https://{Good}/unapproved",token);
-        Check(wrongPath.StatusCode==HttpStatusCode.Forbidden,"Isolated client unexpectedly used an unapproved path");
-        using var wrongCertificate=await client.GetAsync($"https://{BadCertificate}/responses",token);
-        Check(wrongCertificate.StatusCode==HttpStatusCode.BadGateway,"Isolated client accepted an untrusted upstream TLS name");
-        return true;
     }
 
     private static SocketsHttpHandler Handler(X509Certificate2 root) => new() {

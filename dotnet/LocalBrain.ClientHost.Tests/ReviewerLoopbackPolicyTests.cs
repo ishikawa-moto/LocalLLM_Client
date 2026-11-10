@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json;
 using LocalBrain.ClientHost.AgentV2;
@@ -17,12 +18,8 @@ internal static class ReviewerLoopbackPolicyTests
         HostValidationCleanup.Grant(bundle,sid,false);
         try {
             var exe=Path.Combine(bundle,Path.GetFileName(Environment.ProcessPath!));
-            var start=new ProcessStartInfo(exe) { UseShellExecute=false, WorkingDirectory=bundle };
-            start.Environment.Clear();
-            start.Environment["SystemRoot"]=Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            var start=IsolatedStart(exe,bundle);
             start.Environment["DOTNET_ROOT"]=Path.Combine(bundle,"dotnet");
-            foreach(var name in new[]{"USERPROFILE","LOCALAPPDATA","APPDATA","TEMP","TMP"})
-                start.Environment[name]=bundle;
             start.Environment["HTTPS_PROXY"]=$"http://127.0.0.1:{otherV4}";
             foreach(var arg in new[]{"--review-loopback-policy-child",approved.ToString(),otherV4.ToString(),otherV6.ToString()})
                 start.ArgumentList.Add(arg);
@@ -32,10 +29,69 @@ internal static class ReviewerLoopbackPolicyTests
             var stdout=job.Output.ReadToEndAsync(deadline.Token);
             var stderr=job.Error.ReadToEndAsync(deadline.Token);
             await job.Process.WaitForExitAsync(deadline.Token);
-            Console.Write((await stdout).Trim());
+            var result=(await stdout).Trim();
             if(job.Process.ExitCode!=0)throw new IOException($"Network fixture exit {job.Process.ExitCode}: {await stderr}");
+            if(!relay) {Console.Write(result);return;}
+            using var probe=JsonDocument.Parse(result);
+            var network=probe.RootElement;
+            if(network.GetProperty("approved_tcp").GetInt32()!=0 ||
+                new[]{"unapproved_ipv4_tcp","unapproved_ipv4_address","unapproved_ipv6_tcp","environment_proxy_result"}
+                    .Any(name=>network.GetProperty(name).GetInt32()!=10013) ||
+                !network.GetProperty("protected_file_denied").GetBoolean())
+                throw new IOException($"Device auth fixture prerequisites failed: {result}");
+            var withoutCa=await DeviceAuthAsync(bundle,sid,approved,false);
+            var withCa=await DeviceAuthAsync(bundle,sid,approved,true);
+            if(withoutCa || !withCa)throw new IOException("Device auth fixture did not require its process-scoped trust root");
+            Console.Write(JsonSerializer.Serialize(new { network=probe.RootElement,relay_verified=true,
+                cli="codex-cli 0.166.0",untrusted_root_rejected=true }));
         } finally {
             var directory=new DirectoryInfo(bundle);
+            var acl=directory.GetAccessControl();
+            acl.PurgeAccessRules(sid);
+            directory.SetAccessControl(acl);
+        }
+    }
+
+    private static ProcessStartInfo IsolatedStart(string exe,string home)
+    {
+        var start=new ProcessStartInfo(exe) {UseShellExecute=false,WorkingDirectory=home};
+        start.Environment.Clear();
+        start.Environment["SystemRoot"]=Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        foreach(var name in new[]{"USERPROFILE","LOCALAPPDATA","APPDATA","TEMP","TMP"})
+            start.Environment[name]=home;
+        return start;
+    }
+
+    private static async Task<bool> DeviceAuthAsync(string bundle,SecurityIdentifier sid,int port,bool trustRoot)
+    {
+        var exe=Path.Combine(bundle,"codex.exe");
+        const string expectedHash="9D563EE4E0441FF9D59D612013E0460DDF8E5709735C2D9F6B98B7EF8CA4EB42";
+        using(var file=File.OpenRead(exe))
+            if(Convert.ToHexString(SHA256.HashData(file))!=expectedHash)
+                throw new IOException("Device auth fixture binary hash mismatch");
+        var home=Path.Combine(Path.GetDirectoryName(bundle)!,"codex-fixture-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(home);
+        HostValidationCleanup.Grant(home,sid,true);
+        try {
+            var start=IsolatedStart(exe,home);
+            start.Environment["CODEX_HOME"]=home;
+            start.Environment["HTTPS_PROXY"]=$"http://127.0.0.1:{port}";
+            if(trustRoot)start.Environment["CODEX_CA_CERTIFICATE"]=Path.Combine(bundle,"relay-fixture-root.pem");
+            start.ArgumentList.Add("login");
+            start.ArgumentList.Add("--device-auth");
+            using var job=WindowsChildJob.StartDeviceAuthNetworkFixture(start,sid.Value);
+            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var stdout=job.Output.ReadToEndAsync(deadline.Token);
+            var stderr=job.Error.ReadToEndAsync(deadline.Token);
+            await job.Process.WaitForExitAsync(deadline.Token);
+            var output=await stdout+"\n"+await stderr;
+            if(job.Process.ExitCode==0 || File.Exists(Path.Combine(home,"auth.json")))
+                throw new IOException("Synthetic fixture unexpectedly authenticated");
+            var reachedOrigin=output.Contains("device code request failed with status 418",StringComparison.OrdinalIgnoreCase);
+            if(trustRoot && !reachedOrigin)throw new IOException($"Synthetic endpoint was not reached: {output.Trim()}");
+            return reachedOrigin;
+        } finally {
+            var directory=new DirectoryInfo(home);
             var acl=directory.GetAccessControl();
             acl.PurgeAccessRules(sid);
             directory.SetAccessControl(acl);
@@ -50,13 +106,11 @@ internal static class ReviewerLoopbackPolicyTests
         var v6=await ConnectAsync(IPAddress.IPv6Loopback,otherV6);
         var udp=await SendUdpAsync(approved);
         var proxy=await TryEnvironmentProxyAsync(otherV4);
-        var relayVerified=relay && await SolEgressRelayTests.RunIsolatedClientAsync(approved);
         var canaryDenied=relay && ProtectedCanaryDenied();
         Console.WriteLine(JsonSerializer.Serialize(new {
             approved_tcp=positive, unapproved_ipv4_tcp=v4, unapproved_ipv4_address=alias4,
             unapproved_ipv6_tcp=v6, direct_udp_dns_send=udp, environment_proxy_result=proxy,
-            internet_client_capability_verified=true,relay_verified=relayVerified,
-            crypto_services_fixture=relay,protected_file_denied=canaryDenied,model_requests=0
+            internet_client_capability_verified=true,protected_file_denied=canaryDenied,model_requests=0
         }));
     }
 

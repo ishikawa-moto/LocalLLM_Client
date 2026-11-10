@@ -71,6 +71,8 @@ try {
     $other6.Start()
     if ($Relay) {
         if (!$Wfp -or !$DurableWfp) { throw 'Relay requires the durable WFP fixture mode' }
+        if ((Get-FileHash -LiteralPath (Join-Path $bundleItem.FullName 'codex.exe')).Hash -cne
+            '9D563EE4E0441FF9D59D612013E0460DDF8E5709735C2D9F6B98B7EF8CA4EB42') { throw 'Unexpected Codex CLI hash' }
         $canary = Join-Path $bundleItem.Parent.FullName 'protected-relay-canary.txt'
         $canaryFile = [IO.FileStream]::new($canary,'CreateNew','ReadWrite','None')
         try { $canaryFile.WriteByte(42) } finally { $canaryFile.Dispose() }
@@ -174,10 +176,15 @@ try {
     $result = if ($Relay) { & $exe @probeArgs relay } else { & $exe @probeArgs }
     if ($LASTEXITCODE -ne 0) { throw "Qualification executable failed with exit $LASTEXITCODE" }
     $probe = $result | ConvertFrom-Json
+    $deviceAuth = $null
+    if ($Relay) {
+        $deviceAuth = $probe
+        $probe = $deviceAuth.network
+    }
     $observed = [ordered]@{
         status = 'UNQUALIFIED'
         probe = $probe
-        approved_tcp_observed = if ($Relay) { $probe.relay_verified -and $probe.protected_file_denied } else { $allowed.Pending() }
+        approved_tcp_observed = if ($Relay) { $deviceAuth.relay_verified -and $probe.protected_file_denied } else { $allowed.Pending() }
         other_ipv4_tcp_observed = $other4.Pending()
         other_ipv4_address_observed = $alias4.Pending()
         other_ipv6_tcp_observed = $other6.Pending()
@@ -214,7 +221,8 @@ try {
         if ($LASTEXITCODE -ne 0 -or $closed.approved_tcp -ne 10061 -or $closed.unapproved_ipv4_tcp -ne 10013) {
             throw 'Relay exit did not fail closed'
         }
-        [pscustomobject]@{ status='RELAY_LPAC_WFP_PASS'; relay_pid=$relayProcess.Id; relay_exit=$relayProcess.ExitCode
+        [pscustomobject]@{ status='RELAY_LPAC_WFP_PASS'; relay_pid=$relayProcess.Id; relay_exit=$relayProcess.ExitCode; cli=$deviceAuth.cli
+            untrusted_root_rejected=$deviceAuth.untrusted_root_rejected
             upstream=$upstream; closed_port=$closed.approved_tcp; alternate_port_after_close=$closed.unapproved_ipv4_tcp } |
             ConvertTo-Json -Depth 3 -Compress
     }

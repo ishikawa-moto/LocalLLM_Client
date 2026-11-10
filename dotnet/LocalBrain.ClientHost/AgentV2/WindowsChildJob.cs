@@ -95,6 +95,13 @@ internal sealed class WindowsChildJob : IDisposable
         return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,internetClientFixture:true);
     }
 
+    internal static WindowsChildJob StartDeviceAuthNetworkFixture(ProcessStartInfo start,string packageSid)
+    {
+        if(start.RedirectStandardInput || !start.ArgumentList.SequenceEqual(new[]{"login","--device-auth"}))
+            throw new ArgumentException("Device auth fixture only supports device initiation without stdin");
+        return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,internetClientFixture:true);
+    }
+
     internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
         Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
 
