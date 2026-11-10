@@ -109,7 +109,7 @@ internal static class ReviewerCli
     }
 
     internal static Task<Reply> GenerateRescueAsync(HostTaskJournal journal, HostEgress.Prepared export,
-        CancellationToken token)
+        CancellationToken token, string? developmentCodex = null)
     {
         Slack.RestrictedExecution.DenyExternal();
         token.ThrowIfCancellationRequested();
@@ -117,12 +117,99 @@ internal static class ReviewerCli
             export.Manifest.RedactionCount != 0 || Encoding.UTF8.GetByteCount(export.Payload) > 64_000 ||
             ReviewerEvidence.ContainsSecret(export.Payload))
             throw new UnauthorizedAccessException("Rescue requires an exact, bounded, manually approved export");
+        if (developmentCodex is not null)
+        {
+            HostValidationPolicy.RequireRegisteredPublisher(journal);
+            return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token);
+        }
         var endpoint = Load(journal.Canonical.Root).Sol;
         if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "HOST_ROUTE_NOT_QUALIFIED"));
         HostValidationPolicy.RequireRegisteredPublisher(journal);
         return DispatchAsync(journal, endpoint, "sol", export.Payload, "high", null, null, false, token,
             rescueExport: export);
+    }
+
+    private static async Task<Reply> RunApprovedDevelopmentRescueAsync(HostTaskJournal journal,
+        HostEgress.Prepared export, string executable, CancellationToken token)
+    {
+        RequireDevelopmentExecutable(executable);
+        using var dispatch = new HostEgress(journal.Canonical).AuthorizeDispatch(export, "codex_protocol");
+        return await RunDevelopmentRescueCliAsync(journal, export, executable, token);
+    }
+
+    private static void RequireDevelopmentExecutable(string executable)
+    {
+        if (!Path.IsPathFullyQualified(executable) ||
+            !Path.GetFileName(executable).Equals("codex.exe", StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(executable))
+            throw new ArgumentException("An absolute path to the installed codex.exe is required");
+        CanonicalStore.GuardPath(executable);
+    }
+
+    // Used by the administrative development route and the public fixture after HostEgress authorization.
+    internal static async Task<Reply> RunDevelopmentRescueCliAsync(HostTaskJournal journal,
+        HostEgress.Prepared export, string executable, CancellationToken token = default)
+    {
+        Slack.RestrictedExecution.DenyExternal();
+        RequireDevelopmentExecutable(executable);
+        var start = new ProcessStartInfo(executable) {
+            WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
+        };
+        foreach (var key in start.Environment.Keys.ToArray())
+            if (!EnvironmentKeys.Contains(key) && !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase))
+                start.Environment.Remove(key);
+        foreach (var arg in new[] { "--ask-for-approval", "never", "exec", "--ignore-user-config",
+            "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox", "read-only", "--model", Model("sol"),
+            "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
+            "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-" })
+            start.ArgumentList.Add(arg);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            using var binary = new FileStream(executable, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var sha256 = Convert.ToHexStringLower(SHA256.HashData(binary));
+            using var process = Process.Start(start) ?? throw new IOException("Codex CLI failed to start");
+            try
+            {
+                journal.Record("development_rescue_cli_started", new {
+                    manifest_hash = export.ManifestHash, packet_hash = export.Manifest.ExportHash,
+                    pid = process.Id, requested_model = Model("sol"), sha256
+                }, "host_observed");
+                var stdout = ReadBoundedAsync(process.StandardOutput, 96_000, timeout.Token);
+                var stderr = ReadBoundedAsync(process.StandardError, 16_000, timeout.Token);
+                await process.StandardInput.WriteAsync(export.Payload.AsMemory(), timeout.Token);
+                process.StandardInput.Close();
+                var pending = new List<Task> { stdout, stderr, process.WaitForExitAsync(timeout.Token) };
+                while (pending.Count != 0)
+                {
+                    var completed = await Task.WhenAny(pending);
+                    pending.Remove(completed);
+                    await completed;
+                }
+                var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000) :
+                    new Reply("UNAVAILABLE", Reason: FailureReason(await stdout + await stderr));
+                return reply with { ExitCode = process.ExitCode };
+            }
+            finally
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            return new("UNAVAILABLE", Reason: "CLI_TIMEOUT");
+        }
+        catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or InvalidDataException)
+        {
+            return new("UNAVAILABLE", Reason: error.GetType().Name);
+        }
     }
     internal static async Task<Reply> InvokeAsync(string provider, string packet, string effort, CancellationToken token,
         string[]? sources = null, string[]? files = null, bool plan = false)

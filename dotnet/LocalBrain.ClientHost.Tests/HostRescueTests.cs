@@ -63,14 +63,16 @@ internal static class HostRescueTests
             using var lease=new HostEgress(store).AuthorizeDispatch(prepared,"codex_protocol");
             return Task.CompletedTask;
         },"Unapproved packet was authorized by HostEgress");
+        await Reject(()=>rescue.RunExternalAsync(fixture.TicketHash,developmentCodex:"codex.exe"),
+            "Development transport bypassed the registered publisher requirement");
         var result=await rescue.RunExternalAsync(fixture.TicketHash);
         Check(result is {Status:"UNAVAILABLE",Reason:"HOST_ROUTE_NOT_QUALIFIED"},"Unqualified provider was not rejected");
         var events=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id)).ToArray();
-        Check(!events.Any(e=>e.Input.EventType is "external_dispatch_authorized" or "rescue_cli_input" or
+        Check(!events.Any(e=>e.Input.EventType is "external_dispatch_authorized" or "rescue_cli_input" or "development_rescue_cli_started" or
             "codex_rescue_external_response" or "codex_candidate_application_intent"),"An unqualified external run performed a side effect");
         Check(File.ReadAllText(Path.Combine(ticket.RescueRoot,"greeting.txt"))=="START\n" &&
             File.ReadAllText(Path.Combine(fixture.MainRoot,"greeting.txt"))=="BROKEN\n","A blocked run modified a worktree");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=12,actual_model_requests=0,task_id=fixture.TaskId,
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=13,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {

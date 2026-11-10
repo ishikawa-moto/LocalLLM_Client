@@ -5,13 +5,14 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal static class AgentV2Commands
 {
-    public static async Task RunAsync(string[] args, ProjectAllowlist allowlist, ClientConfig config)
+    public static async Task RunAsync(string[] args, ProjectAllowlist allowlist, ClientConfig config,
+        string? controlRoot = null)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "health";
         if(command is "managed-status" or "managed-cancel"){
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
-            Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root):
-                await TaskAgentCoordinator.CancelAsync(root,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact task ID required")),ClientConfig.JsonOptions));return;
+            Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root,controlRoot):
+                await TaskAgentCoordinator.CancelAsync(root,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact task ID required"),controlRoot),ClientConfig.JsonOptions));return;
         }
         if(command=="reference-learning-export"){
             if(args.Length!=3)throw new ArgumentException("reference-learning-export requires registered workspace and existing local candidate hash");
@@ -57,7 +58,7 @@ internal static class AgentV2Commands
             var root=allowlist.Resolve(args[1]);var path=Path.GetFullPath(args[2]);CanonicalStore.GuardPath(path);
             if(new FileInfo(path).Length>2_000_000)throw new InvalidDataException("Publisher policy exceeds Host input budget");
             var policy=JsonSerializer.Deserialize<HostValidationPolicy.Policy>(await File.ReadAllTextAsync(path),ClientConfig.JsonOptions)??throw new InvalidDataException("Missing Host publisher policy");
-            using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
+            using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             Console.WriteLine(JsonSerializer.Serialize(await HostValidationRegistration.RegisterAsync(store,root,policy),ClientConfig.JsonOptions));return;
         }
         if(command=="adoption-review") {
@@ -95,7 +96,7 @@ internal static class AgentV2Commands
         }
         if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
-            using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
+            using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
             var task=command is "adoption-confirm" or "adoption-dispatch"
                 ?store.ResolveAdoptionOwner(canonicalWorkspaceId,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact intent/approval identity required"),command=="adoption-dispatch")
@@ -166,7 +167,9 @@ internal static class AgentV2Commands
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));return;
             }
             if(command=="rescue-run") {
-                var result=await rescue.RunExternalAsync(boundHash);
+                if(args.Length!=3 && (args.Length!=5 || args[3]!="--development-codex"))
+                    throw new ArgumentException("rescue-run requires workspace and ticket hash, optionally --development-codex <absolute codex.exe>");
+                var result=await rescue.RunExternalAsync(boundHash,developmentCodex:args.ElementAtOrDefault(4));
                 Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
                 if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
                 return;
@@ -274,10 +277,10 @@ internal static class AgentV2Commands
             var root = allowlist.Resolve(args.ElementAtOrDefault(1) ?? Environment.CurrentDirectory);
             if(request.CommandExecution is not null){
                 if(command=="recover")throw new InvalidOperationException("Managed command tasks use their existing Host owner and durable task identity");
-                Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume"),ClientConfig.JsonOptions));return;
+                Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume",control:controlRoot),ClientConfig.JsonOptions));return;
             }
             var result = await AgentTaskRunner.RunAsync(root, workspace, request, config,
-                resume: command != "run", recover: command == "recover");
+                resume: command != "run", recover: command == "recover", controlPlaneRoot:controlRoot);
             Console.WriteLine(JsonSerializer.Serialize(result, ClientConfig.JsonOptions));
             if (!result.EligibleForCompletion) Environment.ExitCode = 2;
             return;

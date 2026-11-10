@@ -99,7 +99,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal sealed record ExternalResult(string Status,string? CandidateHash=null,string? ValidationHash=null,string? Reason=null);
 
-    internal async Task<ExternalResult> RunExternalAsync(string ticketHash,CancellationToken token=default)
+    internal async Task<ExternalResult> RunExternalAsync(string ticketHash,CancellationToken token=default,
+        string? developmentCodex=null)
     {
         Slack.RestrictedExecution.DenyExternal();
         var ticket=Load(ticketHash);
@@ -140,16 +141,16 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                 return new("BLOCKED",Reason:"PRIOR_DISPATCH_HAS_NO_RETAINED_CANDIDATE");
             if(AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=ticket.StartingStateHash)
                 throw new UnauthorizedAccessException("Rescue worktree changed before dispatch");
-            var response=await ReviewerCli.GenerateRescueAsync(journal,export,token);
+            var response=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex);
             if(response.Status!="OK") {
                 Record("codex_rescue_external_unavailable",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
-                    response.Status,response.Reason},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
+                    response.Status,response.Reason,response.ExitCode},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
                 return new(response.Status,Reason:response.Reason);
             }
             candidate=ParseExternalCandidate(response.Answer);
             candidateResponseHash=Store.PutEvidence(Encoding.UTF8.GetBytes(response.Answer));
             Record("codex_rescue_external_response",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
-                response_hash=candidateResponseHash,provider="sol",requested_model=ReviewerCli.Model("sol")},
+                response_hash=candidateResponseHash,provider="sol",requested_model=ReviewerCli.Model("sol"),response.ExitCode},
                 [ticketHash,export.ManifestHash,candidateResponseHash],"untrusted_candidate",ticket.WorkspaceId,
                 key:ticket.AssignmentId+"_external_candidate");
         }

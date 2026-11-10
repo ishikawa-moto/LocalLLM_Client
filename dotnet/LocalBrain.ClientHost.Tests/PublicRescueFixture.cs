@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -212,7 +211,7 @@ internal static class PublicRescueFixture
             journal.Record("public_rescue_packet_handed_off", new { manifestHash, export.Manifest.ExportHash },
                 "host_verified");
             if (codexExecutable is not null)
-                await RunDevelopmentSolAsync(root, repository, codexExecutable, export, journal);
+                await RunDevelopmentSolAsync(root, codexExecutable, export, journal);
             Console.WriteLine(packetPath);
             return;
         }
@@ -243,65 +242,25 @@ internal static class PublicRescueFixture
         Console.WriteLine(JsonSerializer.Serialize(new { candidate_hash = candidateHash, reply_hash = replyHash }));
     }
 
-    private static async Task RunDevelopmentSolAsync(string root, string repository, string executable,
+    private static async Task RunDevelopmentSolAsync(string root, string executable,
         HostEgress.Prepared export, HostTaskJournal journal)
     {
-        var start = new ProcessStartInfo(executable) {
-            WorkingDirectory = repository, UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false)
-        };
-        foreach (var arg in new[] { "--ask-for-approval", "never", "exec", "--json", "--ephemeral",
-            "--sandbox", "read-only", "--model", ReviewerCli.Model("sol"), "-" })
-            start.ArgumentList.Add(arg);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Codex CLI failed to start");
-        try
-        {
-            journal.Record("public_rescue_development_cli_started", new {
-                manifest_hash = export.ManifestHash, packet_hash = export.Manifest.ExportHash,
-                pid = process.Id, model = ReviewerCli.Model("sol")
-            }, "host_observed");
-            var stdout = ReviewerCli.ReadBoundedAsync(process.StandardOutput, 96_000, timeout.Token);
-            var stderr = ReviewerCli.ReadBoundedAsync(process.StandardError, 16_000, timeout.Token);
-            await process.StandardInput.WriteAsync(export.Payload.AsMemory(), timeout.Token);
-            process.StandardInput.Close();
-            var exited = process.WaitForExitAsync(timeout.Token);
-            var pending = new List<Task> { stdout, stderr, exited };
-            while (pending.Count != 0)
-            {
-                var done = await Task.WhenAny(pending);
-                pending.Remove(done);
-                await done;
-            }
-            var reply = process.ExitCode == 0 ? ReviewerCli.DecodeCodex(await stdout, 48_000) :
-                new ReviewerCli.Reply("UNAVAILABLE", Reason: ReviewerCli.FailureReason(await stdout + await stderr));
-            journal.Record("public_rescue_development_cli_finished", new {
-                manifest_hash = export.ManifestHash, process.ExitCode, reply.Status, reply.Reason
-            }, "host_observed");
-            if (reply.Status != "OK")
-                throw new InvalidOperationException($"Codex CLI exit {process.ExitCode}: {reply.Reason}");
-            _ = HostRescue.ParseExternalCandidate(reply.Answer);
-            var bytes = Encoding.UTF8.GetBytes(reply.Answer);
-            var responseHash = journal.Canonical.PutEvidence(bytes);
-            journal.Record("public_rescue_development_cli_response", new {
-                manifest_hash = export.ManifestHash, response_hash = responseHash
-            }, "untrusted_candidate");
-            var path = Path.Combine(root, "sol-response.json");
-            CanonicalStore.GuardPath(path);
-            await using var response = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            await response.WriteAsync(bytes, timeout.Token);
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-        {
-            journal.Record("public_rescue_development_cli_timeout", new { manifest_hash = export.ManifestHash }, "host_observed");
-            throw new TimeoutException("Codex CLI exceeded the public trial time limit");
-        }
-        finally
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
+        var reply = await ReviewerCli.RunDevelopmentRescueCliAsync(journal, export, executable);
+        journal.Record("public_rescue_development_cli_finished", new {
+            manifest_hash = export.ManifestHash, reply.ExitCode, reply.Status, reply.Reason
+        }, "host_observed");
+        if (reply.Status != "OK")
+            throw new InvalidOperationException($"Codex CLI exit {reply.ExitCode}: {reply.Reason}");
+        _ = HostRescue.ParseExternalCandidate(reply.Answer);
+        var bytes = Encoding.UTF8.GetBytes(reply.Answer);
+        var responseHash = journal.Canonical.PutEvidence(bytes);
+        journal.Record("public_rescue_development_cli_response", new {
+            manifest_hash = export.ManifestHash, response_hash = responseHash
+        }, "untrusted_candidate");
+        var path = Path.Combine(root, "sol-response.json");
+        CanonicalStore.GuardPath(path);
+        await using var response = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await response.WriteAsync(bytes);
     }
 
     private static async Task ValidateOrLearnAsync(string root, string ticketHash, string manifestHash,

@@ -7,6 +7,36 @@ internal sealed class RunnerMcpScope(string workspace)
 
     internal static async Task StartAsync(string directory)
     {
+        var (repo, control, config, allowlist) = await LoadAsync(directory);
+        McpStdio.Configure();
+        await new AgentV2McpServer(allowlist, config, control, runner: new(repo)).RunAsync();
+    }
+
+    internal static async Task RunTrialAgentAsync(string directory, string[] args)
+    {
+        var (repo, control, config, allowlist) = await LoadAsync(directory);
+        var command = args.FirstOrDefault() ?? throw new ArgumentException("Trial Agent command required");
+        if (command == "export-policy")
+        {
+            var files = args.Skip(1).Select(path => HostEgress.NormalizePath(repo, path)).ToArray();
+            if (files.Length is < 1 or > 8 || files.Any(path => path.Contains('*')) ||
+                files.Distinct(StringComparer.OrdinalIgnoreCase).Count() != files.Length)
+                throw new ArgumentException("Name one to eight exact files for the trial export policy");
+            using var store = new CanonicalStore(control);
+            store.ChangePolicies([new(HostTaskJournal.RepositoryId(repo), repo, "manual", files,
+                ["task_evidence_only", .. files.Select(path => "file:" + path)])], Environment.UserName);
+            return;
+        }
+        if (command is not ("run" or "resume" or "managed-status" or "managed-cancel" or
+            "validation-register" or "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or
+            "learning-extract" or "learning-adoption-preview" or "learning-adoption-prepare" or
+            "adoption-confirm" or "adoption-dispatch"))
+            throw new ArgumentException("Unsupported trial Agent command");
+        await AgentV2Commands.RunAsync([command, repo, .. args.Skip(1)], allowlist, config, control);
+    }
+
+    private static async Task<(string Repo, string Control, ClientConfig Config, ProjectAllowlist Allowlist)> LoadAsync(string directory)
+    {
         ReviewQualification.GuardRoot(directory);
         var root = Path.GetFullPath(directory);
         if (root.StartsWith(@"\\", StringComparison.Ordinal))
@@ -33,8 +63,7 @@ internal sealed class RunnerMcpScope(string workspace)
         var entries = allowlist.Read();
         if (entries.Count != 1 || !SamePath(entries[0], repo) || !SamePath(allowlist.Resolve(repo), repo))
             throw new UnauthorizedAccessException("Runner allowlist must contain only the dedicated checkout");
-        McpStdio.Configure();
-        await new AgentV2McpServer(allowlist, config, control, runner: new(repo)).RunAsync();
+        return (repo, control, config, allowlist);
     }
 
     internal void RequireWorkspace(string selected)
