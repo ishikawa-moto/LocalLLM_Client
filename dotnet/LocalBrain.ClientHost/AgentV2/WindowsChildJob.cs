@@ -35,6 +35,7 @@ internal sealed class WindowsChildJob : IDisposable
     [StructLayout(LayoutKind.Sequential)] private struct StartupInfoEx {public StartupInfo Info;public IntPtr Attributes;}
     [StructLayout(LayoutKind.Sequential)] private struct ProcessInformation {public IntPtr Process,Thread;public uint ProcessId,ThreadId;}
     [StructLayout(LayoutKind.Sequential)] private struct SecurityCapabilities {public IntPtr Sid,Capabilities;public uint Count,Reserved;}
+    [StructLayout(LayoutKind.Sequential)] private struct SidAndAttributes {public IntPtr Sid;public uint Attributes;}
     [DllImport("kernel32.dll",SetLastError=true)] private static extern SafeFileHandle CreateJobObject(IntPtr attributes,string? name);
     [DllImport("kernel32.dll",SetLastError=true)] private static extern bool SetInformationJobObject(SafeFileHandle job,int type,ref ExtendedLimits info,uint length);
     [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] private static extern bool QueryLimits(SafeFileHandle job,int type,out ExtendedLimits info,uint length,IntPtr returned);
@@ -52,14 +53,20 @@ internal sealed class WindowsChildJob : IDisposable
     [DllImport("kernel32.dll",SetLastError=true)] private static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool ConvertStringSidToSid(string text,out IntPtr sid);
+    [DllImport("advapi32.dll",SetLastError=true)] private static extern bool OpenProcessToken(IntPtr process,uint access,out SafeFileHandle token);
+    [DllImport("advapi32.dll",SetLastError=true)] private static extern bool GetTokenInformation(SafeFileHandle token,int kind,IntPtr value,int size,out int required);
+    [DllImport("kernelbase.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    private static extern bool DeriveCapabilitySidsFromName(string name,out IntPtr groups,out uint groupCount,
+        out IntPtr capabilities,out uint capabilityCount);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr value);
     private static void Check(bool result) {if(!result)throw new Win32Exception(Marshal.GetLastWin32Error());}
-    private WindowsChildJob(OcrLimits? limits=null) {
+    private WindowsChildJob(OcrLimits? limits=null,bool oneProcess=false) {
         if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
         if(limits is not null&&(limits.MemoryBytes<128L*1024*1024||limits.MemoryBytes>8L*1024*1024*1024||limits.Affinity==0||string.IsNullOrWhiteSpace(limits.AppContainerSid)))throw new ArgumentException("Invalid OCR job limits");
         handle=CreateJobObject(IntPtr.Zero,null);
         if(handle.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
         var info=new ExtendedLimits {Basic=new BasicLimits {Flags=0x2000}};
+        if(oneProcess){info.Basic.Flags|=8;info.Basic.ActiveProcesses=1;}
         if(limits is not null){
             info.Basic.Flags|=0x200|0x10|0x20|0x8;info.JobMemory=(UIntPtr)(ulong)limits.MemoryBytes;
             info.Basic.Affinity=(UIntPtr)limits.Affinity;info.Basic.Priority=0x4000;info.Basic.ActiveProcesses=1;
@@ -79,14 +86,19 @@ internal sealed class WindowsChildJob : IDisposable
     }
     internal static WindowsChildJob StartReviewer(ProcessStartInfo start) => Start(start,reviewer:true);
     internal static WindowsChildJob StartReviewerBootstrap(ProcessStartInfo start) => Start(start,reviewer:true,bootstrap:true);
+    internal static WindowsChildJob StartOfflineIsolatedReviewer(ProcessStartInfo start,string packageSid,bool allowSystemRegistryRead=false) =>
+        Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:allowSystemRegistryRead);
 
     internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
         Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
 
-    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false) {
+    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false,string? reviewerContainerSid=null,bool allowSystemRegistryRead=false) {
         if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
-        var job=new WindowsChildJob(ocrLimits);SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
+        var job=new WindowsChildJob(ocrLimits,oneProcess:reviewerContainerSid is not null);
+        SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
         IntPtr attributes=IntPtr.Zero,jobValue=IntPtr.Zero,handlesValue=IntPtr.Zero,environment=IntPtr.Zero,sid=IntPtr.Zero,capabilities=IntPtr.Zero;
+        IntPtr childPolicy=IntPtr.Zero,packagePolicy=IntPtr.Zero;
+        IntPtr registrySid=IntPtr.Zero,registryEntry=IntPtr.Zero;
         var initialized=false;ProcessInformation child=default;
         try {
             var security=new SecurityAttributes{Length=Marshal.SizeOf<SecurityAttributes>(),Inherit=1};
@@ -100,7 +112,8 @@ internal sealed class WindowsChildJob : IDisposable
                 if(input.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
             }
             var denyChildCreation=reviewer && !bootstrap;
-            var attributeCount=ocrLimits is null && !denyChildCreation?2:3;
+            var containerSid=reviewerContainerSid??ocrLimits?.AppContainerSid;
+            var attributeCount=2+(denyChildCreation?1:0)+(containerSid is not null?1:0)+(reviewerContainerSid is not null?1:0);
             UIntPtr size=UIntPtr.Zero;InitializeProcThreadAttributeList(IntPtr.Zero,attributeCount,0,ref size);
             attributes=Marshal.AllocHGlobal(checked((int)size.ToUInt64()));
             Check(InitializeProcThreadAttributeList(attributes,attributeCount,0,ref size));initialized=true;
@@ -113,14 +126,27 @@ internal sealed class WindowsChildJob : IDisposable
             Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x20002,handlesValue,(UIntPtr)(IntPtr.Size*3),IntPtr.Zero,IntPtr.Zero));
             if(denyChildCreation) {
                 // PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROCESS_CREATION_CHILD_PROCESS_RESTRICTED.
-                capabilities=Marshal.AllocHGlobal(sizeof(uint));
-                Marshal.WriteInt32(capabilities,1);
-                Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x2000E,capabilities,(UIntPtr)sizeof(uint),IntPtr.Zero,IntPtr.Zero));
-            } else if(ocrLimits is not null){
-                Check(ConvertStringSidToSid(ocrLimits.AppContainerSid,out sid));
+                childPolicy=Marshal.AllocHGlobal(sizeof(uint));
+                Marshal.WriteInt32(childPolicy,1);
+                Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x2000E,childPolicy,(UIntPtr)sizeof(uint),IntPtr.Zero,IntPtr.Zero));
+            }
+            if(containerSid is not null){
+                Check(ConvertStringSidToSid(containerSid,out sid));
+                if(allowSystemRegistryRead) {
+                    registrySid=ResolveRegistryReadSid();
+                    registryEntry=Marshal.AllocHGlobal(Marshal.SizeOf<SidAndAttributes>());
+                    Marshal.StructureToPtr(new SidAndAttributes{Sid=registrySid,Attributes=4},registryEntry,false);
+                }
                 capabilities=Marshal.AllocHGlobal(Marshal.SizeOf<SecurityCapabilities>());
-                Marshal.StructureToPtr(new SecurityCapabilities{Sid=sid},capabilities,false);
+                Marshal.StructureToPtr(new SecurityCapabilities{Sid=sid,Capabilities=registryEntry,
+                    Count=registryEntry==IntPtr.Zero?0u:1u},capabilities,false);
                 Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x20009,capabilities,(UIntPtr)Marshal.SizeOf<SecurityCapabilities>(),IntPtr.Zero,IntPtr.Zero));
+            }
+            if(reviewerContainerSid is not null) {
+                // PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: opt out of the ambient package grants.
+                packagePolicy=Marshal.AllocHGlobal(sizeof(uint));
+                Marshal.WriteInt32(packagePolicy,1);
+                Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x2000F,packagePolicy,(UIntPtr)sizeof(uint),IntPtr.Zero,IntPtr.Zero));
             }
             var block=string.Join('\0',start.Environment.OrderBy(p=>p.Key,StringComparer.OrdinalIgnoreCase).Select(p=>p.Key+"="+p.Value))+"\0\0";
             environment=Marshal.StringToHGlobalUni(block);
@@ -144,6 +170,10 @@ internal sealed class WindowsChildJob : IDisposable
             // Keep a managed process handle before closing CreateProcess's handle.
             // A fast OCR inspect process may exit before WaitForExitAsync opens one.
             _=job.Process.Handle;
+            if(reviewerContainerSid is not null) {
+                VerifyOfflineContainer(child.Process,sid,registrySid);
+                job.RequireSealedReviewer();
+            }
             GC.KeepAlive(input);GC.KeepAlive(writeOut);GC.KeepAlive(writeError);GC.KeepAlive(job.handle);
             writeOut.Dispose();writeError.Dispose();input.Dispose();
             job.Output=new StreamReader(new FileStream(readOut,FileAccess.Read),start.StandardOutputEncoding??Encoding.UTF8);readOut=null;
@@ -162,6 +192,53 @@ internal sealed class WindowsChildJob : IDisposable
             if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);if(jobValue!=IntPtr.Zero)Marshal.FreeHGlobal(jobValue);
             if(handlesValue!=IntPtr.Zero)Marshal.FreeHGlobal(handlesValue);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
             if(capabilities!=IntPtr.Zero)Marshal.FreeHGlobal(capabilities);if(sid!=IntPtr.Zero)LocalFree(sid);
+            if(childPolicy!=IntPtr.Zero)Marshal.FreeHGlobal(childPolicy);if(packagePolicy!=IntPtr.Zero)Marshal.FreeHGlobal(packagePolicy);
+            if(registryEntry!=IntPtr.Zero)Marshal.FreeHGlobal(registryEntry);if(registrySid!=IntPtr.Zero)LocalFree(registrySid);
+        }
+    }
+    [DllImport("advapi32.dll")] [return:MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EqualSid(IntPtr left,IntPtr right);
+
+    private static IntPtr ResolveRegistryReadSid() {
+        Check(DeriveCapabilitySidsFromName("registryRead",out var groups,out var groupCount,
+            out var capabilities,out var capabilityCount));
+        try {
+            if(capabilityCount!=1)throw new IOException("Expected one registryRead capability");
+            var sid=Marshal.ReadIntPtr(capabilities);
+            Marshal.WriteIntPtr(capabilities,IntPtr.Zero);
+            return sid;
+        } finally {
+            Free(groups,groupCount);
+            Free(capabilities,capabilityCount);
+        }
+        static void Free(IntPtr list,uint count) {
+            for(var i=0;i<count;i++) {
+                var pointer=Marshal.ReadIntPtr(list,checked((int)i*IntPtr.Size));
+                if(pointer!=IntPtr.Zero)LocalFree(pointer);
+            }
+            if(list!=IntPtr.Zero)LocalFree(list);
+        }
+    }
+
+    private static void VerifyOfflineContainer(IntPtr process,IntPtr expectedSid,IntPtr registrySid) {
+        Check(OpenProcessToken(process,8,out var token));
+        using(token) {
+            Read(29,(p,n)=>n==sizeof(uint) && Marshal.ReadInt32(p)==1);
+            Read(30,(p,n)=>registrySid==IntPtr.Zero
+                ? n>=sizeof(uint) && Marshal.ReadInt32(p)==0
+                : n>=IntPtr.Size+Marshal.SizeOf<SidAndAttributes>() && Marshal.ReadInt32(p)==1 &&
+                  EqualSid(Marshal.ReadIntPtr(p,IntPtr.Size),registrySid) &&
+                  (Marshal.ReadInt32(p,2*IntPtr.Size)&4)!=0);
+            Read(31,(p,n)=>n>=IntPtr.Size && Marshal.ReadIntPtr(p)!=IntPtr.Zero && EqualSid(Marshal.ReadIntPtr(p),expectedSid));
+        }
+        void Read(int kind,Func<IntPtr,int,bool> verify) {
+            if(GetTokenInformation(token,kind,IntPtr.Zero,0,out var bytes) || Marshal.GetLastWin32Error()!=122 ||
+                bytes<=0 || bytes>16384)throw new IOException("Reviewer token inspection failed");
+            var buffer=Marshal.AllocHGlobal(bytes);
+            try {
+                Check(GetTokenInformation(token,kind,buffer,bytes,out var actual));
+                if(!verify(buffer,actual))throw new IOException("Reviewer AppContainer token did not match expected restrictions");
+            } finally { Marshal.FreeHGlobal(buffer); }
         }
     }
     internal async Task SealReviewerBootstrapAsync(CancellationToken token)

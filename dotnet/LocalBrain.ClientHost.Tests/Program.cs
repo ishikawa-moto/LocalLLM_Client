@@ -3,6 +3,11 @@ using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
 if(args.Length==2 && args[0]=="--review-child-policy-proof"){await ReviewerChildPolicyTests.RunAsync(args[1]);return;}
+if(args.Length is 2 or 3 && args[0]=="--review-file-isolation-proof" && OperatingSystem.IsWindows()){
+    if(args.Length==3 && args[2]!="registry-read")throw new ArgumentException("Unknown reviewer fixture capability");
+    await ReviewerFileIsolationTests.RunAsync(args[1],args.Length==3);return;
+}
+if(args.Length==6 && args[0]=="--review-file-isolation-child" && OperatingSystem.IsWindows()){await ReviewerFileIsolationTests.ChildAsync(args[1],args[2],args[3],int.Parse(args[4]),args[5]);return;}
 if(args.Length==3 && args[0]=="--review-child-policy-attempt"){await ReviewerChildPolicyTests.AttemptAsync(args[1],args[2]);return;}
 if(args.Length==2 && args[0]=="--review-child-policy-marker"){ReviewerChildPolicyTests.WriteMarker(args[1]);return;}
 if(args.Length>=3 && args[0]=="--review-child-policy-local-transport"){await ReviewerChildPolicyTests.LocalTransportAsync(args[1],args[2..]);return;}

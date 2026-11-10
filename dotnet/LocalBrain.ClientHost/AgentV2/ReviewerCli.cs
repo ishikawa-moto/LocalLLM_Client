@@ -271,6 +271,21 @@ internal static class ReviewerCli
         if(text.Contains("connection") || text.Contains("network") || text.Contains("timeout"))return "CONNECTION";
         return "CLI_FAILURE";
     }
+    // Qualification only. An empty private home cannot load existing user credentials.
+    internal static Task<Reply> InspectOfflineSolLoginAsync(ProcessStartInfo start,string packageSid,
+        bool allowSystemRegistryRead,CancellationToken token)
+    {
+        if(start.ArgumentList.Count!=0 || start.RedirectStandardInput ||
+            !start.Environment.TryGetValue("CODEX_HOME",out var home) || string.IsNullOrWhiteSpace(home))
+            throw new InvalidDataException("Offline authentication probe needs an empty private home and no packet");
+        ReviewQualification.GuardRoot(home);
+        if(Directory.EnumerateFileSystemEntries(home).Any())
+            throw new UnauthorizedAccessException("Offline authentication probe will not open existing credentials");
+        foreach(var argument in new[]{"-c","cli_auth_credentials_store=\"file\"","login","status"})
+            start.ArgumentList.Add(argument);
+        return ExecuteAsync(start,null,TimeSpan.FromSeconds(15),token,offlinePackageSid:packageSid,
+            allowSystemRegistryRead:allowSystemRegistryRead);
+    }
     private static async Task<string> ReadBoundedAsync(StreamReader reader, int limit, CancellationToken token)
     {
         var text=new StringBuilder();var buffer=new char[2048];int count;
@@ -281,11 +296,13 @@ internal static class ReviewerCli
         return text.ToString();
     }
     private static async Task<Reply> ExecuteAsync(ProcessStartInfo start,string? input,TimeSpan duration,CancellationToken token,
-        HostTaskJournal? journal=null,string? provider=null,string? purpose=null,string? binaryHash=null)
+        HostTaskJournal? journal=null,string? provider=null,string? purpose=null,string? binaryHash=null,
+        string? offlinePackageSid=null,bool allowSystemRegistryRead=false)
     {
         token.ThrowIfCancellationRequested();
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(duration);
-        using var job=WindowsChildJob.StartReviewer(start);
+        using var job=offlinePackageSid is null ? WindowsChildJob.StartReviewer(start) :
+            WindowsChildJob.StartOfflineIsolatedReviewer(start,offlinePackageSid,allowSystemRegistryRead);
         var process=job.Process;
         try {
             journal?.Record("reviewer_cli_started",new {provider,purpose,executable=start.FileName,sha256=binaryHash,
