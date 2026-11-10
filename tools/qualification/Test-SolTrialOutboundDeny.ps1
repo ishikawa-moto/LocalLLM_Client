@@ -1,6 +1,6 @@
 #Requires -Version 7.2
 [CmdletBinding()]
-param([switch]$Apply)
+param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp)
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Windows is required' }
@@ -39,7 +39,8 @@ $plan = [ordered]@{
     action = 'Block'
     protocol = 'Any'
     remote_address = 'Any'
-    launches_process = $false
+    mode = if ($LoopbackBundle) { 'loopback_tuple_fixture' } else { 'deny_readback' }
+    launches_process = [bool]$LoopbackBundle
     changes_profile_defaults = $false
 }
 if (-not $Apply) {
@@ -83,6 +84,10 @@ try {
         }
     } finally {
         if ($created -ne [IntPtr]::Zero) { [void][LocalBrainTrialNetworkProfile]::FreeSid($created) }
+    }
+    if ($LoopbackBundle) {
+        & (Join-Path $PSScriptRoot 'Test-SolTrialLoopback.ps1') -Bundle $LoopbackBundle -PackageSid $packageSid -RulePrefix $ruleName -Wfp:$Wfp
+        return
     }
     $attemptedRule = $true
     $rule = @{

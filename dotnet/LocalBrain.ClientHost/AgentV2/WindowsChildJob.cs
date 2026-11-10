@@ -88,17 +88,24 @@ internal sealed class WindowsChildJob : IDisposable
     internal static WindowsChildJob StartReviewerBootstrap(ProcessStartInfo start) => Start(start,reviewer:true,bootstrap:true);
     internal static WindowsChildJob StartOfflineIsolatedReviewer(ProcessStartInfo start,string packageSid,bool allowSystemRegistryRead=false) =>
         Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:allowSystemRegistryRead);
+    internal static WindowsChildJob StartNetworkBoundaryFixture(ProcessStartInfo start,string packageSid)
+    {
+        if(start.RedirectStandardInput || start.ArgumentList.FirstOrDefault()!="--review-loopback-policy-child")
+            throw new ArgumentException("Network boundary fixture cannot accept a packet");
+        return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,internetClientFixture:true);
+    }
 
     internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
         Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
 
-    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false,string? reviewerContainerSid=null,bool allowSystemRegistryRead=false) {
+    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false,string? reviewerContainerSid=null,bool allowSystemRegistryRead=false,bool internetClientFixture=false) {
         if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
         var job=new WindowsChildJob(ocrLimits,oneProcess:reviewerContainerSid is not null);
         SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
         IntPtr attributes=IntPtr.Zero,jobValue=IntPtr.Zero,handlesValue=IntPtr.Zero,environment=IntPtr.Zero,sid=IntPtr.Zero,capabilities=IntPtr.Zero;
         IntPtr childPolicy=IntPtr.Zero,packagePolicy=IntPtr.Zero;
-        IntPtr registrySid=IntPtr.Zero,registryEntry=IntPtr.Zero;
+        var capabilitySids=new List<IntPtr>();
+        IntPtr capabilityEntries=IntPtr.Zero;
         var initialized=false;ProcessInformation child=default;
         try {
             var security=new SecurityAttributes{Length=Marshal.SizeOf<SecurityAttributes>(),Inherit=1};
@@ -132,14 +139,18 @@ internal sealed class WindowsChildJob : IDisposable
             }
             if(containerSid is not null){
                 Check(ConvertStringSidToSid(containerSid,out sid));
-                if(allowSystemRegistryRead) {
-                    registrySid=ResolveRegistryReadSid();
-                    registryEntry=Marshal.AllocHGlobal(Marshal.SizeOf<SidAndAttributes>());
-                    Marshal.StructureToPtr(new SidAndAttributes{Sid=registrySid,Attributes=4},registryEntry,false);
+                if(allowSystemRegistryRead)capabilitySids.Add(ResolveCapabilitySid("registryRead"));
+                if(internetClientFixture)capabilitySids.Add(ResolveCapabilitySid("internetClient"));
+                if(capabilitySids.Count!=0) {
+                    var entrySize=Marshal.SizeOf<SidAndAttributes>();
+                    capabilityEntries=Marshal.AllocHGlobal(capabilitySids.Count*entrySize);
+                    for(var i=0;i<capabilitySids.Count;i++)
+                        Marshal.StructureToPtr(new SidAndAttributes{Sid=capabilitySids[i],Attributes=4},
+                            capabilityEntries+i*entrySize,false);
                 }
                 capabilities=Marshal.AllocHGlobal(Marshal.SizeOf<SecurityCapabilities>());
-                Marshal.StructureToPtr(new SecurityCapabilities{Sid=sid,Capabilities=registryEntry,
-                    Count=registryEntry==IntPtr.Zero?0u:1u},capabilities,false);
+                Marshal.StructureToPtr(new SecurityCapabilities{Sid=sid,Capabilities=capabilityEntries,
+                    Count=(uint)capabilitySids.Count},capabilities,false);
                 Check(UpdateProcThreadAttribute(attributes,0,(UIntPtr)0x20009,capabilities,(UIntPtr)Marshal.SizeOf<SecurityCapabilities>(),IntPtr.Zero,IntPtr.Zero));
             }
             if(reviewerContainerSid is not null) {
@@ -171,7 +182,7 @@ internal sealed class WindowsChildJob : IDisposable
             // A fast OCR inspect process may exit before WaitForExitAsync opens one.
             _=job.Process.Handle;
             if(reviewerContainerSid is not null) {
-                VerifyOfflineContainer(child.Process,sid,registrySid);
+                VerifyContainer(child.Process,sid,capabilitySids);
                 job.RequireSealedReviewer();
             }
             GC.KeepAlive(input);GC.KeepAlive(writeOut);GC.KeepAlive(writeError);GC.KeepAlive(job.handle);
@@ -193,17 +204,18 @@ internal sealed class WindowsChildJob : IDisposable
             if(handlesValue!=IntPtr.Zero)Marshal.FreeHGlobal(handlesValue);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
             if(capabilities!=IntPtr.Zero)Marshal.FreeHGlobal(capabilities);if(sid!=IntPtr.Zero)LocalFree(sid);
             if(childPolicy!=IntPtr.Zero)Marshal.FreeHGlobal(childPolicy);if(packagePolicy!=IntPtr.Zero)Marshal.FreeHGlobal(packagePolicy);
-            if(registryEntry!=IntPtr.Zero)Marshal.FreeHGlobal(registryEntry);if(registrySid!=IntPtr.Zero)LocalFree(registrySid);
+            if(capabilityEntries!=IntPtr.Zero)Marshal.FreeHGlobal(capabilityEntries);
+            foreach(var capabilitySid in capabilitySids)LocalFree(capabilitySid);
         }
     }
     [DllImport("advapi32.dll")] [return:MarshalAs(UnmanagedType.Bool)]
     private static extern bool EqualSid(IntPtr left,IntPtr right);
 
-    private static IntPtr ResolveRegistryReadSid() {
-        Check(DeriveCapabilitySidsFromName("registryRead",out var groups,out var groupCount,
+    private static IntPtr ResolveCapabilitySid(string name) {
+        Check(DeriveCapabilitySidsFromName(name,out var groups,out var groupCount,
             out var capabilities,out var capabilityCount));
         try {
-            if(capabilityCount!=1)throw new IOException("Expected one registryRead capability");
+            if(capabilityCount!=1)throw new IOException($"Expected one {name} capability");
             var sid=Marshal.ReadIntPtr(capabilities);
             Marshal.WriteIntPtr(capabilities,IntPtr.Zero);
             return sid;
@@ -220,15 +232,23 @@ internal sealed class WindowsChildJob : IDisposable
         }
     }
 
-    private static void VerifyOfflineContainer(IntPtr process,IntPtr expectedSid,IntPtr registrySid) {
+    private static void VerifyContainer(IntPtr process,IntPtr expectedSid,IReadOnlyList<IntPtr> capabilities) {
         Check(OpenProcessToken(process,8,out var token));
         using(token) {
             Read(29,(p,n)=>n==sizeof(uint) && Marshal.ReadInt32(p)==1);
-            Read(30,(p,n)=>registrySid==IntPtr.Zero
-                ? n>=sizeof(uint) && Marshal.ReadInt32(p)==0
-                : n>=IntPtr.Size+Marshal.SizeOf<SidAndAttributes>() && Marshal.ReadInt32(p)==1 &&
-                  EqualSid(Marshal.ReadIntPtr(p,IntPtr.Size),registrySid) &&
-                  (Marshal.ReadInt32(p,2*IntPtr.Size)&4)!=0);
+            Read(30,(p,n)=>{
+                if(n<sizeof(uint) || Marshal.ReadInt32(p)!=capabilities.Count)return false;
+                if(capabilities.Count==0)return true;
+                var entrySize=Marshal.SizeOf<SidAndAttributes>();
+                if(n<IntPtr.Size+capabilities.Count*entrySize)return false;
+                var expected=new HashSet<IntPtr>(capabilities);
+                for(var i=0;i<capabilities.Count;i++) {
+                    var entry=Marshal.PtrToStructure<SidAndAttributes>(p+IntPtr.Size+i*entrySize);
+                    var match=expected.FirstOrDefault(candidate=>EqualSid(candidate,entry.Sid));
+                    if(match==IntPtr.Zero || (entry.Attributes&4)==0 || !expected.Remove(match))return false;
+                }
+                return expected.Count==0;
+            });
             Read(31,(p,n)=>n>=IntPtr.Size && Marshal.ReadIntPtr(p)!=IntPtr.Zero && EqualSid(Marshal.ReadIntPtr(p),expectedSid));
         }
         void Read(int kind,Func<IntPtr,int,bool> verify) {
