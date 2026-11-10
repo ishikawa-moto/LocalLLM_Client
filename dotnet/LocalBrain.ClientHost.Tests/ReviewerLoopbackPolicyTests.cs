@@ -9,7 +9,7 @@ using LocalBrain.ClientHost.AgentV2;
 [SupportedOSPlatform("windows")]
 internal static class ReviewerLoopbackPolicyTests
 {
-    internal static async Task RunAsync(string bundle,string packageSid,int approved,int otherV4,int otherV6)
+    internal static async Task RunAsync(string bundle,string packageSid,int approved,int otherV4,int otherV6,bool relay=false)
     {
         bundle=Path.GetFullPath(bundle);
         ReviewQualification.GuardRoot(bundle);
@@ -26,6 +26,7 @@ internal static class ReviewerLoopbackPolicyTests
             start.Environment["HTTPS_PROXY"]=$"http://127.0.0.1:{otherV4}";
             foreach(var arg in new[]{"--review-loopback-policy-child",approved.ToString(),otherV4.ToString(),otherV6.ToString()})
                 start.ArgumentList.Add(arg);
+            if(relay)start.ArgumentList.Add("relay");
             using var job=WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value);
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(20));
             var stdout=job.Output.ReadToEndAsync(deadline.Token);
@@ -41,7 +42,7 @@ internal static class ReviewerLoopbackPolicyTests
         }
     }
 
-    internal static async Task ChildAsync(int approved,int otherV4,int otherV6)
+    internal static async Task ChildAsync(int approved,int otherV4,int otherV6,bool relay=false)
     {
         var positive=await ConnectAsync(IPAddress.Loopback,approved);
         var v4=await ConnectAsync(IPAddress.Loopback,otherV4);
@@ -49,11 +50,24 @@ internal static class ReviewerLoopbackPolicyTests
         var v6=await ConnectAsync(IPAddress.IPv6Loopback,otherV6);
         var udp=await SendUdpAsync(approved);
         var proxy=await TryEnvironmentProxyAsync(otherV4);
+        var relayVerified=relay && await SolEgressRelayTests.RunIsolatedClientAsync(approved);
+        var canaryDenied=relay && ProtectedCanaryDenied();
         Console.WriteLine(JsonSerializer.Serialize(new {
             approved_tcp=positive, unapproved_ipv4_tcp=v4, unapproved_ipv4_address=alias4,
             unapproved_ipv6_tcp=v6, direct_udp_dns_send=udp, environment_proxy_result=proxy,
-            internet_client_capability_verified=true,model_requests=0
+            internet_client_capability_verified=true,relay_verified=relayVerified,
+            crypto_services_fixture=relay,protected_file_denied=canaryDenied,model_requests=0
         }));
+    }
+
+    private static bool ProtectedCanaryDenied()
+    {
+        var path=Path.GetFullPath(Path.Combine(Environment.CurrentDirectory,"..","protected-relay-canary.txt"));
+        return Denied(FileAccess.Read) && Denied(FileAccess.Write);
+        bool Denied(FileAccess access) {
+            try { using var file=File.Open(path,FileMode.Open,access,FileShare.ReadWrite);return false; }
+            catch(UnauthorizedAccessException) {return true;}
+        }
     }
 
     private static async Task<int> ConnectAsync(IPAddress address,int port)

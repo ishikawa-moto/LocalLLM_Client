@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^S-1-15-2(?:-\d+){7}$')][string]$PackageSid,
     [Parameter(Mandatory)][ValidatePattern('^LocalBrain\.SolTrial\.Deny\.[0-9a-f]{32}$')][string]$RulePrefix,
     [switch]$Wfp,
-    [switch]$DurableWfp
+    [switch]$DurableWfp,
+    [switch]$Relay
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +26,7 @@ if ($bundleItem.Name -ne 'bundle' -or $bundleItem.Parent.Name -notmatch '^sol-lo
 $exe = Join-Path $bundleItem.FullName 'LocalBrain.ClientHost.Tests.exe'
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Missing qualification executable' }
 
-# These listeners accept only synthetic local connection attempts. They do not proxy traffic.
+# All listeners and the optional upstream TLS fixture are confined to loopback.
 $allowed = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $other4 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
 $other6 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Loopback,0)
@@ -37,6 +38,18 @@ $exemptionAttempted = $false
 $wfpSession = $null
 $lease = $null
 $leaseFile = Join-Path $bundleItem.Parent.FullName 'wfp-lease.json'
+$relayProcess = $null
+$relayErrors = $null
+
+function Stop-FixtureRelay {
+    if (!$relayProcess -or $relayProcess.HasExited) { return }
+    $relayProcess.StandardInput.Close()
+    if (!$relayProcess.WaitForExit(10000)) {
+        $relayProcess.Kill()
+        if (!$relayProcess.WaitForExit(5000)) { throw 'Owned relay fixture did not exit' }
+    }
+}
+
 function Format-Prefix([string]$Value) {
     $parts = $Value.Split('/')
     $ip = [Net.IPAddress]::Parse($parts[0])
@@ -54,10 +67,31 @@ function Format-Prefix([string]$Value) {
 }
 
 try {
-    $allowed.Start()
     $other4.Start()
     $other6.Start()
-    $port = $allowed.LocalEndpoint.Port
+    if ($Relay) {
+        if (!$Wfp -or !$DurableWfp) { throw 'Relay requires the durable WFP fixture mode' }
+        $canary = Join-Path $bundleItem.Parent.FullName 'protected-relay-canary.txt'
+        $canaryFile = [IO.FileStream]::new($canary,'CreateNew','ReadWrite','None')
+        try { $canaryFile.WriteByte(42) } finally { $canaryFile.Dispose() }
+        $start = [Diagnostics.ProcessStartInfo]::new($exe)
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.ArgumentList.Add('--sol-egress-relay-fixture-server')
+        $start.ArgumentList.Add($bundleItem.FullName)
+        $relayProcess = [Diagnostics.Process]::Start($start)
+        $relayErrors = $relayProcess.StandardError.ReadToEndAsync()
+        $line = $relayProcess.StandardOutput.ReadLineAsync().WaitAsync([TimeSpan]::FromSeconds(15)).GetAwaiter().GetResult()
+        if (!$line) { throw "Relay fixture did not announce an endpoint: $($relayErrors.GetAwaiter().GetResult())" }
+        $port = ($line | ConvertFrom-Json).port
+        if ($port -lt 49152 -or $port -gt 65535) { throw 'Expected an ephemeral IPv4 relay port' }
+    } else {
+        $allowed.Start()
+        $port = $allowed.LocalEndpoint.Port
+    }
     $alias4 = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Parse('127.0.0.2'),$port)
     $alias4.Start()
     $udp = [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new([Net.IPAddress]::Loopback,$port))
@@ -136,13 +170,14 @@ try {
     $state = (& $netIsolation LoopbackExempt -s | Out-String)
     if ($LASTEXITCODE -ne 0 -or !$state.Contains($PackageSid)) { throw 'Scoped loopback exemption not verified' }
 
-    $result = & $exe --review-loopback-policy-host $bundleItem.FullName $PackageSid $port $other4.LocalEndpoint.Port $other6.LocalEndpoint.Port
+    $probeArgs = @('--review-loopback-policy-host',$bundleItem.FullName,$PackageSid,$port,$other4.LocalEndpoint.Port,$other6.LocalEndpoint.Port)
+    $result = if ($Relay) { & $exe @probeArgs relay } else { & $exe @probeArgs }
     if ($LASTEXITCODE -ne 0) { throw "Qualification executable failed with exit $LASTEXITCODE" }
     $probe = $result | ConvertFrom-Json
     $observed = [ordered]@{
         status = 'UNQUALIFIED'
         probe = $probe
-        approved_tcp_observed = $allowed.Pending()
+        approved_tcp_observed = if ($Relay) { $probe.relay_verified -and $probe.protected_file_denied } else { $allowed.Pending() }
         other_ipv4_tcp_observed = $other4.Pending()
         other_ipv4_address_observed = $alias4.Pending()
         other_ipv6_tcp_observed = $other6.Pending()
@@ -170,7 +205,22 @@ try {
     }
     $observed | ConvertTo-Json -Depth 4 -Compress
     if ($observed.status -ne 'LOCAL_TUPLE_FIXTURE_PASS') { throw 'Trial network boundary unqualified' }
+    if ($Relay) {
+        Stop-FixtureRelay
+        if ($relayProcess.ExitCode -ne 0) { throw "Owned relay fixture failed: $($relayErrors.GetAwaiter().GetResult())" }
+        $upstream = $relayProcess.StandardOutput.ReadToEnd() | ConvertFrom-Json
+        if ($upstream.upstream_requests -ne 1 -or $upstream.external_requests -ne 0) { throw 'Unexpected upstream traffic' }
+        $closed = & $exe @probeArgs | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $closed.approved_tcp -ne 10061 -or $closed.unapproved_ipv4_tcp -ne 10013) {
+            throw 'Relay exit did not fail closed'
+        }
+        [pscustomobject]@{ status='RELAY_LPAC_WFP_PASS'; relay_pid=$relayProcess.Id; relay_exit=$relayProcess.ExitCode
+            upstream=$upstream; closed_port=$closed.approved_tcp; alternate_port_after_close=$closed.unapproved_ipv4_tcp } |
+            ConvertTo-Json -Depth 3 -Compress
+    }
 } finally {
+    Stop-FixtureRelay
+    if ($relayProcess) { $relayProcess.Dispose() }
     $allowed.Stop()
     $other4.Stop()
     $other6.Stop()

@@ -4,16 +4,19 @@ using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
 if(args.Length==2 && args[0]=="--review-child-policy-proof"){await ReviewerChildPolicyTests.RunAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--sol-egress-relay-proof"){await SolEgressRelayTests.RunAsync();return;}
+if(args.Length==2 && args[0]=="--sol-egress-relay-fixture-server"){await SolEgressRelayTests.RunAsync(args[1]);return;}
 if(args.Length is 2 or 3 && args[0]=="--review-file-isolation-proof" && OperatingSystem.IsWindows()){
     if(args.Length==3 && args[2]!="registry-read")throw new ArgumentException("Unknown reviewer fixture capability");
     await ReviewerFileIsolationTests.RunAsync(args[1],args.Length==3);return;
 }
 if(args.Length==6 && args[0]=="--review-file-isolation-child" && OperatingSystem.IsWindows()){await ReviewerFileIsolationTests.ChildAsync(args[1],args[2],args[3],int.Parse(args[4]),args[5]);return;}
-if(args.Length==6 && args[0]=="--review-loopback-policy-host" && OperatingSystem.IsWindows()){
-    await ReviewerLoopbackPolicyTests.RunAsync(args[1],args[2],int.Parse(args[3]),int.Parse(args[4]),int.Parse(args[5]));return;
+if(args.Length is 6 or 7 && args[0]=="--review-loopback-policy-host" && OperatingSystem.IsWindows()){
+    if(args.Length==7 && args[6]!="relay")throw new ArgumentException("Unexpected network fixture mode");
+    await ReviewerLoopbackPolicyTests.RunAsync(args[1],args[2],int.Parse(args[3]),int.Parse(args[4]),int.Parse(args[5]),args.Length==7);return;
 }
-if(args.Length==4 && args[0]=="--review-loopback-policy-child" && OperatingSystem.IsWindows()){
-    await ReviewerLoopbackPolicyTests.ChildAsync(int.Parse(args[1]),int.Parse(args[2]),int.Parse(args[3]));return;
+if(args.Length is 4 or 5 && args[0]=="--review-loopback-policy-child" && OperatingSystem.IsWindows()){
+    if(args.Length==5 && args[4]!="relay")throw new ArgumentException("Unexpected network fixture mode");
+    await ReviewerLoopbackPolicyTests.ChildAsync(int.Parse(args[1]),int.Parse(args[2]),int.Parse(args[3]),args.Length==5);return;
 }
 if(args.Length==3 && args[0]=="--review-child-policy-attempt"){await ReviewerChildPolicyTests.AttemptAsync(args[1],args[2]);return;}
 if(args.Length==2 && args[0]=="--review-child-policy-marker"){ReviewerChildPolicyTests.WriteMarker(args[1]);return;}

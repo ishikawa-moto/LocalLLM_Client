@@ -18,7 +18,7 @@ internal static class SolEgressRelayTests
 {
     private const string Good="sol.fixture.test", BadCertificate="bad.fixture.test";
 
-    internal static async Task RunAsync()
+    internal static async Task RunAsync(string? fixtureBundle=null)
     {
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(40));
         var token=timeout.Token;
@@ -69,6 +69,17 @@ internal static class SolEgressRelayTests
             new(Good,"GET","/redirect",new Uri($"https://{Good}/redirect")),
             new(BadCertificate,"GET","/responses",new Uri($"https://{BadCertificate}/responses"))
         ],new Dictionary<string,X509Certificate2>{{Good,relayCert},{BadCertificate,wrongNameRelayCert}},upstream,token);
+        if(fixtureBundle is not null) {
+            fixtureBundle=Path.GetFullPath(fixtureBundle);
+            ReviewQualification.GuardRoot(fixtureBundle);
+            using(var ca=new FileStream(Path.Combine(fixtureBundle,"relay-fixture-root.cer"),FileMode.CreateNew))
+                ca.Write(root.Export(X509ContentType.Cert));
+            Console.WriteLine(JsonSerializer.Serialize(new {port=relay.ProxyAddress.Port}));
+            await Console.Out.FlushAsync(token);
+            if(await Console.In.ReadLineAsync(token) is not null)throw new IOException("Fixture control input must be EOF");
+            Console.WriteLine(JsonSerializer.Serialize(new {upstream_requests=Volatile.Read(ref calls),external_requests=0}));
+            return;
+        }
         using var clientHandler=Handler(root);
         clientHandler.UseProxy=true;
         clientHandler.Proxy=new WebProxy(relay.ProxyAddress);
@@ -107,6 +118,31 @@ internal static class SolEgressRelayTests
         }
         Console.WriteLine(JsonSerializer.Serialize(new { status="PASS",external_requests=0,upstream_requests=calls,
             approved_tls=true,wrong_certificate_denied=true,unapproved_connect_denied=true,inner_authority_denied=true,redirect_denied=true }));
+    }
+
+    internal static async Task<bool> RunIsolatedClientAsync(int port)
+    {
+        var proxy=new Uri($"http://127.0.0.1:{port}");
+        using var root=X509CertificateLoader.LoadCertificateFromFile(
+            Path.Combine(Environment.CurrentDirectory,"relay-fixture-root.cer"));
+        using var handler=Handler(root);
+        handler.UseProxy=true;
+        handler.Proxy=new WebProxy(proxy);
+        using var client=new HttpClient(handler);
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var token=timeout.Token;
+        using var post=new HttpRequestMessage(HttpMethod.Post,$"https://{Good}/responses") {
+            Content=new StringContent("{}",Encoding.UTF8,"application/json")
+        };
+        post.Headers.TryAddWithoutValidation("Authorization","Bearer synthetic-only");
+        using var result=await client.SendAsync(post,token);
+        Check(result.StatusCode==HttpStatusCode.OK && await result.Content.ReadAsStringAsync(token)=="data: fixture\n\n",
+            "Approved synthetic TLS route did not reach the isolated client");
+        using var wrongPath=await client.GetAsync($"https://{Good}/unapproved",token);
+        Check(wrongPath.StatusCode==HttpStatusCode.Forbidden,"Isolated client unexpectedly used an unapproved path");
+        using var wrongCertificate=await client.GetAsync($"https://{BadCertificate}/responses",token);
+        Check(wrongCertificate.StatusCode==HttpStatusCode.BadGateway,"Isolated client accepted an untrusted upstream TLS name");
+        return true;
     }
 
     private static SocketsHttpHandler Handler(X509Certificate2 root) => new() {

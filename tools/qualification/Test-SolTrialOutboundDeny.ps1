@@ -1,9 +1,10 @@
 #Requires -Version 7.2
 [CmdletBinding()]
-param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp, [switch]$DurableWfp)
+param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp, [switch]$DurableWfp, [switch]$Relay)
 
 $ErrorActionPreference = 'Stop'
 if ($DurableWfp -and (!$Wfp -or !$LoopbackBundle)) { throw 'Durable WFP requires the loopback fixture' }
+if ($Relay -and !$DurableWfp) { throw 'The TLS relay fixture requires durable WFP' }
 if (-not $IsWindows) { throw 'Windows is required' }
 
 Add-Type -TypeDefinition @'
@@ -87,7 +88,7 @@ try {
         if ($created -ne [IntPtr]::Zero) { [void][LocalBrainTrialNetworkProfile]::FreeSid($created) }
     }
     if ($LoopbackBundle) {
-        & (Join-Path $PSScriptRoot 'Test-SolTrialLoopback.ps1') -Bundle $LoopbackBundle -PackageSid $packageSid -RulePrefix $ruleName -Wfp:$Wfp -DurableWfp:$DurableWfp
+        & (Join-Path $PSScriptRoot 'Test-SolTrialLoopback.ps1') -Bundle $LoopbackBundle -PackageSid $packageSid -RulePrefix $ruleName -Wfp:$Wfp -DurableWfp:$DurableWfp -Relay:$Relay
         return
     }
     $attemptedRule = $true
