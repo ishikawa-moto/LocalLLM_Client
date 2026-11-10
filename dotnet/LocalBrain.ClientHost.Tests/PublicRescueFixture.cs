@@ -151,6 +151,80 @@ internal static class PublicRescueFixture
         if (!observed) Environment.ExitCode = 2;
     }
 
+    internal static async Task HandoffAsync(string root, string ticketHash, string manifestHash, bool exportPacket)
+    {
+        root = Path.GetFullPath(root);
+        ReviewQualification.GuardRoot(root);
+        var repository = Path.Combine(root, "repo");
+        var control = Path.Combine(root, "rescue-control");
+        ReviewQualification.GuardRoot(control);
+        var head = await RequireCleanFixtureAsync(repository);
+        if (!File.Exists(Path.Combine(control, "canonical.db")))
+            throw new InvalidDataException("Prepare the public Rescue trial first");
+
+        using var store = new CanonicalStore(control);
+        var ticket = JsonSerializer.Deserialize<HostRescue.Ticket>(store.ReadEvidence(ticketHash)) ??
+            throw new InvalidDataException("Public Rescue ticket missing");
+        var events = store.EventIds(ticket.TaskId).Select(id => store.ReadTaskEvent(ticket.TaskId, id)).ToArray();
+        if (!ticket.TaskId.StartsWith("public_rescue_", StringComparison.Ordinal) || ticket.BaseCommit != head ||
+            !ticket.MainRoot.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
+            store.LatestTask(HostTaskJournal.WorkspaceId(repository))?.TaskId != ticket.TaskId ||
+            !events.Any(e => e.Input.Producer == "windows_host" && e.Input.EventType == "public_rescue_trial_input"))
+            throw new UnauthorizedAccessException("Only the prepared public trial is allowed");
+
+        var request = AgentTaskRequest.Parse(store.TaskRequest(ticket.TaskId));
+        using var journal = new HostTaskJournal(store, repository, ticket.TaskId, request, head);
+        var rescue = new HostRescue(journal);
+        var export = rescue.PreparedExport(rescue.Load(ticketHash));
+        using var packet = JsonDocument.Parse(export.Payload);
+        var source = packet.RootElement.GetProperty("starting_source");
+        if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != "manual" ||
+            !request.AllowedFiles.SequenceEqual(["Arithmetic.cs"]) || source.GetArrayLength() != 1 ||
+            source[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
+            source[0].GetProperty("Content").GetString() != await File.ReadAllTextAsync(Path.Combine(repository, "Arithmetic.cs")))
+            throw new UnauthorizedAccessException("Public handoff must use the exact prepared fixture packet");
+
+        var packetPath = Path.Combine(root, "approved-sol-packet.json");
+        CanonicalStore.GuardPath(packetPath);
+        if (exportPacket)
+        {
+            if (File.Exists(packetPath))
+                throw new IOException("The approved packet already exists");
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                throw new InvalidOperationException("Public handoff requires an interactive human terminal");
+            Console.WriteLine("Public fixture handoff only. Use the separately approved disposable environment.");
+            Console.WriteLine(export.Payload);
+            var egress = new HostEgress(store);
+            egress.ApproveInteractive(export.Manifest, export.ManifestHash, journal);
+            using var lease = egress.AuthorizeDispatch(export, "codex_protocol");
+            await using (var file = new FileStream(packetPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                await file.WriteAsync(Encoding.UTF8.GetBytes(export.Payload));
+            journal.Record("public_rescue_packet_handed_off", new { manifestHash, export.Manifest.ExportHash },
+                "host_verified");
+            Console.WriteLine(packetPath);
+            return;
+        }
+
+        var dispatch = events.SingleOrDefault(e => e.Input.Producer == "windows_host" &&
+            e.Input.EventType == "external_dispatch_authorized" &&
+            e.Input.EvidenceRefs.SequenceEqual([manifestHash, export.Manifest.ExportHash]) &&
+            e.Input.Metadata.GetProperty("provider").GetString() == "codex_protocol");
+        if (dispatch is null || !File.Exists(packetPath) ||
+            await RescueInput.ReadAsync(File.OpenRead(packetPath), 64_000) != export.Payload)
+            throw new UnauthorizedAccessException("Import requires the exact approved public handoff");
+        var replyPath = Path.Combine(root, "sol-response.json");
+        CanonicalStore.GuardPath(replyPath);
+        var reply = await RescueInput.ReadAsync(File.OpenRead(replyPath), 48_000);
+        var candidate = HostRescue.ParseExternalCandidate(reply);
+        var candidateHash = await rescue.ImportAsync(ticketHash, candidate);
+        var replyHash = store.PutEvidence(Encoding.UTF8.GetBytes(reply));
+        journal.Record("public_rescue_manual_response_imported", new {
+            manifestHash, dispatch_event_id = dispatch.EventId, replyHash, candidateHash,
+            provider_identity_verified_by_host = false
+        }, "host_verified");
+        Console.WriteLine(JsonSerializer.Serialize(new { candidate_hash = candidateHash, reply_hash = replyHash }));
+    }
+
     private static async Task<string> RequireCleanFixtureAsync(string repository)
     {
         ReviewQualification.GuardRoot(repository);

@@ -138,13 +138,8 @@ internal static class AgentV2Commands
             if(command=="approve-export") {
                 // Host administrative command, never a model/MCP operation.
                 var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(store.ReadEvidence(boundHash))??throw new InvalidDataException("Manifest missing");
-                if(manifest.TaskId!=task.TaskId)throw new UnauthorizedAccessException("Approval task mismatch");
-                if(Console.IsInputRedirected || Console.IsOutputRedirected)throw new InvalidOperationException("Export approval requires an interactive human terminal");
-                Console.WriteLine(JsonSerializer.Serialize(manifest,ClientConfig.JsonOptions));
-                Console.WriteLine("Review the redacted export payload and exact scope. Type its complete manifest SHA-256 to authorize this export once: "+boundHash);
-                if(Console.ReadLine()!=boundHash)throw new UnauthorizedAccessException("Exact human export approval was not confirmed");
-                store.BindExportApproval(task.TaskId,boundHash,manifest.PolicyHash,DateTimeOffset.UtcNow.AddMinutes(15),Environment.UserName);
-                journal.Record("human_export_approval",new{manifest_hash=boundHash,policy_hash=manifest.PolicyHash},"human_explicit");return;
+                new HostEgress(store).ApproveInteractive(manifest,boundHash,journal);
+                return;
             }
             var rescue=new HostRescue(journal);var ticket=rescue.Load(boundHash);
             if(command=="rescue-preview") {
