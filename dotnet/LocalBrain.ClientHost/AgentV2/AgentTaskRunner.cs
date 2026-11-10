@@ -305,7 +305,9 @@ internal static class AgentTaskRunner
             }
         }
         if(!fileOnly && noProgress && rescueStarting is not null && after.UnexpectedFiles.Length==0 && !testMutatedWorktree) {
-            try {await new HostRescue(journal).ReserveAsync(rescueStarting,token);}
+            try {await new HostRescue(journal).ReserveAsync(rescueStarting,token,
+                new(actorTurns,actor?.NoProgress==true,testsWithoutImprovement,decision.Action,
+                    tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray()));}
             catch(Exception error)when(error is IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
                 journal.Record("codex_rescue_unavailable",new{reason=error.GetType().Name,scope="Optional rescue unavailable; task state retained"},"host_verified");
             }

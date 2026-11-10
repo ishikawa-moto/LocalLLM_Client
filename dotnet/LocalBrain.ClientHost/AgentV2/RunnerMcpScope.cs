@@ -29,7 +29,7 @@ internal sealed class RunnerMcpScope(string workspace)
         }
         if (command is not ("run" or "resume" or "managed-status" or "managed-cancel" or
             "validation-register" or "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or
-            "rescue-advice-prepare" or "rescue-advice-run" or "rescue-promote" or
+            "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-promote" or
             "learning-extract" or "learning-adoption-preview" or "learning-adoption-prepare" or
             "adoption-confirm" or "adoption-dispatch"))
             throw new ArgumentException("Unsupported trial Agent command");

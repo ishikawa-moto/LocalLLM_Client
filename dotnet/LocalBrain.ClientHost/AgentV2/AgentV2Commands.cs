@@ -94,7 +94,7 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -172,18 +172,22 @@ internal static class AgentV2Commands
                 Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.Model("sol"),manifest_hash=export.ManifestHash,
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));return;
             }
-            if(command=="rescue-run") {
-                if(args.Length!=3 && (args.Length!=5 || args[3]!="--development-codex"))
-                    throw new ArgumentException("rescue-run requires workspace and ticket hash, optionally --development-codex <absolute codex.exe>");
-                var result=await rescue.RunExternalAsync(boundHash,developmentCodex:args.ElementAtOrDefault(4));
+            if(command is "rescue-run" or "rescue-edit-run") {
+                var direct=command=="rescue-edit-run";
+                if(direct ? args.Length!=5 : args.Length!=3 && (args.Length!=5 || args[3]!="--development-codex"))
+                    throw new ArgumentException(direct
+                        ?"rescue-edit-run requires workspace, ticket hash, approved manifest hash and absolute codex.exe"
+                        :"rescue-run requires workspace and ticket hash, optionally --development-codex <absolute codex.exe>");
+                var result=await rescue.RunExternalAsync(boundHash,developmentCodex:args.ElementAtOrDefault(4),
+                    editManifestHash:direct?args[3]:null);
                 Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
                 if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
                 return;
             }
-            if(command=="rescue-advice-prepare") {
+            if(command is "rescue-advice-prepare" or "rescue-edit-prepare") {
                 if(args.Length!=3 || Console.IsOutputRedirected)
-                    throw new InvalidOperationException("Advice preview requires a ticket and an interactive terminal");
-                var export=rescue.PrepareAdvice(boundHash);
+                    throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
+                var export=command=="rescue-edit-prepare"?rescue.PrepareDirectEdit(boundHash):rescue.PrepareAdvice(boundHash);
                 Console.WriteLine(JsonSerializer.Serialize(new{manifest_hash=export.ManifestHash,
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
                 return;

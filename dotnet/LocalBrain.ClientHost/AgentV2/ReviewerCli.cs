@@ -109,7 +109,7 @@ internal static class ReviewerCli
     }
 
     internal static Task<Reply> GenerateRescueAsync(HostTaskJournal journal, HostEgress.Prepared export,
-        CancellationToken token, string? developmentCodex = null)
+        CancellationToken token, string? developmentCodex = null, string? editRoot = null)
     {
         Slack.RestrictedExecution.DenyExternal();
         token.ThrowIfCancellationRequested();
@@ -120,8 +120,10 @@ internal static class ReviewerCli
         if (developmentCodex is not null)
         {
             HostValidationPolicy.RequireRegisteredPublisher(journal);
-            return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token);
+            return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token, editRoot);
         }
+        if (editRoot is not null)
+            throw new InvalidOperationException("Direct editing requires the explicit development Codex CLI");
         var endpoint = Load(journal.Canonical.Root).Sol;
         if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "HOST_ROUTE_NOT_QUALIFIED"));
@@ -131,11 +133,11 @@ internal static class ReviewerCli
     }
 
     private static async Task<Reply> RunApprovedDevelopmentRescueAsync(HostTaskJournal journal,
-        HostEgress.Prepared export, string executable, CancellationToken token)
+        HostEgress.Prepared export, string executable, CancellationToken token, string? editRoot)
     {
         RequireDevelopmentExecutable(executable);
         using var dispatch = new HostEgress(journal.Canonical).AuthorizeDispatch(export, "codex_protocol");
-        return await RunDevelopmentRescueCliAsync(journal, export, executable, token);
+        return await RunDevelopmentRescueCliAsync(journal, export, executable, token, editRoot);
     }
 
     private static void RequireDevelopmentExecutable(string executable)
@@ -149,12 +151,14 @@ internal static class ReviewerCli
 
     // Used by the administrative development route and the public fixture after HostEgress authorization.
     internal static async Task<Reply> RunDevelopmentRescueCliAsync(HostTaskJournal journal,
-        HostEgress.Prepared export, string executable, CancellationToken token = default)
+        HostEgress.Prepared export, string executable, CancellationToken token = default, string? editRoot = null)
     {
         Slack.RestrictedExecution.DenyExternal();
         RequireDevelopmentExecutable(executable);
+        var work = editRoot ?? Path.GetDirectoryName(executable)!;
+        CanonicalStore.GuardPath(work);
         var start = new ProcessStartInfo(executable) {
-            WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = work, UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = new UTF8Encoding(false),
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
@@ -163,9 +167,10 @@ internal static class ReviewerCli
             if (!EnvironmentKeys.Contains(key) && !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase))
                 start.Environment.Remove(key);
         foreach (var arg in new[] { "--ask-for-approval", "never", "exec", "--ignore-user-config",
-            "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox", "read-only", "--model", Model("sol"),
+            "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox",
+            editRoot is null ? "read-only" : "workspace-write", "--model", Model("sol"),
             "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
-            "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-" })
+            "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"", "-" })
             start.ArgumentList.Add(arg);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromMinutes(5));
@@ -179,7 +184,7 @@ internal static class ReviewerCli
             {
                 journal.Record("development_rescue_cli_started", new {
                     manifest_hash = export.ManifestHash, packet_hash = export.Manifest.ExportHash,
-                    pid = process.Id, requested_model = Model("sol"), sha256
+                    pid = process.Id, requested_model = Model("sol"), sha256, direct_edit = editRoot is not null
                 }, "host_observed");
                 var stdout = ReadBoundedAsync(process.StandardOutput, 96_000, timeout.Token);
                 var stderr = ReadBoundedAsync(process.StandardError, 16_000, timeout.Token);
@@ -192,7 +197,7 @@ internal static class ReviewerCli
                     pending.Remove(completed);
                     await completed;
                 }
-                var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000) :
+                var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000, allowEditEvents: editRoot is not null) :
                     new Reply("UNAVAILABLE", Reason: FailureReason(await stdout + await stderr));
                 return reply with { ExitCode = process.ExitCode };
             }
@@ -326,7 +331,7 @@ internal static class ReviewerCli
         (plan ? "This is a pre-edit plan review. Assess whether the proposed scope, approach and required test plan can safely meet every acceptance criterion. Tests are not yet executed; do not claim implementation verification. "
               : "This is a final review. PASS only when every acceptance criterion is supported by the diff and passed required tests. ") +
         "Return exactly {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}.\n";
-    internal static Reply DecodeCodex(string lines,int answerLimit=8_000)
+    internal static Reply DecodeCodex(string lines,int answerLimit=8_000,bool allowEditEvents=false)
     {
         string? answer=null;var completed=false;
         try {
@@ -337,6 +342,7 @@ internal static class ReviewerCli
                 else if(type is "item.started" or "item.updated" or "item.completed") {
                     var item=root.GetProperty("item");var itemType=item.GetProperty("type").GetString();
                     if(itemType=="agent_message" && type=="item.completed")answer=item.GetProperty("text").GetString();
+                    else if(allowEditEvents && itemType is ("command_execution" or "file_change"))continue;
                     else if(itemType is not ("agent_message" or "reasoning" or "error"))
                         return new("INVALID",Reason:"REVIEW_TOOL_EVENT");
                     // code-mode host disabled is a local fail-closed warning, not a reviewer verdict.

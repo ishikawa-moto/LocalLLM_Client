@@ -74,6 +74,19 @@ internal static class HostRescueTests
         Check(SolReviewer.ParseRescue("""{"verdict":"GUIDANCE","steps":["Use the approved file and run the required test."]}""",1).Verdict=="GUIDANCE" &&
             SolReviewer.ParseRescue("""{"verdict":"GUIDANCE","steps":["Fix file"],"command":"test"}""",1).Verdict=="INVALID",
             "Advice parsing did not enforce the bounded response");
+        var direct=rescue.PrepareDirectEdit(fixture.TicketHash);
+        Check(direct.ManifestHash!=prepared.ManifestHash && direct.ManifestHash!=advice.ManifestHash,
+            "Direct edit reused another mode's approval");
+        await Reject(()=>Task.FromResult(rescue.PrepareEditDirectory(ticket,direct)),
+            "Unexported existing source was copied into the edit directory");
+        var cliEvents="""
+            {"type":"item.completed","item":{"type":"file_change"}}
+            {"type":"item.completed","item":{"type":"agent_message","text":"Updated greeting"}}
+            {"type":"turn.completed"}
+            """;
+        Check(ReviewerCli.DecodeCodex(cliEvents).Status=="INVALID" &&
+            ReviewerCli.DecodeCodex(cliEvents,allowEditEvents:true).Status=="OK",
+            "Only the explicit edit mode should accept an edit event");
         var result=await rescue.RunExternalAsync(fixture.TicketHash);
         Check(result is {Status:"UNAVAILABLE",Reason:"HOST_ROUTE_NOT_QUALIFIED"},"Unqualified provider was not rejected");
         var events=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id)).ToArray();
@@ -81,7 +94,45 @@ internal static class HostRescueTests
             "codex_rescue_external_response" or "codex_candidate_application_intent"),"An unqualified external run performed a side effect");
         Check(File.ReadAllText(Path.Combine(ticket.RescueRoot,"greeting.txt"))=="START\n" &&
             File.ReadAllText(Path.Combine(fixture.MainRoot,"greeting.txt"))=="BROKEN\n","A blocked run modified a worktree");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=16,actual_model_requests=0,task_id=fixture.TaskId,
+        var editFixture=await PrepareAsync(root+"-edit",request,"manual",
+            ["task_evidence_only","file:greeting.txt","file:other.txt","file:new.txt"]);
+        using var editStore=new CanonicalStore(editFixture.HostRoot);
+        using var editJournal=new HostTaskJournal(editStore,editFixture.MainRoot,editFixture.TaskId,request,editFixture.Head);
+        var editing=new HostRescue(editJournal);
+        var editTicket=editing.Load(editFixture.TicketHash);
+        var edit=editing.PrepareEditDirectory(editTicket,editing.PrepareDirectEdit(editFixture.TicketHash));
+        Check(Directory.GetFiles(edit.Root).Length==2 && !File.Exists(Path.Combine(edit.Root,"test.cjs")),
+            "Edit directory contained data beyond the approved starting sources");
+        File.WriteAllText(Path.Combine(edit.Root,"greeting.txt"),"HELLO\n",new UTF8Encoding(false));
+        var actual=HostRescue.CollectDirectCandidate(editTicket,edit,"Updated greeting");
+        Check(actual.Changes.Length==1 && actual.Changes[0]==editFixture.Candidate.Changes[0] &&
+            File.ReadAllText(Path.Combine(editTicket.RescueRoot,"greeting.txt"))=="START\n",
+            "Candidate was not constructed from the actual scoped file bytes and the bound baseline");
+        File.WriteAllText(Path.Combine(edit.Root,"unexpected.txt"),"outside scope");
+        await Reject(()=>Task.FromResult(HostRescue.CollectDirectCandidate(editTicket,edit,"Updated greeting")),
+            "Out-of-scope filesystem change was accepted");
+        // Local test receipts exercise event binding only. No provider, authorization dialog or real test claim.
+        var editExport=editing.PrepareDirectEdit(editFixture.TicketHash);
+        var responseHash=editStore.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(actual));
+        var candidateHash=await editing.ImportAsync(editFixture.TicketHash,actual);
+        var applied=editStore.EventIds(editFixture.TaskId).Select(id=>editStore.ReadTaskEvent(editFixture.TaskId,id))
+            .Single(e=>e.Input.EventType=="codex_candidate_applied_in_rescue");
+        var resultState=applied.Input.Metadata.GetProperty("result_state_hash").GetString()!;
+        var resultDiff=applied.Input.Metadata.GetProperty("codex_result_diff_hash").GetString()!;
+        var validation=new HostRescue.Validation(editFixture.TicketHash,candidateHash,resultState,resultDiff,
+            [new("dotnet_test","local_binding_fixture",true,0,0,0,"","",0,1,[])],"PASS",true);
+        var validationHash=editStore.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(validation));
+        editStore.Append(new(editFixture.TaskId,editTicket.WorkspaceId,"windows_host","binding_fixture_validation",
+            "codex_rescue_validated","codex_rescue","host_verified",[editFixture.TicketHash,validationHash],
+            JsonSerializer.SerializeToElement(new{ticket_hash=editFixture.TicketHash,result_state_hash=resultState})));
+        editStore.Append(new(editFixture.TaskId,editTicket.WorkspaceId,"windows_host","binding_fixture_response",
+            "codex_rescue_external_response","codex_rescue","untrusted_candidate",
+            [editFixture.TicketHash,editExport.ManifestHash,responseHash],
+            JsonSerializer.SerializeToElement(new{ticket_hash=editFixture.TicketHash,manifest_hash=editExport.ManifestHash,
+                response_hash=responseHash,provider="sol",requested_model=ReviewerCli.Model("sol")})));
+        await Reject(()=>Task.FromResult(new DifferentialLearning(editJournal).Assemble(editFixture.TicketHash,validationHash)),
+            "Learning accepted a late Sol response without the exact prior dispatch");
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=23,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {
