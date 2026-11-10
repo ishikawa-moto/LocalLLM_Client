@@ -121,20 +121,35 @@ internal sealed class DecisionAdoption(CanonicalStore store, string taskId)
     private CanonicalStore.TaskSnapshot Task() => store.GetTask(taskId) ?? throw new InvalidDataException("Unknown adoption task");
     private CanonicalStore.EventInput Event(string key, string type, string status, string[] hashes, object metadata, string? cause = null) =>
         new(taskId, Task().WorkspaceId, "windows_host", key, type, "decision_adoption_audit", status, hashes, JsonSerializer.SerializeToElement(metadata), CausedByEventId: cause);
-    private string Save(Intent intent) {
+    private string Save(Intent intent, string? candidateHash = null) {
         var hash = store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(intent));
-        store.Append(Event("adoption_prepare_" + hash, "decision_adoption_prepared", "unapproved", [hash, intent.source_hash],
-            new { intent_hash = hash, intent.decision_hash, operation = intent.operation }, intent.source_event_id));
+        var audit = candidateHash is null
+            ? Event("adoption_prepare_" + hash, "decision_adoption_prepared", "unapproved", [hash, intent.source_hash],
+                new { intent_hash = hash, intent.decision_hash, operation = intent.operation }, intent.source_event_id)
+            : Event("adoption_prepare_" + hash, "decision_adoption_prepared", "unapproved", [hash, intent.source_hash, candidateHash],
+                new { intent_hash = hash, intent.decision_hash, operation = intent.operation, candidate_hash = candidateHash });
+        store.Append(audit);
         return hash;
     }
-    internal string PrepareProposal(string receiptJson, string requestId) {
+    internal string PrepareProposal(string receiptJson, string requestId) => PrepareProposal(receiptJson, requestId, null);
+    private string PrepareProposal(string receiptJson, string requestId, string? candidateHash) {
         _ = Task(); DecisionProtocol.Id(requestId);
         var receipt = DecisionProtocol.Parse(receiptJson); var proposal = DecisionProtocol.Proposal(receipt);
         if (HostEgress.Redact(receiptJson).Count != 0) throw new UnauthorizedAccessException("Sensitive proposal is not eligible for adoption");
         var receiptHash = store.PutEvidence(DecisionProtocol.Utf8.GetBytes(receiptJson));
         var payload = JsonSerializer.SerializeToElement(new { request_id = requestId, project = proposal.GetProperty("project"), title = proposal.GetProperty("title"),
             content = proposal.GetProperty("body"), references = proposal.GetProperty("references"), origin_proposal_id = proposal.GetProperty("proposal_id"), expected_proposal_hash = receipt.GetProperty("proposal_hash") });
-        return Save(new(1, taskId, "decision", receiptHash, null, DecisionProtocol.ReviewHash("decision", payload), payload));
+        return Save(new(1, taskId, "decision", receiptHash, null, DecisionProtocol.ReviewHash("decision", payload), payload), candidateHash);
+    }
+    internal string PrepareLearningProposal(HostTaskJournal journal, string candidateHash, string receiptJson, string requestId)
+    {
+        if (journal.TaskId != taskId || journal.Canonical != store)
+            throw new UnauthorizedAccessException("Learning candidate must belong to this Host adoption task");
+        var expectedBody = new DifferentialLearning(journal).DraftAdoptionBody(candidateHash);
+        var proposal = DecisionProtocol.Proposal(DecisionProtocol.Parse(receiptJson));
+        if (!string.Equals(proposal.GetProperty("body").GetString(), expectedBody, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Proposal body differs from the verified learning draft");
+        return PrepareProposal(receiptJson, requestId, candidateHash);
     }
     internal string PrepareHuman(string manifestHash, string referencesJson, string requestId) {
         _ = Task(); DecisionProtocol.Id(requestId);
@@ -150,8 +165,16 @@ internal sealed class DecisionAdoption(CanonicalStore store, string taskId)
             ?? throw new UnauthorizedAccessException("Intent is not attached to this task");
         if (row.Input.WorkerId is not null || row.Input.ProducerEventId is not null) throw new UnauthorizedAccessException("Worker cannot prepare Host adoption");
         var intent = JsonSerializer.Deserialize<Intent>(store.ReadEvidence(hash)) ?? throw new InvalidDataException("Intent missing");
-        if (intent.version != 1 || intent.task_id != taskId || row.Input.EvidenceRefs.Length != 2 || row.Input.EvidenceRefs[1] != intent.source_hash ||
+        var refs = row.Input.EvidenceRefs;
+        var hasCandidate = row.Input.Metadata.TryGetProperty("candidate_hash", out var candidate);
+        if (intent.version != 1 || intent.task_id != taskId || refs.Length != (hasCandidate ? 3 : 2) || refs[1] != intent.source_hash ||
             DecisionProtocol.ReviewHash(intent.operation, intent.payload) != intent.decision_hash) throw new InvalidDataException("Adoption intent binding changed");
+        if (hasCandidate)
+        {
+            if (intent.operation != "decision" || candidate.GetString() != refs[2])
+                throw new InvalidDataException("Learning candidate binding changed");
+            _ = store.ReadEvidence(refs[2]);
+        }
         var requestId = DecisionProtocol.Id(DecisionProtocol.Text(intent.payload, "request_id", 80));
         JsonElement rebuilt;
         if (intent.operation == "decision") {

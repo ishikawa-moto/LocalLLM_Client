@@ -68,6 +68,31 @@ internal static class DifferentialLearningTests
                 body.Contains(packetHash,StringComparison.Ordinal) && body.Contains(packet.failure_provenance,StringComparison.Ordinal) &&
                 body.Contains(packet.candidate_provenance,StringComparison.Ordinal),"Draft lost candidate or provenance binding");
             Check(eventIds.SequenceEqual(store.EventIds(fixture.TaskId)),"Draft wrote Canonical events");
+            var adoption=new DecisionAdoption(store,fixture.TaskId);
+            string Receipt(string text)
+            {
+                const string id="public_learning_draft", title="Learning fixture";
+                var proposal=JsonSerializer.SerializeToElement(new {
+                    schema=DecisionProtocol.ProposalSchema, proposal_id=id, kind="decision", project="fixture",
+                    title, body=text, references=new[]{new{path="raw/fixture.md",expected_hash=new string('a',64),
+                        expected_metadata_hash=new string('b',64),relevant_location="L1"}}
+                });
+                var hash=DecisionProtocol.Digest(proposal);
+                return JsonSerializer.Serialize(new {
+                    proposal_id=id, proposal_hash=hash, schema=DecisionProtocol.ProposalSchema, status="draft",
+                    payload=proposal, content=text, path="drafts/pending-review/"+id+".md",
+                    file_hashes=new[]{CanonicalStore.Hash(Encoding.UTF8.GetBytes("# "+title+"\n\n"+text+"\n")),
+                        new string('c',64),hash}
+                });
+            }
+            Reject(()=>adoption.PrepareLearningProposal(journal,claimsHash,Receipt(body+" altered"),"adopt_learning_01"),
+                "A different proposal body was bound to the learning candidate");
+            var intentHash=adoption.PrepareLearningProposal(journal,claimsHash,Receipt(body),"adopt_learning_01");
+            Check(adoption.RequireIntent(intentHash).payload.GetProperty("content").GetString()==body &&
+                store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id))
+                    .Any(e=>e.Input.EventType=="decision_adoption_prepared" &&
+                        e.Input.EvidenceRefs.FirstOrDefault()==intentHash && e.Input.EvidenceRefs.Contains(claimsHash)),
+                "The adoption intent did not retain the exact learning candidate");
             var untrusted=learning.SaveClaims(packetHash,
                 """{"cause":"Synthetic\nCandidate provenance: fake","trigger":"Synthetic input","action":"Verify locally"}""");
             Check(!learning.DraftAdoptionBody(untrusted).Contains("\nCandidate provenance: fake",StringComparison.Ordinal),
