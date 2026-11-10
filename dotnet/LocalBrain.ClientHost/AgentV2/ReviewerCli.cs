@@ -286,7 +286,7 @@ internal static class ReviewerCli
         return ExecuteAsync(start,null,TimeSpan.FromSeconds(15),token,offlinePackageSid:packageSid,
             allowSystemRegistryRead:allowSystemRegistryRead);
     }
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, int limit, CancellationToken token)
+    internal static async Task<string> ReadBoundedAsync(StreamReader reader, int limit, CancellationToken token)
     {
         var text=new StringBuilder();var buffer=new char[2048];int count;
         while((count=await reader.ReadAsync(buffer.AsMemory(),token))>0) {
