@@ -103,7 +103,10 @@ if(args.Length==2 && args[0]=="--external-rescue-proof"){await HostRescueTests.E
 if(args.Length==2 && args[0]=="--public-rescue-prepare"){await PublicRescueFixture.PrepareAsync(args[1]);return;}
 if(args.Length==4 && args[0]=="--public-rescue-baseline"){await PublicRescueFixture.ValidateBaselineAsync(args[1],args[2],args[3]);return;}
 if(args.Length==4 && args[0] is "--public-rescue-export" or "--public-rescue-import"){
-    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0]=="--public-rescue-export");return;
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0]);return;
+}
+if(args.Length==5 && args[0] is "--public-rescue-validate" or "--public-rescue-learn"){
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0],args[4]);return;
 }
 if(args.Length==3 && args[0]=="--external-review-public-live"){await ExternalReviewAvailabilityTests.LiveAsync(args[1],args[2]);return;}
 if(args.Length==2 && args[0]=="--continue-memory-native-proof") {await ContinueContextMemoryTests.NativeAsync(args[1]);return;}

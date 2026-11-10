@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 
 internal static class PublicRescueFixture
@@ -151,7 +152,8 @@ internal static class PublicRescueFixture
         if (!observed) Environment.ExitCode = 2;
     }
 
-    internal static async Task HandoffAsync(string root, string ticketHash, string manifestHash, bool exportPacket)
+    internal static async Task HandoffAsync(string root, string ticketHash, string manifestHash,
+        string operation, string? evidenceHash = null)
     {
         root = Path.GetFullPath(root);
         ReviewQualification.GuardRoot(root);
@@ -179,6 +181,8 @@ internal static class PublicRescueFixture
         using var packet = JsonDocument.Parse(export.Payload);
         var source = packet.RootElement.GetProperty("starting_source");
         if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != "manual" ||
+            request.EffectiveRisk != "LOW" || request.RequiredTests.Length != 1 ||
+            request.RequiredTests[0].Kind != "dotnet_test" || request.RequiredTests[0].Target != "ArithmeticFixture.csproj" ||
             !request.AllowedFiles.SequenceEqual(["Arithmetic.cs"]) || source.GetArrayLength() != 1 ||
             source[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
             source[0].GetProperty("Content").GetString() != await File.ReadAllTextAsync(Path.Combine(repository, "Arithmetic.cs")))
@@ -186,7 +190,7 @@ internal static class PublicRescueFixture
 
         var packetPath = Path.Combine(root, "approved-sol-packet.json");
         CanonicalStore.GuardPath(packetPath);
-        if (exportPacket)
+        if (operation == "--public-rescue-export")
         {
             if (File.Exists(packetPath))
                 throw new IOException("The approved packet already exists");
@@ -212,6 +216,12 @@ internal static class PublicRescueFixture
         if (dispatch is null || !File.Exists(packetPath) ||
             await RescueInput.ReadAsync(File.OpenRead(packetPath), 64_000) != export.Payload)
             throw new UnauthorizedAccessException("Import requires the exact approved public handoff");
+        if (evidenceHash is not null)
+        {
+            await ValidateOrLearnAsync(root, ticketHash, manifestHash, dispatch.EventId, evidenceHash,
+                operation, store, journal, rescue);
+            return;
+        }
         var replyPath = Path.Combine(root, "sol-response.json");
         CanonicalStore.GuardPath(replyPath);
         var reply = await RescueInput.ReadAsync(File.OpenRead(replyPath), 48_000);
@@ -223,6 +233,61 @@ internal static class PublicRescueFixture
             provider_identity_verified_by_host = false
         }, "host_verified");
         Console.WriteLine(JsonSerializer.Serialize(new { candidate_hash = candidateHash, reply_hash = replyHash }));
+    }
+
+    private static async Task ValidateOrLearnAsync(string root, string ticketHash, string manifestHash,
+        string dispatchEventId, string evidenceHash, string operation, CanonicalStore store,
+        HostTaskJournal journal, HostRescue rescue)
+    {
+        var events = store.EventIds(journal.TaskId).Select(id => store.ReadTaskEvent(journal.TaskId, id)).ToArray();
+        var validate = operation == "--public-rescue-validate";
+        var candidateHash = evidenceHash;
+        if (!validate)
+        {
+            var validation = JsonSerializer.Deserialize<HostRescue.Validation>(store.ReadEvidence(evidenceHash)) ??
+                throw new InvalidDataException("Public Rescue validation missing");
+            if (validation.TicketHash != ticketHash)
+                throw new UnauthorizedAccessException("Validation is for a different public Rescue ticket");
+            candidateHash = validation.CandidateHash;
+        }
+        var imported = events.Where(e => e.Input.Producer == "windows_host" &&
+            e.Input.EventType == "public_rescue_manual_response_imported").Any(e => {
+                using var receipt = JsonDocument.Parse(store.ReadEvidence(e.Input.EvidenceRefs.Single()));
+                return receipt.RootElement.GetProperty("manifestHash").GetString() == manifestHash &&
+                    receipt.RootElement.GetProperty("dispatch_event_id").GetString() == dispatchEventId &&
+                    receipt.RootElement.GetProperty("candidateHash").GetString() == candidateHash;
+            });
+        if (!imported)
+            throw new UnauthorizedAccessException("No matching imported public response");
+
+        var configPath = Path.Combine(root, "clientsettings.json");
+        CanonicalStore.GuardPath(configPath);
+        if (!string.Equals(configPath, Environment.GetEnvironmentVariable("LOCALBRAIN_CLIENT_CONFIG"),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The public trial requires its own explicit Host configuration");
+        var config = ClientConfig.Load();
+        var agentRoot = Path.Combine(root, "pi-agent");
+        CanonicalStore.GuardPath(agentRoot);
+        CanonicalStore.GuardPath(config.AuditLog);
+        CanonicalStore.GuardPath(config.ProjectsFile);
+        var wslAgentRoot = "/mnt/" + char.ToLowerInvariant(agentRoot[0]) + agentRoot[2..].Replace('\\', '/');
+        if (agentRoot[1] != ':' || !config.PersonalValidation || !CanonicalStore.Within(root, config.AuditLog) ||
+            !CanonicalStore.Within(root, config.ProjectsFile) || config.PiRuntime?.AgentDirectory != wslAgentRoot)
+            throw new UnauthorizedAccessException("Public trial configuration escaped the trial root");
+        journal.EnablePersonalValidation();
+        if (validate)
+        {
+            var validationHash = await rescue.ValidateAsync(ticketHash, evidenceHash);
+            Console.WriteLine(JsonSerializer.Serialize(new { validation_hash = validationHash }));
+            return;
+        }
+        var learning = new DifferentialLearning(journal);
+        var learningHash = await learning.ExtractAsync(ticketHash, evidenceHash);
+        _ = learning.RequireCandidate(learningHash);
+        Console.WriteLine(JsonSerializer.Serialize(new {
+            learning_candidate_hash = learningHash,
+            adoption_status = "QUARANTINED_NOT_ADOPTED"
+        }));
     }
 
     private static async Task<string> RequireCleanFixtureAsync(string repository)
