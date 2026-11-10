@@ -3,6 +3,7 @@ using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
 if(args.Length==2 && args[0]=="--review-child-policy-proof"){await ReviewerChildPolicyTests.RunAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--sol-egress-relay-proof"){await SolEgressRelayTests.RunAsync();return;}
 if(args.Length is 2 or 3 && args[0]=="--review-file-isolation-proof" && OperatingSystem.IsWindows()){
     if(args.Length==3 && args[2]!="registry-read")throw new ArgumentException("Unknown reviewer fixture capability");
     await ReviewerFileIsolationTests.RunAsync(args[1],args.Length==3);return;
