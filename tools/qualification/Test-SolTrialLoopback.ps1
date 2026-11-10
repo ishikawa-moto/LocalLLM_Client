@@ -9,7 +9,7 @@ param(
     [switch]$Relay,
     [switch]$NativeDns,
     [switch]$SystemDns,
-    [ValidateSet('internet','private','offline','offline-permit')][string]$DnsCapability = 'internet'
+    [ValidateSet('internet','private','offline','offline-permit','offline-wfp')][string]$DnsCapability = 'internet'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -189,6 +189,7 @@ try {
         $traceName = 'LocalBrain.DnsTrial.' + [guid]::NewGuid().ToString('N')
         $logman = Join-Path $env:SystemRoot 'System32/logman.exe'
         $permit = $null
+        $permitSession = $null
         try {
             if ($DnsCapability -eq 'offline-permit') {
                 $permit = 'LocalBrain.SolTrial.RelayPermit.' + [guid]::NewGuid().ToString('N')
@@ -214,13 +215,23 @@ try {
                 }
                 [pscustomobject]@{status='TRIAL_PERMIT_ACTIVE'; rule=$permit; sid=$PackageSid; port=$port} | ConvertTo-Json -Compress
             }
-            $result = & $exe --review-system-dns-host $bundleItem.FullName $PackageSid $service.ProcessId $traceName $port $DnsCapability
+            if ($DnsCapability -eq 'offline-wfp') {
+                $permitSession = [SolTrialWfp]::PermitFixtureLoopback($PackageSid,$port,$exe)
+                [pscustomobject]@{status='TRIAL_WFP_PERMIT_ACTIVE'; filter_id=$permitSession.FilterIds[0]; sid=$PackageSid; port=$port} |
+                    ConvertTo-Json -Compress
+            }
+            $result = & $exe --review-system-dns-host $bundleItem.FullName $PackageSid $service.ProcessId $traceName $port $DnsCapability $other4.LocalEndpoint.Port
             if ($LASTEXITCODE -ne 0) { throw "System DNS qualification failed with exit $LASTEXITCODE" }
             $evidence = $result | ConvertFrom-Json
             $evidence | Add-Member -NotePropertyName loopback_listener_observed -NotePropertyValue $allowed.Pending()
+            $evidence | Add-Member -NotePropertyName alternate_listener_observed -NotePropertyValue $other4.Pending()
             $evidence | ConvertTo-Json -Depth 8 -Compress
         } finally {
             try {
+                if ($permitSession) {
+                    $permitSession.Dispose()
+                    [pscustomobject]@{status='TRIAL_WFP_PERMIT_REMOVED'; filter_id=$permitSession.FilterIds[0]} | ConvertTo-Json -Compress
+                }
                 if ($permit) {
                     $saved = Get-NetFirewallRule -Name $permit -PolicyStore PersistentStore -ErrorAction SilentlyContinue
                     if ($saved) { $saved | Remove-NetFirewallRule }

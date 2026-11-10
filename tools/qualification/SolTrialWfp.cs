@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
@@ -9,12 +10,13 @@ public sealed class SolTrialWfp : IDisposable
     private static readonly Guid V4 = new Guid("c38d57d1-05a7-4c33-904f-7fbceee60e82");
     private static readonly Guid V6 = new Guid("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
     private static readonly Guid Package = new Guid("71bc78fa-f17c-4997-a602-6abb261f351c");
+    private static readonly Guid Application = new Guid("d78e1e87-8644-4ea5-9437-d809ecefc971");
     private static readonly Guid Address = new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045");
     private static readonly Guid Port = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b");
     private static readonly Guid Protocol = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");
-    private const uint Block = 0x1001, Equal = 0, NotEqual = 10, SidType = 13;
+    private const uint Block = 0x1001, Permit = 0x1002, Equal = 0, NotEqual = 10, SidType = 13, BlobType = 12;
     private const uint FilterNotFound = 0x80320003, SublayerNotFound = 0x80320007;
-    private const uint Persistent = 1, HardBlock = 8, Indexed = 0x40;
+    private const uint Persistent = 1, ClearActionRight = 8, Indexed = 0x40;
     private const string LayerName = "LocalBrain Sol fixture blocks";
     private IntPtr engine;
     private readonly Guid layerKey;
@@ -61,6 +63,8 @@ public sealed class SolTrialWfp : IDisposable
     [DllImport("fwpuclnt.dll")] private static extern uint FwpmTransactionBegin0(IntPtr engine,uint flags);
     [DllImport("fwpuclnt.dll")] private static extern uint FwpmTransactionCommit0(IntPtr engine);
     [DllImport("fwpuclnt.dll")] private static extern void FwpmFreeMemory0(ref IntPtr memory);
+    [DllImport("fwpuclnt.dll",CharSet=CharSet.Unicode,ExactSpelling=true)]
+    private static extern uint FwpmGetAppIdFromFileName0(string path,out IntPtr appId);
 
     private static IntPtr Open(uint flags)
     {
@@ -72,6 +76,48 @@ public sealed class SolTrialWfp : IDisposable
     public SolTrialWfp(string sid,int port):this(sid,port,Guid.NewGuid(),false) { }
 
     public SolTrialWfp(string sid,int port,Guid leaseKey):this(sid,port,leaseKey,true) { }
+
+    public static SolTrialWfp PermitFixtureLoopback(string sid,int port,string path) => new SolTrialWfp(sid,port,path);
+
+    private SolTrialWfp(string sid,int port,string path)
+    {
+        if(IntPtr.Size!=8 || Marshal.SizeOf<Filter>()!=200 || Marshal.SizeOf<Condition>()!=40)
+            throw new PlatformNotSupportedException("Unexpected WFP fixture ABI");
+        if(port<49152 || port>65535)throw new ArgumentOutOfRangeException(nameof(port));
+        var identity=new SecurityIdentifier(sid);
+        if(!identity.Value.StartsWith("S-1-15-2-",StringComparison.Ordinal) ||
+            Path.GetFileName(path)!="LocalBrain.ClientHost.Tests.exe" || !Path.IsPathFullyQualified(path) ||
+            !File.Exists(path))
+            throw new ArgumentException("Expected a trial package SID and executable");
+        layerKey=Guid.NewGuid();
+        var bytes=new byte[identity.BinaryLength];
+        identity.GetBinaryForm(bytes,0);
+        var pointer=Marshal.AllocHGlobal(bytes.Length);
+        var app=IntPtr.Zero;
+        try {
+            Marshal.Copy(bytes,0,pointer,bytes.Length);
+            Check(FwpmGetAppIdFromFileName0(path,out app),"resolve trial application");
+            engine=Open(1);
+            Check(FwpmTransactionBegin0(engine,0),"begin trial permit install");
+            var layer=new Sublayer {Key=layerKey,Display=new Display {Name="LocalBrain Sol fixture loopback permit"},Weight=65535};
+            Check(FwpmSubLayerAdd0(engine,ref layer,IntPtr.Zero),"add trial permit sublayer");
+            Add(Guid.NewGuid(),V4,"trial application loopback TCP",identity,new[]{
+                Make(Package,Equal,SidType,unchecked((ulong)pointer.ToInt64())),
+                Make(Application,Equal,BlobType,unchecked((ulong)app.ToInt64())),
+                Make(Address,Equal,3,0x7f000001),Make(Port,Equal,2,(uint)port),Make(Protocol,Equal,1,6)
+            },Permit);
+            Check(FwpmTransactionCommit0(engine),"commit trial permit");
+        } catch {
+            if(engine!=IntPtr.Zero) {
+                var previous=engine;engine=IntPtr.Zero;
+                Check(FwpmEngineClose0(previous),"close failed permit");
+            }
+            throw;
+        } finally {
+            if(app!=IntPtr.Zero)FwpmFreeMemory0(ref app);
+            Marshal.FreeHGlobal(pointer);
+        }
+    }
 
     private SolTrialWfp(string sid,int port,Guid leaseKey,bool durable)
     {
@@ -120,32 +166,32 @@ public sealed class SolTrialWfp : IDisposable
         Guid Key(byte offset) {var bytes=lease.ToByteArray();bytes[15]^=offset;return new Guid(bytes);}
     }
 
-    private void Add(Guid key,Guid layer,string name,SecurityIdentifier identity,Condition[] planned)
+    private void Add(Guid key,Guid layer,string name,SecurityIdentifier identity,Condition[] planned,uint action=Block)
     {
         var size=Marshal.SizeOf<Condition>();
         var buffer=Marshal.AllocHGlobal(planned.Length*size);
         try {
             for(int i=0;i<planned.Length;i++)Marshal.StructureToPtr(planned[i],buffer+i*size,false);
             var filter=new Filter { Key=key, Display=new Display { Name="LocalBrain Sol trial: "+name },
-                Flags=HardBlock|(persistent?Persistent:0),
+                Flags=ClearActionRight|(persistent?Persistent:0),
                 Layer=layer, Sublayer=layerKey, Count=(uint)planned.Length, Conditions=buffer,
-                Action=new Action { Type=Block } };
+                Action=new Action { Type=action } };
             Check(FwpmFilterAdd0(engine,ref filter,IntPtr.Zero,out var id),"add "+name);
             filters.Add(id);
             Check(FwpmFilterGetById0(engine,id,out var stored),"read back "+name);
             try {
-                if(Verify(stored,key,layer,layerKey,name,identity,planned,persistent)!=id)
+                if(Verify(stored,key,layer,layerKey,name,identity,planned,persistent,action)!=id)
                     throw new InvalidOperationException("WFP filter ID mismatch: "+name);
             } finally { FwpmFreeMemory0(ref stored); }
         } finally { Marshal.FreeHGlobal(buffer); }
     }
 
     private static ulong Verify(IntPtr stored,Guid key,Guid layer,Guid sublayer,string name,
-        SecurityIdentifier identity,Condition[] planned,bool durable)
+        SecurityIdentifier identity,Condition[] planned,bool durable,uint action=Block)
     {
         var actual=Marshal.PtrToStructure<Filter>(stored);
-        var flags=HardBlock|(durable?Persistent:0);
-        if(actual.Key!=key || actual.Layer!=layer || actual.Sublayer!=sublayer || actual.Action.Type!=Block ||
+        var flags=ClearActionRight|(durable?Persistent:0);
+        if(actual.Key!=key || actual.Layer!=layer || actual.Sublayer!=sublayer || actual.Action.Type!=action ||
             actual.Count!=planned.Length || (actual.Flags&~Indexed)!=flags || actual.Display.Name!="LocalBrain Sol trial: "+name)
             throw new InvalidOperationException("Unexpected WFP filter: "+name);
         var seen=new HashSet<Guid>();
@@ -156,10 +202,22 @@ public sealed class SolTrialWfp : IDisposable
             if(index<0 || !seen.Add(item.Field) || item.Match!=planned[index].Match ||
                 item.Value.Type!=planned[index].Value.Type ||
                 (item.Field==Package ? !identity.Equals(new SecurityIdentifier(new IntPtr(unchecked((long)item.Value.Data.ToUInt64()))))
+                    : item.Field==Application ? !SameBlob(item.Value.Data,planned[index].Value.Data)
                     : item.Value.Data.ToUInt64()!=planned[index].Value.Data.ToUInt64()))
                 throw new InvalidOperationException("Unexpected WFP condition: "+name);
         }
         return actual.Id;
+    }
+
+    private static bool SameBlob(UIntPtr actual,UIntPtr planned)
+    {
+        var left=Marshal.PtrToStructure<Blob>(new IntPtr(unchecked((long)actual.ToUInt64())));
+        var right=Marshal.PtrToStructure<Blob>(new IntPtr(unchecked((long)planned.ToUInt64())));
+        if(left.Size!=right.Size || left.Size==0 || left.Size>32768)return false;
+        for(int i=0;i<(int)left.Size;i++) {
+            if(Marshal.ReadByte(left.Data,i)!=Marshal.ReadByte(right.Data,i))return false;
+        }
+        return true;
     }
 
     public static ulong[] VerifyPersistent(string sid,int port,Guid leaseKey) =>

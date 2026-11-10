@@ -97,7 +97,7 @@ internal sealed class WindowsChildJob : IDisposable
 
     internal static WindowsChildJob StartPrivateNetworkDnsFixture(ProcessStartInfo start,string packageSid)
     {
-        if(start.RedirectStandardInput || start.ArgumentList.Count!=4 ||
+        if(start.RedirectStandardInput || start.ArgumentList.Count!=5 ||
             start.ArgumentList[0]!="--review-loopback-policy-child" || start.ArgumentList[1]!="system-dns")
             throw new ArgumentException("Private network capability is limited to the DNS fixture");
         return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,privateNetworkFixture:true);

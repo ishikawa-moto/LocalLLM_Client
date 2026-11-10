@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 [CmdletBinding()]
 param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp, [switch]$DurableWfp, [switch]$Relay, [switch]$NativeDns, [switch]$SystemDns,
-    [ValidateSet('internet','private','offline','offline-permit')][string]$DnsCapability = 'internet')
+    [ValidateSet('internet','private','offline','offline-permit','offline-wfp')][string]$DnsCapability = 'internet')
 
 $ErrorActionPreference = 'Stop'
 if ($DurableWfp -and (!$Wfp -or !$LoopbackBundle)) { throw 'Durable WFP requires the loopback fixture' }

@@ -64,7 +64,7 @@ internal static class ReviewerLoopbackPolicyTests
     }
 
     internal static async Task SystemDnsHostAsync(string bundle,string packageSid,int dnsServicePid,string traceName,
-        int relayPort,string capability)
+        int relayPort,string capability,int alternatePort)
     {
         bundle=Path.GetFullPath(bundle);
         ReviewQualification.GuardRoot(bundle);
@@ -87,12 +87,12 @@ internal static class ReviewerLoopbackPolicyTests
                 var control=await SystemDnsStatusAsync(controlName);
                 var start=IsolatedStart(Path.Combine(bundle,Path.GetFileName(Environment.ProcessPath!)),bundle);
                 start.Environment["DOTNET_ROOT"]=Path.Combine(bundle,"dotnet");
-                foreach(var arg in new[]{"--review-loopback-policy-child","system-dns",isolatedName,relayPort.ToString()})
+                foreach(var arg in new[]{"--review-loopback-policy-child","system-dns",isolatedName,relayPort.ToString(),alternatePort.ToString()})
                     start.ArgumentList.Add(arg);
                 using var job=capability switch {
                     "internet"=>WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value),
                     "private"=>WindowsChildJob.StartPrivateNetworkDnsFixture(start,sid.Value),
-                    "offline" or "offline-permit"=>WindowsChildJob.StartOfflineIsolatedReviewer(start,sid.Value,allowSystemRegistryRead:true),
+                    "offline" or "offline-permit" or "offline-wfp"=>WindowsChildJob.StartOfflineIsolatedReviewer(start,sid.Value,allowSystemRegistryRead:true),
                     _=>throw new ArgumentException("Unknown DNS fixture capability")
                 };
                 var isolated=job.Output.ReadToEndAsync(limit.Token);
@@ -121,14 +121,16 @@ internal static class ReviewerLoopbackPolicyTests
         }
     }
 
-    internal static async Task SystemDnsChildAsync(string name,int relayPort)
+    internal static async Task SystemDnsChildAsync(string name,int relayPort,int alternatePort)
     {
         if(!System.Text.RegularExpressions.Regex.IsMatch(name,@"^isolated-[0-9a-f]{32}\.test\.$"))
             throw new ArgumentException("Expected a synthetic DNS name");
-        if(relayPort is <49152 or >65535)throw new ArgumentException("Expected a trial listener port");
+        if(relayPort is <49152 or >65535 || alternatePort is <49152 or >65535 || relayPort==alternatePort)
+            throw new ArgumentException("Expected distinct trial listener ports");
         var loopback=await ConnectAsync(IPAddress.Loopback,relayPort);
+        var alternate=await ConnectAsync(IPAddress.Loopback,alternatePort);
         Console.WriteLine(JsonSerializer.Serialize(new {pid=Environment.ProcessId,loopback_tcp=loopback,
-            dns_status=await SystemDnsStatusAsync(name)}));
+            alternate_tcp=alternate,dns_status=await SystemDnsStatusAsync(name)}));
     }
 
     private static async Task<int> SystemDnsStatusAsync(string name)
