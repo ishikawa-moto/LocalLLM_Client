@@ -63,7 +63,8 @@ internal static class ReviewerLoopbackPolicyTests
         return start;
     }
 
-    internal static async Task SystemDnsHostAsync(string bundle,string packageSid,int dnsServicePid,string traceName)
+    internal static async Task SystemDnsHostAsync(string bundle,string packageSid,int dnsServicePid,string traceName,
+        int relayPort,string capability)
     {
         bundle=Path.GetFullPath(bundle);
         ReviewQualification.GuardRoot(bundle);
@@ -86,8 +87,14 @@ internal static class ReviewerLoopbackPolicyTests
                 var control=await SystemDnsStatusAsync(controlName);
                 var start=IsolatedStart(Path.Combine(bundle,Path.GetFileName(Environment.ProcessPath!)),bundle);
                 start.Environment["DOTNET_ROOT"]=Path.Combine(bundle,"dotnet");
-                foreach(var arg in new[]{"--review-loopback-policy-child","system-dns",isolatedName})start.ArgumentList.Add(arg);
-                using var job=WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value);
+                foreach(var arg in new[]{"--review-loopback-policy-child","system-dns",isolatedName,relayPort.ToString()})
+                    start.ArgumentList.Add(arg);
+                using var job=capability switch {
+                    "internet"=>WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value),
+                    "private"=>WindowsChildJob.StartPrivateNetworkDnsFixture(start,sid.Value),
+                    "offline" or "offline-permit"=>WindowsChildJob.StartOfflineIsolatedReviewer(start,sid.Value,allowSystemRegistryRead:true),
+                    _=>throw new ArgumentException("Unknown DNS fixture capability")
+                };
                 var isolated=job.Output.ReadToEndAsync(limit.Token);
                 var errors=job.Error.ReadToEndAsync(limit.Token);
                 await job.Process.WaitForExitAsync(limit.Token);
@@ -98,7 +105,7 @@ internal static class ReviewerLoopbackPolicyTests
                 await trace.WaitForExitAsync(limit.Token);
                 if(trace.ExitCode!=0)throw new IOException("DNS trace fixture failed: "+await traceErrors);
                 using var evidence=JsonDocument.Parse(raw);
-                Console.WriteLine(JsonSerializer.Serialize(new {dns_service_pid=dnsServicePid,control_pid=Environment.ProcessId,
+                Console.WriteLine(JsonSerializer.Serialize(new {capability,dns_service_pid=dnsServicePid,control_pid=Environment.ProcessId,
                     control_dns_status=control,isolated=trial.RootElement,trace=evidence.RootElement,model_requests=0}));
             } finally {
                 if(!trace.HasExited) {
@@ -114,11 +121,14 @@ internal static class ReviewerLoopbackPolicyTests
         }
     }
 
-    internal static async Task SystemDnsChildAsync(string name)
+    internal static async Task SystemDnsChildAsync(string name,int relayPort)
     {
         if(!System.Text.RegularExpressions.Regex.IsMatch(name,@"^isolated-[0-9a-f]{32}\.test\.$"))
             throw new ArgumentException("Expected a synthetic DNS name");
-        Console.WriteLine(JsonSerializer.Serialize(new {pid=Environment.ProcessId,dns_status=await SystemDnsStatusAsync(name)}));
+        if(relayPort is <49152 or >65535)throw new ArgumentException("Expected a trial listener port");
+        var loopback=await ConnectAsync(IPAddress.Loopback,relayPort);
+        Console.WriteLine(JsonSerializer.Serialize(new {pid=Environment.ProcessId,loopback_tcp=loopback,
+            dns_status=await SystemDnsStatusAsync(name)}));
     }
 
     private static async Task<int> SystemDnsStatusAsync(string name)

@@ -8,7 +8,8 @@ param(
     [switch]$DurableWfp,
     [switch]$Relay,
     [switch]$NativeDns,
-    [switch]$SystemDns
+    [switch]$SystemDns,
+    [ValidateSet('internet','private','offline','offline-permit')][string]$DnsCapability = 'internet'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -187,15 +188,53 @@ try {
         if ($service.State -ne 'Running' -or !$service.ProcessId) { throw 'DNS Client service is unavailable' }
         $traceName = 'LocalBrain.DnsTrial.' + [guid]::NewGuid().ToString('N')
         $logman = Join-Path $env:SystemRoot 'System32/logman.exe'
+        $permit = $null
         try {
-            $result = & $exe --review-system-dns-host $bundleItem.FullName $PackageSid $service.ProcessId $traceName
+            if ($DnsCapability -eq 'offline-permit') {
+                $permit = 'LocalBrain.SolTrial.RelayPermit.' + [guid]::NewGuid().ToString('N')
+                $permitRecord = Join-Path $bundleItem.Parent.FullName 'relay-permit.json'
+                $record = [pscustomobject]@{rule=$permit; sid=$PackageSid; port=$port; program=$exe}
+                $file = [IO.FileStream]::new($permitRecord,'CreateNew','Write','None',4096,'WriteThrough')
+                try {
+                    $data = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+                    $file.Write($data,0,$data.Length)
+                    $file.Flush($true)
+                } finally { $file.Dispose() }
+                New-NetFirewallRule -Name $permit -DisplayName $permit -PolicyStore PersistentStore -Direction Outbound -Action Allow `
+                    -Enabled True -Package $PackageSid -Program $exe -Protocol TCP -RemoteAddress '127.0.0.1' -RemotePort $port | Out-Null
+                $saved = Get-NetFirewallRule -Name $permit -PolicyStore ActiveStore
+                $app = $saved | Get-NetFirewallApplicationFilter
+                $address = $saved | Get-NetFirewallAddressFilter
+                $tuple = $saved | Get-NetFirewallPortFilter
+                if ($saved.Action -ne 'Allow' -or $saved.Direction -ne 'Outbound' -or $saved.Enabled -ne 'True' -or
+                    $app.Package -ne $PackageSid -or $app.Program -ne $exe -or
+                    @($address.RemoteAddress).Count -ne 1 -or $address.RemoteAddress -ne '127.0.0.1' -or
+                    $tuple.Protocol -notin 'TCP','6' -or @($tuple.RemotePort).Count -ne 1 -or $tuple.RemotePort -ne "$port") {
+                    throw 'Unexpected trial permit scope'
+                }
+                [pscustomobject]@{status='TRIAL_PERMIT_ACTIVE'; rule=$permit; sid=$PackageSid; port=$port} | ConvertTo-Json -Compress
+            }
+            $result = & $exe --review-system-dns-host $bundleItem.FullName $PackageSid $service.ProcessId $traceName $port $DnsCapability
             if ($LASTEXITCODE -ne 0) { throw "System DNS qualification failed with exit $LASTEXITCODE" }
-            $result
+            $evidence = $result | ConvertFrom-Json
+            $evidence | Add-Member -NotePropertyName loopback_listener_observed -NotePropertyValue $allowed.Pending()
+            $evidence | ConvertTo-Json -Depth 8 -Compress
         } finally {
-            & $logman query $traceName -ets *> $null
-            if ($LASTEXITCODE -eq 0) {
-                & $logman stop $traceName -ets *> $null
-                if ($LASTEXITCODE -ne 0) { throw "Could not remove trial ETW session $traceName" }
+            try {
+                if ($permit) {
+                    $saved = Get-NetFirewallRule -Name $permit -PolicyStore PersistentStore -ErrorAction SilentlyContinue
+                    if ($saved) { $saved | Remove-NetFirewallRule }
+                    if (Get-NetFirewallRule -Name $permit -PolicyStore PersistentStore -ErrorAction SilentlyContinue) {
+                        throw 'Trial permit is still present'
+                    }
+                    [pscustomobject]@{status='TRIAL_PERMIT_REMOVED'; rule=$permit} | ConvertTo-Json -Compress
+                }
+            } finally {
+                & $logman query $traceName -ets *> $null
+                if ($LASTEXITCODE -eq 0) {
+                    & $logman stop $traceName -ets *> $null
+                    if ($LASTEXITCODE -ne 0) { throw "Could not remove trial ETW session $traceName" }
+                }
             }
         }
         return

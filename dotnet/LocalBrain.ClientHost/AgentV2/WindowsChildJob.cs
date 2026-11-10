@@ -95,6 +95,14 @@ internal sealed class WindowsChildJob : IDisposable
         return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,internetClientFixture:true);
     }
 
+    internal static WindowsChildJob StartPrivateNetworkDnsFixture(ProcessStartInfo start,string packageSid)
+    {
+        if(start.RedirectStandardInput || start.ArgumentList.Count!=4 ||
+            start.ArgumentList[0]!="--review-loopback-policy-child" || start.ArgumentList[1]!="system-dns")
+            throw new ArgumentException("Private network capability is limited to the DNS fixture");
+        return Start(start,reviewer:true,reviewerContainerSid:packageSid,allowSystemRegistryRead:true,privateNetworkFixture:true);
+    }
+
     internal static WindowsChildJob StartDeviceAuthNetworkFixture(ProcessStartInfo start,string packageSid)
     {
         if(start.RedirectStandardInput || !start.ArgumentList.SequenceEqual(new[]{"login","--device-auth"}))
@@ -105,7 +113,7 @@ internal sealed class WindowsChildJob : IDisposable
     internal static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null) =>
         Start(start,createdFixture,allowNoArguments,ocrLimits,reviewer:false);
 
-    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false,string? reviewerContainerSid=null,bool allowSystemRegistryRead=false,bool internetClientFixture=false) {
+    private static WindowsChildJob Start(ProcessStartInfo start,Action<int>? createdFixture=null,bool allowNoArguments=false,OcrLimits? ocrLimits=null,bool reviewer=false,bool bootstrap=false,string? reviewerContainerSid=null,bool allowSystemRegistryRead=false,bool internetClientFixture=false,bool privateNetworkFixture=false) {
         if(start.UseShellExecute || start.ArgumentList.Count==0 && !allowNoArguments || !string.IsNullOrEmpty(start.Arguments))throw new ArgumentException("Explicit argument list required");
         var job=new WindowsChildJob(ocrLimits,oneProcess:reviewerContainerSid is not null);
         SafeFileHandle? readOut=null,writeOut=null,readError=null,writeError=null,input=null,writeInput=null;
@@ -148,6 +156,7 @@ internal sealed class WindowsChildJob : IDisposable
                 Check(ConvertStringSidToSid(containerSid,out sid));
                 if(allowSystemRegistryRead)capabilitySids.Add(ResolveCapabilitySid("registryRead"));
                 if(internetClientFixture)capabilitySids.Add(ResolveCapabilitySid("internetClient"));
+                if(privateNetworkFixture)capabilitySids.Add(ResolveCapabilitySid("privateNetworkClientServer"));
                 if(capabilitySids.Count!=0) {
                     var entrySize=Marshal.SizeOf<SidAndAttributes>();
                     capabilityEntries=Marshal.AllocHGlobal(capabilitySids.Count*entrySize);
