@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$Bundle,
     [Parameter(Mandatory)][ValidatePattern('^S-1-15-2(?:-\d+){7}$')][string]$PackageSid,
     [Parameter(Mandatory)][ValidatePattern('^LocalBrain\.SolTrial\.Deny\.[0-9a-f]{32}$')][string]$RulePrefix,
-    [switch]$Wfp
+    [switch]$Wfp,
+    [switch]$DurableWfp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,8 @@ $names = [Collections.Generic.List[string]]::new()
 $netIsolation = Join-Path $env:SystemRoot 'System32/CheckNetIsolation.exe'
 $exemptionAttempted = $false
 $wfpSession = $null
+$lease = $null
+$leaseFile = Join-Path $bundleItem.Parent.FullName 'wfp-lease.json'
 function Format-Prefix([string]$Value) {
     $parts = $Value.Split('/')
     $ip = [Net.IPAddress]::Parse($parts[0])
@@ -82,8 +85,31 @@ try {
     }
     if ($Wfp) {
         Add-Type -Path (Join-Path $PSScriptRoot 'SolTrialWfp.cs')
-        $wfpSession = [SolTrialWfp]::new($PackageSid,$port)
-        [pscustomobject]@{ status='WFP_ACTIVE'; sid=$PackageSid; filter_ids=$wfpSession.FilterIds; broker_port=$port } |
+        if ($DurableWfp) {
+            $key = [guid]::NewGuid()
+            $record = [ordered]@{ sid=$PackageSid; profile=$profile; broker_port=$port; lease_key=$key }
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
+            $file = [IO.FileStream]::new($leaseFile,'CreateNew','Write','None',4096,'WriteThrough')
+            try { $file.Write($bytes); $file.Flush($true) } finally { $file.Dispose() }
+            $lease = $key
+            $wfpSession = [SolTrialWfp]::new($PackageSid,$port,$lease)
+            $installed = $wfpSession.FilterIds
+            $wfpSession.Dispose()
+            $wfpSession = $null
+            $wrongPort = if ($port -eq 65535) { $port - 1 } else { $port + 1 }
+            try {
+                [SolTrialWfp]::ReleasePersistent($PackageSid,$wrongPort,$lease)
+                throw 'Wrong-port removal unexpectedly succeeded'
+            } catch {
+                if ($_.Exception.ToString() -notmatch 'Unexpected WFP condition: non-broker IPv4 port') { throw }
+            }
+            $ids = [SolTrialWfp]::VerifyPersistent($PackageSid,$port,$lease)
+            if (Compare-Object $installed $ids) { throw 'Persistent filter IDs changed after installer session closed' }
+        } else {
+            $wfpSession = [SolTrialWfp]::new($PackageSid,$port)
+            $ids = $wfpSession.FilterIds
+        }
+        [pscustomobject]@{ status='WFP_ACTIVE'; sid=$PackageSid; filter_ids=$ids; broker_port=$port; installer_session_closed=[bool]$lease; mismatched_removal_rejected=[bool]$lease } |
             ConvertTo-Json -Compress
     } else {
         # Disjoint complements: no catch-all block intersects the one candidate broker tuple.
@@ -160,6 +186,12 @@ try {
     if ($wfpSession) {
         $wfpSession.Dispose()
         [pscustomobject]@{ status='WFP_FILTERS_REMOVED'; filter_ids=$wfpSession.FilterIds } | ConvertTo-Json -Compress
+    }
+    if ($lease) {
+        [SolTrialWfp]::ReleasePersistent($PackageSid,$port,$lease)
+        [SolTrialWfp]::ReleasePersistent($PackageSid,$port,$lease)
+        [pscustomobject]@{ status='WFP_DURABLE_LEASE_REMOVED'; lease_key=$lease; recovery_record=$leaseFile; verified_absent=$true } |
+            ConvertTo-Json -Compress
     }
     $rules = @(Get-NetFirewallRule -PolicyStore PersistentStore | Where-Object Name -CIn $names)
     foreach ($rule in $rules) {

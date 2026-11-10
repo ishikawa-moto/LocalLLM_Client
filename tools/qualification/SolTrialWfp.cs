@@ -13,9 +13,12 @@ public sealed class SolTrialWfp : IDisposable
     private static readonly Guid Port = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b");
     private static readonly Guid Protocol = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7");
     private const uint Block = 0x1001, Equal = 0, NotEqual = 10, SidType = 13;
-    private const uint FilterNotFound = 0x80320003;
+    private const uint FilterNotFound = 0x80320003, SublayerNotFound = 0x80320007;
+    private const uint Persistent = 1, HardBlock = 8, Indexed = 0x40;
+    private const string LayerName = "LocalBrain Sol fixture blocks";
     private IntPtr engine;
-    private readonly Guid layerKey = Guid.NewGuid();
+    private readonly Guid layerKey;
+    private readonly bool persistent;
     private readonly List<ulong> filters = new List<ulong>();
     public ulong[] FilterIds => filters.ToArray();
 
@@ -51,6 +54,12 @@ public sealed class SolTrialWfp : IDisposable
     [DllImport("fwpuclnt.dll")] private static extern uint FwpmSubLayerAdd0(IntPtr engine,ref Sublayer layer,IntPtr security);
     [DllImport("fwpuclnt.dll")] private static extern uint FwpmFilterAdd0(IntPtr engine,ref Filter filter,IntPtr security,out ulong id);
     [DllImport("fwpuclnt.dll")] private static extern uint FwpmFilterGetById0(IntPtr engine,ulong id,out IntPtr filter);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmFilterGetByKey0(IntPtr engine,ref Guid key,out IntPtr filter);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmFilterDeleteByKey0(IntPtr engine,ref Guid key);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmSubLayerGetByKey0(IntPtr engine,ref Guid key,out IntPtr layer);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmSubLayerDeleteByKey0(IntPtr engine,ref Guid key);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmTransactionBegin0(IntPtr engine,uint flags);
+    [DllImport("fwpuclnt.dll")] private static extern uint FwpmTransactionCommit0(IntPtr engine);
     [DllImport("fwpuclnt.dll")] private static extern void FwpmFreeMemory0(ref IntPtr memory);
 
     private static IntPtr Open(uint flags)
@@ -60,60 +69,149 @@ public sealed class SolTrialWfp : IDisposable
         return handle;
     }
 
-    public SolTrialWfp(string sid, int port)
+    public SolTrialWfp(string sid,int port):this(sid,port,Guid.NewGuid(),false) { }
+
+    public SolTrialWfp(string sid,int port,Guid leaseKey):this(sid,port,leaseKey,true) { }
+
+    private SolTrialWfp(string sid,int port,Guid leaseKey,bool durable)
     {
         if(IntPtr.Size!=8 || Marshal.SizeOf<Filter>()!=200 || Marshal.SizeOf<Condition>()!=40)
             throw new PlatformNotSupportedException("Unexpected WFP fixture ABI");
         if(port<49152 || port>65535)throw new ArgumentOutOfRangeException(nameof(port));
+        if(leaseKey==Guid.Empty)throw new ArgumentException("A trial lease key is required",nameof(leaseKey));
+        layerKey=leaseKey;
+        persistent=durable;
         var identity=new SecurityIdentifier(sid);
         var bytes=new byte[identity.BinaryLength]; identity.GetBinaryForm(bytes,0);
         var pointer=Marshal.AllocHGlobal(bytes.Length);
         try {
             Marshal.Copy(bytes,0,pointer,bytes.Length);
-            var package = Make(Package,Equal,SidType,unchecked((ulong)pointer.ToInt64()));
-            engine=Open(1);
-            var layer=new Sublayer { Key=layerKey, Display=new Display { Name="LocalBrain Sol fixture blocks" }, Weight=65535 };
+            engine=Open(persistent?0u:1u);
+            Check(FwpmTransactionBegin0(engine,0),"begin fixture install");
+            var layer=new Sublayer { Key=layerKey, Display=new Display { Name=LayerName },
+                Flags=persistent?Persistent:0, Weight=65535 };
             Check(FwpmSubLayerAdd0(engine,ref layer,IntPtr.Zero),"add fixture sublayer");
-            Add(V4,"non-broker IPv4 address",identity,package,Make(Address,NotEqual,3,0x7f000001));
-            Add(V4,"non-broker IPv4 port",identity,package,Make(Port,NotEqual,2,(uint)port));
-            Add(V4,"IPv4 non-TCP",identity,package,Make(Protocol,NotEqual,1,6));
-            Add(V6,"all IPv6",identity,package);
-        } catch { Dispose(); throw; }
+            foreach(var plan in Plans(layerKey,port,pointer))
+                Add(plan.Key,plan.Layer,plan.Name,identity,plan.Conditions);
+            Check(FwpmTransactionCommit0(engine),"commit fixture install");
+        } catch {
+            // Engine close aborts a pending install. A committed persistent lease survives owner exit.
+            if(engine!=IntPtr.Zero) {
+                var previous=engine;engine=IntPtr.Zero;
+                Check(FwpmEngineClose0(previous),"close failed install");
+            }
+            throw;
+        }
         finally { Marshal.FreeHGlobal(pointer); }
     }
 
     private static Condition Make(Guid field,uint match,uint type,ulong data) =>
         new Condition { Field=field, Match=match, Value=new Value { Type=type,Data=new UIntPtr(data) } };
 
-    private void Add(Guid layer,string name,SecurityIdentifier identity,params Condition[] planned)
+    private static (Guid Key,Guid Layer,string Name,Condition[] Conditions)[] Plans(Guid lease,int port,IntPtr sid)
+    {
+        var package=Make(Package,Equal,SidType,unchecked((ulong)sid.ToInt64()));
+        return new[] {
+            (Key(1),V4,"non-broker IPv4 address",new[]{package,Make(Address,NotEqual,3,0x7f000001)}),
+            (Key(2),V4,"non-broker IPv4 port",new[]{package,Make(Port,NotEqual,2,(uint)port)}),
+            (Key(3),V4,"IPv4 non-TCP",new[]{package,Make(Protocol,NotEqual,1,6)}),
+            (Key(4),V6,"all IPv6",new[]{package})
+        };
+        Guid Key(byte offset) {var bytes=lease.ToByteArray();bytes[15]^=offset;return new Guid(bytes);}
+    }
+
+    private void Add(Guid key,Guid layer,string name,SecurityIdentifier identity,Condition[] planned)
     {
         var size=Marshal.SizeOf<Condition>();
         var buffer=Marshal.AllocHGlobal(planned.Length*size);
         try {
             for(int i=0;i<planned.Length;i++)Marshal.StructureToPtr(planned[i],buffer+i*size,false);
-            var filter=new Filter { Key=Guid.NewGuid(), Display=new Display { Name="LocalBrain Sol trial: "+name }, Flags=8,
+            var filter=new Filter { Key=key, Display=new Display { Name="LocalBrain Sol trial: "+name },
+                Flags=HardBlock|(persistent?Persistent:0),
                 Layer=layer, Sublayer=layerKey, Count=(uint)planned.Length, Conditions=buffer,
                 Action=new Action { Type=Block } };
             Check(FwpmFilterAdd0(engine,ref filter,IntPtr.Zero,out var id),"add "+name);
             filters.Add(id);
             Check(FwpmFilterGetById0(engine,id,out var stored),"read back "+name);
             try {
-                var actual=Marshal.PtrToStructure<Filter>(stored);
-                if(actual.Id!=id || actual.Key!=filter.Key || actual.Layer!=layer || actual.Sublayer!=layerKey ||
-                    actual.Action.Type!=Block || actual.Count!=planned.Length || (actual.Flags&8)==0 || (actual.Flags&~0x48u)!=0)
-                    throw new InvalidOperationException($"Unexpected WFP filter {name}: ID={actual.Id}, key={actual.Key}, layer={actual.Layer}, sublayer={actual.Sublayer}, action=0x{actual.Action.Type:X}, count={actual.Count}, flags=0x{actual.Flags:X}");
-                var seen=new HashSet<Guid>();
-                for(int i=0;i<planned.Length;i++) {
-                    var item=Marshal.PtrToStructure<Condition>(actual.Conditions+i*size);
-                    var index=Array.FindIndex(planned,c=>c.Field==item.Field);
-                    if(index<0 || !seen.Add(item.Field) || item.Match!=planned[index].Match ||
-                        item.Value.Type!=planned[index].Value.Type ||
-                        (item.Field==Package ? !identity.Equals(new SecurityIdentifier(new IntPtr(unchecked((long)item.Value.Data.ToUInt64()))))
-                            : item.Value.Data.ToUInt64()!=planned[index].Value.Data.ToUInt64()))
-                        throw new InvalidOperationException("Unexpected WFP condition: "+name);
-                }
+                if(Verify(stored,key,layer,layerKey,name,identity,planned,persistent)!=id)
+                    throw new InvalidOperationException("WFP filter ID mismatch: "+name);
             } finally { FwpmFreeMemory0(ref stored); }
         } finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private static ulong Verify(IntPtr stored,Guid key,Guid layer,Guid sublayer,string name,
+        SecurityIdentifier identity,Condition[] planned,bool durable)
+    {
+        var actual=Marshal.PtrToStructure<Filter>(stored);
+        var flags=HardBlock|(durable?Persistent:0);
+        if(actual.Key!=key || actual.Layer!=layer || actual.Sublayer!=sublayer || actual.Action.Type!=Block ||
+            actual.Count!=planned.Length || (actual.Flags&~Indexed)!=flags || actual.Display.Name!="LocalBrain Sol trial: "+name)
+            throw new InvalidOperationException("Unexpected WFP filter: "+name);
+        var seen=new HashSet<Guid>();
+        var size=Marshal.SizeOf<Condition>();
+        for(int i=0;i<planned.Length;i++) {
+            var item=Marshal.PtrToStructure<Condition>(actual.Conditions+i*size);
+            var index=Array.FindIndex(planned,c=>c.Field==item.Field);
+            if(index<0 || !seen.Add(item.Field) || item.Match!=planned[index].Match ||
+                item.Value.Type!=planned[index].Value.Type ||
+                (item.Field==Package ? !identity.Equals(new SecurityIdentifier(new IntPtr(unchecked((long)item.Value.Data.ToUInt64()))))
+                    : item.Value.Data.ToUInt64()!=planned[index].Value.Data.ToUInt64()))
+                throw new InvalidOperationException("Unexpected WFP condition: "+name);
+        }
+        return actual.Id;
+    }
+
+    public static ulong[] VerifyPersistent(string sid,int port,Guid leaseKey) =>
+        ReadPersistent(sid,port,leaseKey,false);
+
+    public static void ReleasePersistent(string sid,int port,Guid leaseKey) =>
+        ReadPersistent(sid,port,leaseKey,true);
+
+    private static ulong[] ReadPersistent(string sid,int port,Guid leaseKey,bool remove)
+    {
+        var identity=new SecurityIdentifier(sid);
+        var handle=Open(0);
+        try {
+            Check(FwpmTransactionBegin0(handle,remove?0u:1u),"begin fixture readback");
+            var plans=Plans(leaseKey,port,IntPtr.Zero);
+            var ids=new List<ulong>();
+            var sublayerResult=FwpmSubLayerGetByKey0(handle,ref leaseKey,out var layer);
+            if(remove && sublayerResult==SublayerNotFound) {
+                foreach(var plan in plans)RequireMissingFilter(handle,plan.Key);
+                Check(FwpmTransactionCommit0(handle),"confirm absent lease");
+                return Array.Empty<ulong>();
+            }
+            Check(sublayerResult,"read back fixture sublayer");
+            try {
+                var actual=Marshal.PtrToStructure<Sublayer>(layer);
+                if(actual.Key!=leaseKey || actual.Flags!=Persistent || actual.Display.Name!=LayerName)
+                    throw new InvalidOperationException("Persistent fixture sublayer identity mismatch");
+            } finally { FwpmFreeMemory0(ref layer); }
+            foreach(var plan in plans) {
+                var key=plan.Key;
+                Check(FwpmFilterGetByKey0(handle,ref key,out var stored),"read back "+plan.Name);
+                try { ids.Add(Verify(stored,key,plan.Layer,leaseKey,plan.Name,identity,plan.Conditions,true)); }
+                finally { FwpmFreeMemory0(ref stored); }
+            }
+            if(remove) {
+                foreach(var plan in plans) {
+                    var key=plan.Key;
+                    Check(FwpmFilterDeleteByKey0(handle,ref key),"remove "+plan.Name);
+                    RequireMissingFilter(handle,key);
+                }
+                Check(FwpmSubLayerDeleteByKey0(handle,ref leaseKey),"remove fixture sublayer");
+            }
+            Check(FwpmTransactionCommit0(handle),"commit fixture readback or removal");
+            return ids.ToArray();
+        } finally { Check(FwpmEngineClose0(handle),"close fixture readback"); }
+    }
+
+    private static void RequireMissingFilter(IntPtr handle,Guid key)
+    {
+        var result=FwpmFilterGetByKey0(handle,ref key,out var stored);
+        if(stored!=IntPtr.Zero)FwpmFreeMemory0(ref stored);
+        if(result!=FilterNotFound)throw new InvalidOperationException($"Filter {key} was not verified absent: 0x{result:X8}");
     }
 
     public void Dispose()
@@ -121,7 +219,7 @@ public sealed class SolTrialWfp : IDisposable
         if(engine==IntPtr.Zero)return;
         var previous=engine; engine=IntPtr.Zero;
         Check(FwpmEngineClose0(previous),"close dynamic session");
-        if(filters.Count==0)return;
+        if(persistent || filters.Count==0)return;
         var verify=Open(0);
         try {
             foreach(var id in filters) {
