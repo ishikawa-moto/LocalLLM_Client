@@ -14,6 +14,12 @@ if(args.Length is 6 or 7 && args[0]=="--review-loopback-policy-host" && Operatin
     if(args.Length==7 && args[6]!="relay")throw new ArgumentException("Unexpected network fixture mode");
     await ReviewerLoopbackPolicyTests.RunAsync(args[1],args[2],int.Parse(args[3]),int.Parse(args[4]),int.Parse(args[5]),args.Length==7);return;
 }
+if(args.Length==3 && args[0]=="--review-native-dns-host" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.NativeDnsHostAsync(args[1],args[2]);return;
+}
+if(args.Length==4 && args[0]=="--review-loopback-policy-child" && args[1]=="native-dns" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.NativeDnsChildAsync(int.Parse(args[2]),args[3]);return;
+}
 if(args.Length is 4 or 5 && args[0]=="--review-loopback-policy-child" && OperatingSystem.IsWindows()){
     if(args.Length==5 && args[4]!="relay")throw new ArgumentException("Unexpected network fixture mode");
     await ReviewerLoopbackPolicyTests.ChildAsync(int.Parse(args[1]),int.Parse(args[2]),int.Parse(args[3]),args.Length==5);return;

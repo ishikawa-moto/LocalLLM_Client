@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -60,6 +61,120 @@ internal static class ReviewerLoopbackPolicyTests
         foreach(var name in new[]{"USERPROFILE","LOCALAPPDATA","APPDATA","TEMP","TMP"})
             start.Environment[name]=home;
         return start;
+    }
+
+    internal static async Task NativeDnsHostAsync(string bundle,string packageSid)
+    {
+        bundle=Path.GetFullPath(bundle);
+        ReviewQualification.GuardRoot(bundle);
+        var sid=new SecurityIdentifier(packageSid);
+        HostValidationCleanup.Grant(bundle,sid,false);
+        try {
+            using var limit=new CancellationTokenSource(TimeSpan.FromSeconds(27));
+            using var control=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
+            using var isolated=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
+            var controlName="control-"+Guid.NewGuid().ToString("N");
+            var isolatedName="isolated-"+Guid.NewGuid().ToString("N");
+            var controlServer=ReplyToProbeAsync(control,controlName,limit.Token);
+            int controlResult;
+            try {controlResult=await Task.Run(()=>NativeDnsQuery(Port(control),controlName)).WaitAsync(TimeSpan.FromSeconds(6),limit.Token);}
+            catch(TimeoutException) {controlResult=-1;}
+            var controlObserved=controlServer.IsCompletedSuccessfully && await controlServer;
+            var trialServer=ReplyToProbeAsync(isolated,isolatedName,limit.Token);
+            var start=IsolatedStart(Path.Combine(bundle,Path.GetFileName(Environment.ProcessPath!)),bundle);
+            start.Environment["DOTNET_ROOT"]=Path.Combine(bundle,"dotnet");
+            foreach(var arg in new[]{"--review-loopback-policy-child","native-dns",Port(isolated).ToString(),isolatedName})
+                start.ArgumentList.Add(arg);
+            using var job=WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value);
+            var stdout=job.Output.ReadToEndAsync(limit.Token);
+            var stderr=job.Error.ReadToEndAsync(limit.Token);
+            await job.Process.WaitForExitAsync(limit.Token);
+            if(job.Process.ExitCode!=0)throw new IOException($"DNS fixture exit {job.Process.ExitCode}: {await stderr}");
+            using var probe=JsonDocument.Parse(await stdout);
+            var reached=trialServer.IsCompletedSuccessfully && await trialServer;
+            Console.WriteLine(JsonSerializer.Serialize(new {probe=probe.RootElement,
+                dns_control_status=controlResult,dns_control_observed=controlObserved,isolated_query_reached_listener=reached,model_requests=0}));
+            await limit.CancelAsync();
+        } finally {
+            var directory=new DirectoryInfo(bundle);
+            var acl=directory.GetAccessControl();
+            acl.PurgeAccessRules(sid);
+            directory.SetAccessControl(acl);
+        }
+    }
+
+    internal static async Task NativeDnsChildAsync(int port,string label)
+    {
+        var direct4=await ConnectAsync(IPAddress.Parse("198.51.100.17"),443);
+        var direct6=await ConnectAsync(IPAddress.Parse("2001:db8::17"),443);
+        int dnsStatus;
+        try {dnsStatus=await Task.Run(()=>NativeDnsQuery(port,label)).WaitAsync(TimeSpan.FromSeconds(11));}
+        catch(TimeoutException) {dnsStatus=-1;}
+        Console.WriteLine(JsonSerializer.Serialize(new {direct_ipv4=direct4,direct_ipv6=direct6,windows_dns_status=dnsStatus}));
+    }
+
+    private static int Port(UdpClient listener)=>((IPEndPoint)listener.Client.LocalEndPoint!).Port;
+
+    private static async Task<bool> ReplyToProbeAsync(UdpClient listener,string label,CancellationToken token)
+    {
+        var question=new byte[]{(byte)label.Length}.Concat(System.Text.Encoding.ASCII.GetBytes(label))
+            .Concat(new byte[]{7,(byte)'i',(byte)'n',(byte)'v',(byte)'a',(byte)'l',(byte)'i',(byte)'d',0,0,1,0,1}).ToArray();
+        var datagram=await listener.ReceiveAsync(token);
+        var query=datagram.Buffer;
+        if(query.Length<12+question.Length || !query.AsSpan(12,question.Length).SequenceEqual(question))return false;
+        byte[] answer=[0xc0,12,0,1,0,1,0,0,0,0,0,4,192,0,2,123];
+        byte[] reply=[query[0],query[1],0x81,0x80,0,1,0,1,0,0,0,0,..question,..answer];
+        await listener.SendAsync(reply,datagram.RemoteEndPoint,token);
+        return true;
+    }
+
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]
+    private struct DnsRequest
+    {
+        public uint Version;
+        [MarshalAs(UnmanagedType.LPWStr)] public string Name;
+        public ushort Type;
+        public ulong Options;
+        public IntPtr Servers;
+        public uint Interface;
+        public IntPtr Callback,Context;
+        public uint IsNetworkQueryRequired,RequiredNetworkIndex,CustomServersCount;
+        public IntPtr CustomServers;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DnsResult
+    {
+        public uint Version;
+        public int Status;
+        public ulong Options;
+        public IntPtr Records,Reserved;
+    }
+    [DllImport("dnsapi.dll")] private static extern int DnsQueryEx(ref DnsRequest request,ref DnsResult result,IntPtr cancel);
+    [DllImport("dnsapi.dll")] private static extern void DnsFree(IntPtr records,int type);
+
+    private static int NativeDnsQuery(int port,string label)
+    {
+        if(port is <49152 or >65535 || !System.Text.RegularExpressions.Regex.IsMatch(label,"^(control|isolated)-[0-9a-f]{32}$"))
+            throw new ArgumentException("Unexpected DNS fixture endpoint or label");
+        // DNS_CUSTOM_SERVER (UDP) with the SOCKADDR_IN stored in MaxSa.
+        var server=new byte[56];
+        server[0]=1;
+        server[24]=2;
+        server[26]=(byte)(port>>8);
+        server[27]=(byte)port;
+        server[28]=127;
+        server[31]=1;
+        var pinned=GCHandle.Alloc(server,GCHandleType.Pinned);
+        var result=new DnsResult {Version=1};
+        try {
+            var request=new DnsRequest {Version=3,Name=label+".invalid.",Type=1,
+                Options=0x8|0x800|0x1000,CustomServersCount=1,CustomServers=pinned.AddrOfPinnedObject()};
+            var status=DnsQueryEx(ref request,ref result,IntPtr.Zero);
+            return status!=0?status:result.Status;
+        } finally {
+            if(result.Records!=IntPtr.Zero)DnsFree(result.Records,1);
+            pinned.Free();
+        }
     }
 
     private static async Task<bool> DeviceAuthAsync(string bundle,SecurityIdentifier sid,int port,bool trustRoot)

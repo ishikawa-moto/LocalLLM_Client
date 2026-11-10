@@ -6,7 +6,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^LocalBrain\.SolTrial\.Deny\.[0-9a-f]{32}$')][string]$RulePrefix,
     [switch]$Wfp,
     [switch]$DurableWfp,
-    [switch]$Relay
+    [switch]$Relay,
+    [switch]$NativeDns
 )
 
 $ErrorActionPreference = 'Stop'
@@ -171,6 +172,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Adding the scoped loopback exemption failed' }
     $state = (& $netIsolation LoopbackExempt -s | Out-String)
     if ($LASTEXITCODE -ne 0 -or !$state.Contains($PackageSid)) { throw 'Scoped loopback exemption not verified' }
+
+    if ($NativeDns) {
+        if (!$Wfp -or !$DurableWfp -or $Relay) { throw 'Expected separate durable WFP fixture' }
+        $result = & $exe --review-native-dns-host $bundleItem.FullName $PackageSid
+        if ($LASTEXITCODE -ne 0) { throw "Native DNS qualification failed with exit $LASTEXITCODE" }
+        $result
+        return
+    }
 
     $probeArgs = @('--review-loopback-policy-host',$bundleItem.FullName,$PackageSid,$port,$other4.LocalEndpoint.Port,$other6.LocalEndpoint.Port)
     $result = if ($Relay) { & $exe @probeArgs relay } else { & $exe @probeArgs }

@@ -1,10 +1,11 @@
 #Requires -Version 7.2
 [CmdletBinding()]
-param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp, [switch]$DurableWfp, [switch]$Relay)
+param([switch]$Apply, [string]$LoopbackBundle, [switch]$Wfp, [switch]$DurableWfp, [switch]$Relay, [switch]$NativeDns)
 
 $ErrorActionPreference = 'Stop'
 if ($DurableWfp -and (!$Wfp -or !$LoopbackBundle)) { throw 'Durable WFP requires the loopback fixture' }
 if ($Relay -and !$DurableWfp) { throw 'The TLS relay fixture requires durable WFP' }
+if ($NativeDns -and (!$DurableWfp -or $Relay)) { throw 'Native DNS requires a separate durable WFP fixture' }
 if (-not $IsWindows) { throw 'Windows is required' }
 
 Add-Type -TypeDefinition @'
@@ -88,7 +89,7 @@ try {
         if ($created -ne [IntPtr]::Zero) { [void][LocalBrainTrialNetworkProfile]::FreeSid($created) }
     }
     if ($LoopbackBundle) {
-        & (Join-Path $PSScriptRoot 'Test-SolTrialLoopback.ps1') -Bundle $LoopbackBundle -PackageSid $packageSid -RulePrefix $ruleName -Wfp:$Wfp -DurableWfp:$DurableWfp -Relay:$Relay
+        & (Join-Path $PSScriptRoot 'Test-SolTrialLoopback.ps1') -Bundle $LoopbackBundle -PackageSid $packageSid -RulePrefix $ruleName -Wfp:$Wfp -DurableWfp:$DurableWfp -Relay:$Relay -NativeDns:$NativeDns
         return
     }
     $attemptedRule = $true
