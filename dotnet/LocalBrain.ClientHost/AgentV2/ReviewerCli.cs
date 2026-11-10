@@ -107,6 +107,23 @@ internal static class ReviewerCli
         return JsonSerializer.Deserialize<Settings>(File.ReadAllText(path), ClientConfig.JsonOptions)
             ?? throw new InvalidDataException("Invalid reviewer settings");
     }
+
+    internal static Task<Reply> GenerateRescueAsync(HostTaskJournal journal, HostEgress.Prepared export,
+        CancellationToken token)
+    {
+        Slack.RestrictedExecution.DenyExternal();
+        token.ThrowIfCancellationRequested();
+        if (export.Manifest.TaskId != journal.TaskId || export.Manifest.PolicyMode != "manual" ||
+            export.Manifest.RedactionCount != 0 || Encoding.UTF8.GetByteCount(export.Payload) > 64_000 ||
+            ReviewerEvidence.ContainsSecret(export.Payload))
+            throw new UnauthorizedAccessException("Rescue requires an exact, bounded, manually approved export");
+        var endpoint = Load(journal.Canonical.Root).Sol;
+        if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
+            return Task.FromResult(new Reply("UNAVAILABLE", Reason: "HOST_ROUTE_NOT_QUALIFIED"));
+        HostValidationPolicy.RequireRegisteredPublisher(journal);
+        return DispatchAsync(journal, endpoint, "sol", export.Payload, "high", null, null, false, token,
+            rescueExport: export);
+    }
     internal static async Task<Reply> InvokeAsync(string provider, string packet, string effort, CancellationToken token,
         string[]? sources = null, string[]? files = null, bool plan = false)
     {
@@ -134,7 +151,7 @@ internal static class ReviewerCli
     }
     private static async Task<Reply> DispatchAsync(HostTaskJournal journal, Endpoint endpoint, string provider,
         string packet, string effort, string[]? sources, string[]? files, bool plan, CancellationToken token,
-        bool qualificationProbe = false)
+        bool qualificationProbe = false, HostEgress.Prepared? rescueExport = null)
     {
         if (string.IsNullOrWhiteSpace(endpoint.Path) || !System.IO.Path.IsPathFullyQualified(endpoint.Path) || !string.Equals(System.IO.Path.GetExtension(endpoint.Path),".exe",StringComparison.OrdinalIgnoreCase))
             return new("UNAVAILABLE", Reason:"ABSOLUTE_EXE_REQUIRED");
@@ -161,24 +178,29 @@ internal static class ReviewerCli
             }
             // A redacted requirement/diff cannot establish acceptance. Retain the prepared manifest
             // for inspection, but do not silently review incomplete material or consume approval.
-            var prepared=journal.PrepareExternalPacket(packet,provider,sources,files);
+            var prepared=rescueExport??journal.PrepareExternalPacket(packet,provider,sources,files);
             if(prepared.Payload!=packet)return new("INVALID",Reason:"REVIEW_MATERIAL_REDACTED");
             // Policy denial/manual approval is deliberately NOT caught or converted to fallback.
-            using var dispatch=journal.BeginExternalPacket(packet,provider,sources,files);
+            using var dispatch=rescueExport is null
+                ? journal.BeginExternalPacket(packet,provider,sources,files)
+                : new HostTaskJournal.PacketDispatch(packet,new HostEgress(journal.Canonical)
+                    .AuthorizeDispatch(prepared,"codex_protocol"));
             using var acp=provider=="copilot"?await OpenCopilotAsync(start,token):null;
             if(provider=="copilot" && acp is null)return new("UNAVAILABLE",Reason:"COPILOT_ACP_BOOTSTRAP_FAILED");
             if(acp is not null)
                 journal.Record("reviewer_cli_job_sealed",new {provider,pid=acp.Pid,sha256=digest,
                     executable=start.FileName,arguments=start.ArgumentList.ToArray(),requested_model=Model(provider),
                     active_process_limit=1,breakaway=false,prepacket_model_selected=true},"host_observed");
-            journal.ReviewStarted(provider); Slack.RestrictedExecution.DenyExternal();
-            var input=(qualificationProbe ? ReviewQualification.ProbeInstructions : Instructions(plan))+dispatch.Packet;
+            if (rescueExport is null) journal.ReviewStarted(provider);
+            Slack.RestrictedExecution.DenyExternal();
+            var input=rescueExport is not null ? dispatch.Packet :
+                (qualificationProbe ? ReviewQualification.ProbeInstructions : Instructions(plan))+dispatch.Packet;
             var inputHash=journal.Canonical.PutEvidence(Encoding.UTF8.GetBytes(input));
-            journal.Record("reviewer_cli_input",new {provider,packet_hash=prepared.Manifest.ExportHash,
+            journal.Record(rescueExport is null?"reviewer_cli_input":"rescue_cli_input",new {provider,packet_hash=prepared.Manifest.ExportHash,
                 manifest_hash=prepared.ManifestHash,stdin_hash=inputHash,qualification_only=qualificationProbe},"host_verified");
             var response=acp is null
                 ?await ExecuteAsync(start,input,TimeSpan.FromMinutes(5),token,journal,provider,
-                    qualificationProbe?"boundary_probe":"review",digest)
+                    rescueExport is not null?"rescue_candidate":qualificationProbe?"boundary_probe":"review",digest)
                 :await RunCopilotAsync(acp,input,token);
             if(acp is not null)journal.Record("reviewer_cli_exited",new {provider,pid=acp.Pid,response.ExitCode,response.Status},"host_observed");
             if(qualificationProbe) {
@@ -190,7 +212,7 @@ internal static class ReviewerCli
                 return response with {Answer="",Diagnostic=""};
             }
             if(response.Status!="OK" || response.ExitCode!=0)return response with{Answer=""};
-            return provider=="sol" ? DecodeCodex(response.Answer) with {ExitCode=response.ExitCode} : response;
+            return provider=="sol" ? DecodeCodex(response.Answer,rescueExport is null?8_000:48_000) with {ExitCode=response.ExitCode} : response;
         } finally { work.Delete(recursive:true); }
     }
 
@@ -217,7 +239,7 @@ internal static class ReviewerCli
         (plan ? "This is a pre-edit plan review. Assess whether the proposed scope, approach and required test plan can safely meet every acceptance criterion. Tests are not yet executed; do not claim implementation verification. "
               : "This is a final review. PASS only when every acceptance criterion is supported by the diff and passed required tests. ") +
         "Return exactly {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}.\n";
-    internal static Reply DecodeCodex(string lines)
+    internal static Reply DecodeCodex(string lines,int answerLimit=8_000)
     {
         string? answer=null;var completed=false;
         try {
@@ -238,7 +260,7 @@ internal static class ReviewerCli
         } catch(JsonException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         catch(InvalidOperationException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         catch(KeyNotFoundException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
-        return completed && answer is not null && Encoding.UTF8.GetByteCount(answer)<=8_000
+        return completed && answer is not null && Encoding.UTF8.GetByteCount(answer)<=answerLimit
             ? new("OK",answer) : new("UNAVAILABLE",Reason:"NO_COMPLETED_ANSWER");
     }
     internal static string FailureReason(string text)

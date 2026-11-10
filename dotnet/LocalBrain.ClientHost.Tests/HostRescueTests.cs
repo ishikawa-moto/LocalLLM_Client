@@ -7,12 +7,13 @@ internal static class HostRescueTests
 {
     internal sealed record Fixture(string MainRoot,string HostRoot,string TaskId,string Head,string TicketHash,HostRescue.Candidate Candidate,string? CandidateHash=null,string? ValidationHash=null);
     private static void Check(bool value,string reason){if(!value)throw new InvalidOperationException(reason);}
-    private static async Task Reject(Func<Task> action,string reason){try{await action();}catch(Exception e)when(e is UnauthorizedAccessException or InvalidDataException or IOException){return;}throw new InvalidOperationException(reason);}
+    private static async Task Reject(Func<Task> action,string reason){try{await action();}catch(Exception e)when(e is UnauthorizedAccessException or InvalidDataException or IOException or JsonException){return;}throw new InvalidOperationException(reason);}
     internal static AgentTaskRequest Request=>AgentTaskRequest.Parse("""{"requirement":"Write HELLO plus LF in greeting.txt and SECOND plus LF in other.txt and THIRD plus LF in new.txt","acceptance_criteria":["greeting.txt contains exactly HELLO plus LF","other.txt contains exactly SECOND plus LF","new.txt contains exactly THIRD plus LF","all exact byte checks pass"],"risk":"LOW","approved_high_risk":false,"allowed_files":["greeting.txt","other.txt","new.txt"],"required_tests":[{"kind":"npm_test"},{"kind":"git_diff_check"}]}""");
     private static string Descriptor(string root)=>Path.Combine(root,"fixture.json");
     private static void Save(string root,Fixture fixture)=>File.WriteAllText(Descriptor(root),JsonSerializer.Serialize(fixture),new UTF8Encoding(false));
     private static Fixture Read(string root)=>JsonSerializer.Deserialize<Fixture>(File.ReadAllText(Descriptor(root)))!;
-    internal static async Task<Fixture> PrepareAsync(string root) {
+    internal static async Task<Fixture> PrepareAsync(string root,AgentTaskRequest? request=null,string exportMode="auto",string[]? exportScope=null) {
+        request??=Request;
         root=Path.GetFullPath(root);CanonicalStore.GuardPath(root);if(Directory.Exists(root))throw new IOException("Fixture root must be new");Directory.CreateDirectory(root);
         var main=Path.Combine(root,"repo");Directory.CreateDirectory(main);
         File.WriteAllText(Path.Combine(main,".gitignore"),".localbrain/\nnode_modules/\n",new UTF8Encoding(false));
@@ -22,8 +23,8 @@ internal static class HostRescueTests
         await AttemptStartingState.GitAsync(main,["init","-q"]);await AttemptStartingState.GitAsync(main,["add","--",".gitignore","greeting.txt","other.txt","package.json","test.cjs"]);
         await AttemptStartingState.GitAsync(main,["-c","user.name=LocalBrain fixture","-c","user.email=fixture@example.invalid","commit","-qm","fixture baseline"]);
         var head=Encoding.UTF8.GetString(await AttemptStartingState.GitAsync(main,["rev-parse","HEAD"])).Trim();var hostRoot=Path.Combine(root,"host");var task="rescue_"+Guid.NewGuid().ToString("N");
-        using var store=new CanonicalStore(hostRoot);using var journal=new HostTaskJournal(store,main,task,Request,head);
-        store.ChangePolicies([new(HostTaskJournal.RepositoryId(main),main,"auto",Request.AllowedFiles,["task_evidence_only"])],"explicit_public_fixture_test");
+        using var store=new CanonicalStore(hostRoot);using var journal=new HostTaskJournal(store,main,task,request,head);
+        store.ChangePolicies([new(HostTaskJournal.RepositoryId(main),main,exportMode,request.AllowedFiles,exportScope??["task_evidence_only"])],"explicit_public_fixture_test");
         var starting=await AttemptStartingState.SaveAsync(journal,1);
         // Host-generated synthetic failure, explicitly distinguished from an actual Codex/Qwen response.
         await using(var gate=new SideEffectGate(main,Request.AllowedFiles,head,false,journal))foreach(var file in Request.AllowedFiles)await gate.HandleAsync(new(gate.PipeName,gate.Nonce,"write",file,"BROKEN\n"));
@@ -33,6 +34,44 @@ internal static class HostRescueTests
         var candidate=new HostRescue.Candidate(task,ticket.AssignmentId,ticket.Generation,head,ticket.StartingStateHash,ticket.StartingDiffHash,
             [new("greeting.txt",starting.State.Files.Single(f=>f.Path=="greeting.txt").Hash,"HELLO\n"),new("other.txt",starting.State.Files.Single(f=>f.Path=="other.txt").Hash,"SECOND\n"),new("New.txt",null,"THIRD\n")],"Synthetic untrusted candidate for protocol qualification; not an actual Codex model response");
         var fixture=new Fixture(main,hostRoot,task,head,ticketHash,candidate);Save(root,fixture);return fixture;
+    }
+    internal static async Task ExternalProofAsync(string root) {
+        var request=Request with{RequiredTests=[new("dotnet_test","Fixture.csproj")]};
+        var fixture=await PrepareAsync(root,request,"manual",["task_evidence_only","file:greeting.txt"]);
+        using var store=new CanonicalStore(fixture.HostRoot);
+        using var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,request,fixture.Head);
+        var rescue=new HostRescue(journal);var ticket=rescue.Load(fixture.TicketHash);
+        var prepared=rescue.PreparedExport(ticket);
+        using var packet=JsonDocument.Parse(prepared.Payload);
+        var sources=packet.RootElement.GetProperty("starting_source");
+        Check(sources.GetArrayLength()==1 && sources[0].GetProperty("Path").GetString()=="greeting.txt" &&
+            sources[0].GetProperty("Content").GetString()=="START\n","Source selection escaped explicit file export scope");
+        Check(prepared.Manifest.PolicyMode=="manual" &&
+            CanonicalStore.Hash(Encoding.UTF8.GetBytes(prepared.Payload))==ticket.ExportPayloadHash,"Export preview is not the exact bound packet");
+        var encoded=JsonSerializer.Serialize(fixture.Candidate);
+        Check(HostRescue.ParseExternalCandidate(encoded).Changes.SequenceEqual(fixture.Candidate.Changes),"Valid candidate was not decoded");
+        await Reject(()=>Task.FromResult(HostRescue.ParseExternalCandidate(encoded.Insert(1,"\"Command\":\"fixture\","))),"Unexpected model field was accepted");
+        await Reject(()=>Task.FromResult(HostRescue.ParseExternalCandidate(encoded.Insert(1,"\"TaskId\":\"other\","))),"Duplicate model field was accepted");
+        await Reject(()=>Task.FromResult(HostRescue.ParseExternalCandidate(encoded.Replace("\"Path\":\"greeting.txt\"","\"Path\":\"other.txt\",\"Path\":\"greeting.txt\""))),"Duplicate nested field was accepted");
+        await Reject(()=>rescue.ImportAsync(fixture.TicketHash,fixture.Candidate with {
+            Changes=[new("test.cjs",null,"outside write scope")]
+        }),"Candidate changed a file outside the task scope");
+        await Reject(()=>ReviewerCli.GenerateRescueAsync(journal,prepared with {
+            Manifest=prepared.Manifest with {PolicyMode="auto"}
+        },CancellationToken.None),"Automatic external export policy was accepted");
+        await Reject(()=>{
+            using var lease=new HostEgress(store).AuthorizeDispatch(prepared,"codex_protocol");
+            return Task.CompletedTask;
+        },"Unapproved packet was authorized by HostEgress");
+        var result=await rescue.RunExternalAsync(fixture.TicketHash);
+        Check(result is {Status:"UNAVAILABLE",Reason:"HOST_ROUTE_NOT_QUALIFIED"},"Unqualified provider was not rejected");
+        var events=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id)).ToArray();
+        Check(!events.Any(e=>e.Input.EventType is "external_dispatch_authorized" or "rescue_cli_input" or
+            "codex_rescue_external_response" or "codex_candidate_application_intent"),"An unqualified external run performed a side effect");
+        Check(File.ReadAllText(Path.Combine(ticket.RescueRoot,"greeting.txt"))=="START\n" &&
+            File.ReadAllText(Path.Combine(fixture.MainRoot,"greeting.txt"))=="BROKEN\n","A blocked run modified a worktree");
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=12,actual_model_requests=0,task_id=fixture.TaskId,
+            ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {
         var fixture=Read(root);using var store=new CanonicalStore(fixture.HostRoot);using var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,Request,fixture.Head);

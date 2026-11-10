@@ -93,7 +93,7 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -142,6 +142,18 @@ internal static class AgentV2Commands
                 journal.Record("human_export_approval",new{manifest_hash=boundHash,policy_hash=manifest.PolicyHash},"human_explicit");return;
             }
             var rescue=new HostRescue(journal);var ticket=rescue.Load(boundHash);
+            if(command=="rescue-preview") {
+                if(Console.IsOutputRedirected)throw new InvalidOperationException("Rescue preview requires an interactive terminal");
+                var export=rescue.PreparedExport(ticket);
+                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.Model("sol"),manifest_hash=export.ManifestHash,
+                    manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));return;
+            }
+            if(command=="rescue-run") {
+                var result=await rescue.RunExternalAsync(boundHash);
+                Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
+                if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
+                return;
+            }
             if(command=="rescue-export") {
                 var export=rescue.PreparedExport(ticket);using var lease=new HostEgress(store).AuthorizeDispatch(export,"codex_protocol");Console.Write(export.Payload);return;
             }

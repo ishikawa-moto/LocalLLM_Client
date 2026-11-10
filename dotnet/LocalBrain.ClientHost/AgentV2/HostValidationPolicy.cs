@@ -42,6 +42,7 @@ internal static class HostValidationPolicy
         var staging=path+"."+Guid.NewGuid().ToString("N")+".tmp";
         using(var output=new FileStream(staging,FileMode.CreateNew,FileAccess.Write,FileShare.None)){output.Write(bytes);output.Flush(true);}File.Move(staging,path,true);return hash;
     }
+    internal static void RequireRegisteredPublisher(HostTaskJournal journal)=>Load(journal);
     private static Policy Load(HostTaskJournal journal){
         var path=Config(journal);CanonicalStore.GuardPath(path);if(!File.Exists(path))throw new UnauthorizedAccessException("No Host-registered validation publisher policy");
         if(new FileInfo(path).Length>4096)throw new InvalidDataException("Publisher reference exceeds budget");

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
@@ -45,7 +46,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal async Task<string> ReserveAsync(AttemptStartingState.Saved starting,CancellationToken token=default) {
         Slack.RestrictedExecution.DenyExternal();
-        Store.RequireExportPolicy(journal.TaskId);journal.RequireMutationApproval();
+        var exportPolicy=Store.RequireExportPolicy(journal.TaskId).Policy;journal.RequireMutationApproval();
         var source=Store.ReadTaskEvent(journal.TaskId,starting.EventId);
         if(source.Input.EventType!="attempt_starting_state" || source.Input.Producer!="windows_host" || !source.Input.EvidenceRefs.Contains(starting.StateHash) ||
             AttemptStartingState.Hash(starting.State)!=starting.StateHash || starting.State.Head!=journal.ExpectedHead)
@@ -54,6 +55,17 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if(failure.Head!=starting.State.Head)throw new UnauthorizedAccessException("Failure HEAD changed");
         var snapshot=await GitEvidence.CaptureAsync(journal.WindowsRoot,Request.AllowedFiles,token);
         if(snapshot.UnexpectedFiles.Length!=0)throw new UnauthorizedAccessException("Failure changed outside write_scope");
+        var startingFiles=starting.State.Files.Where(f=>Request.AllowedFiles.Contains(f.Path,StringComparer.OrdinalIgnoreCase)).ToArray();
+        var sources=new List<object>();
+        var sourceBytes=0;
+        foreach(var file in startingFiles) {
+            if(file.Hash is null || exportPolicy.Mode!="manual" ||
+                !exportPolicy.ExportScope.Contains("file:"+file.Path,StringComparer.OrdinalIgnoreCase))continue;
+            var bytes=Store.ReadEvidence(file.Hash);
+            if(bytes.Length>24_000-sourceBytes)throw new InvalidDataException("Rescue source selection exceeds budget");
+            sourceBytes+=bytes.Length;
+            sources.Add(new{file.Path,file.Hash,Content=new UTF8Encoding(false,true).GetString(bytes)});
+        }
         var rescueId=Guid.NewGuid().ToString("N");var root=Path.Combine(Store.Root,"rescue-worktrees",rescueId);
         await AttemptStartingState.ReconstructAsync(journal.WindowsRoot,root,starting.State,Store,token);
         var workspace="rescue_"+rescueId;var worker="codex_protocol";var assignment="rescue_"+Guid.NewGuid().ToString("N");
@@ -62,13 +74,14 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var spec=new CanonicalStore.TaskSpec(journal.TaskId,assignment,worker,workspace,HostTaskJournal.RepositoryId(journal.WindowsRoot),starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
             Request.AllowedFiles,[],Request.Requirement,Request.AcceptanceCriteria,Request.RequiredTests,[],1);
         var reserved=Store.ReserveAssignment(spec);
-        // The worker receives selected task evidence only. The locally complete parity snapshot is never exported.
-        var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
+        // Only an explicit file export scope adds complete starting source.
+        var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",requested_model=ReviewerCli.Model("sol"),
+            task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
             base_commit=starting.State.Head,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,
             requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=Request.AllowedFiles,required_tests=Request.RequiredTests,
             failed_diff=snapshot.ReviewDiff,parity_deviation=starting.State.ParityDeviation,
             response_schema="Candidate{TaskId,AssignmentId,Generation,BaseCommit,StartingStateHash,StartingDiffHash,Changes[{Path,BeforeHash,Content}],Summary}. Return proposed full UTF8 file contents only; no shell commands. BeforeHash must equal the starting file hash, or null for a new file.",
-            starting_write_files=starting.State.Files.Where(f=>Request.AllowedFiles.Contains(f.Path,StringComparer.OrdinalIgnoreCase)).Select(f=>new{f.Path,f.Hash}),
+            starting_write_files=startingFiles.Select(f=>new{f.Path,f.Hash}),starting_source=sources,
             locally_verified_tests_required=true,candidate_is_untrusted=true});
         var export=journal.PrepareExternalPacket(packet,"codex_protocol",files:Request.AllowedFiles);
         var ticket=new Ticket(journal.TaskId,assignment,reserved.Generation,worker,workspace,journal.WindowsRoot,root,starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
@@ -83,6 +96,99 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(Store.ReadEvidence(ticket.ExportManifestHash))!;
         if(manifest.TaskId!=ticket.TaskId || manifest.ExportHash!=ticket.ExportPayloadHash)throw new UnauthorizedAccessException("Rescue export binding drift");
         return new(manifest,ticket.ExportManifestHash,new UTF8Encoding(false,true).GetString(Store.ReadEvidence(ticket.ExportPayloadHash)));
+    }
+    internal sealed record ExternalResult(string Status,string? CandidateHash=null,string? ValidationHash=null,string? Reason=null);
+
+    internal async Task<ExternalResult> RunExternalAsync(string ticketHash,CancellationToken token=default)
+    {
+        Slack.RestrictedExecution.DenyExternal();
+        var ticket=Load(ticketHash);
+        journal.RequireMutationApproval();
+        // The generated code is untrusted. Only the existing OS-isolated .NET test path may execute it.
+        var required=Request.RequiredTests;
+        if(required.Length==0 || required.Any(test=>test.Kind is not ("dotnet_build" or "dotnet_test")) ||
+            !required.Any(test=>test.Kind=="dotnet_test"))
+            throw new UnauthorizedAccessException("External code rescue requires isolated dotnet_test validation");
+        var export=PreparedExport(ticket);
+        var received=Events("codex_rescue_external_response").SingleOrDefault(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash);
+        if(received is not null && received.Input.Metadata.GetProperty("manifest_hash").GetString()!=export.ManifestHash)
+            throw new UnauthorizedAccessException("External candidate export binding drift");
+        var validated=Events("codex_rescue_validated").SingleOrDefault(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash);
+        if(validated is not null) {
+            if(received is null)return new("BLOCKED",Reason:"TICKET_ALREADY_VALIDATED_OUTSIDE_EXTERNAL_ROUTE");
+            var hash=validated.Input.Metadata.GetProperty("validation_hash").GetString()!;
+            var prior=JsonSerializer.Deserialize<Validation>(Store.ReadEvidence(hash))!;
+            var responseHash=received.Input.Metadata.GetProperty("response_hash").GetString()!;
+            var original=ParseExternalCandidate(new UTF8Encoding(false,true).GetString(Store.ReadEvidence(responseHash)));
+            var originalHash=CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(original));
+            if(!Events("codex_candidate_received").Any(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash &&
+                e.Input.Metadata.GetProperty("original_candidate_hash").GetString()==originalHash &&
+                e.Input.Metadata.GetProperty("candidate_hash").GetString()==prior.CandidateHash))
+                return new("BLOCKED",Reason:"EXTERNAL_VALIDATION_BINDING_MISSING");
+            await RequireValidationSourceAsync(ticketHash,prior.CandidateHash,ticket.RescueRoot,token);
+            RecordExternalValidation(ticketHash,ticket,export.ManifestHash,responseHash,prior.CandidateHash,hash);
+            return new("VALIDATED_IN_RESCUE",prior.CandidateHash,hash);
+        }
+        Candidate candidate;
+        string candidateResponseHash;
+        if(received is not null) {
+            candidateResponseHash=received.Input.Metadata.GetProperty("response_hash").GetString()!;
+            candidate=ParseExternalCandidate(new UTF8Encoding(false,true).GetString(
+                Store.ReadEvidence(candidateResponseHash)));
+        } else {
+            if(Events("external_dispatch_authorized").Any(e=>e.Input.EvidenceRefs.Contains(export.ManifestHash)))
+                return new("BLOCKED",Reason:"PRIOR_DISPATCH_HAS_NO_RETAINED_CANDIDATE");
+            if(AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=ticket.StartingStateHash)
+                throw new UnauthorizedAccessException("Rescue worktree changed before dispatch");
+            var response=await ReviewerCli.GenerateRescueAsync(journal,export,token);
+            if(response.Status!="OK") {
+                Record("codex_rescue_external_unavailable",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
+                    response.Status,response.Reason},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
+                return new(response.Status,Reason:response.Reason);
+            }
+            candidate=ParseExternalCandidate(response.Answer);
+            candidateResponseHash=Store.PutEvidence(Encoding.UTF8.GetBytes(response.Answer));
+            Record("codex_rescue_external_response",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
+                response_hash=candidateResponseHash,provider="sol",requested_model=ReviewerCli.Model("sol")},
+                [ticketHash,export.ManifestHash,candidateResponseHash],"untrusted_candidate",ticket.WorkspaceId,
+                key:ticket.AssignmentId+"_external_candidate");
+        }
+        var candidateHash=await ImportAsync(ticketHash,candidate,token);
+        var validationHash=await ValidateAsync(ticketHash,candidateHash,token);
+        RecordExternalValidation(ticketHash,ticket,export.ManifestHash,candidateResponseHash,candidateHash,validationHash);
+        return new("VALIDATED_IN_RESCUE",candidateHash,validationHash);
+    }
+
+    private void RecordExternalValidation(string ticketHash,Ticket ticket,string manifestHash,string responseHash,
+        string candidateHash,string validationHash) =>
+        Record("codex_rescue_external_validation",new{ticket_hash=ticketHash,manifest_hash=manifestHash,
+            response_hash=responseHash,candidate_hash=candidateHash,validation_hash=validationHash},
+            [ticketHash,manifestHash,responseHash,candidateHash,validationHash],workspace:ticket.WorkspaceId,
+            key:ticket.AssignmentId+"_external_validation");
+
+    internal static Candidate ParseExternalCandidate(string answer)
+    {
+        if(Encoding.UTF8.GetByteCount(answer)>48_000 || ReviewerEvidence.ContainsSecret(answer))
+            throw new InvalidDataException("External candidate exceeds scope");
+        using var json=JsonDocument.Parse(answer);
+        RequireUniqueMembers(json.RootElement);
+        var candidate=json.RootElement.Deserialize<Candidate>(new JsonSerializerOptions {
+            UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow
+        })??throw new InvalidDataException("External candidate is missing");
+        if(candidate.Changes is null || candidate.Changes.Any(change=>change is null))
+            throw new InvalidDataException("External candidate changes are missing");
+        return candidate;
+
+        static void RequireUniqueMembers(JsonElement element) {
+            if(element.ValueKind==JsonValueKind.Object) {
+                var names=new HashSet<string>(StringComparer.Ordinal);
+                foreach(var member in element.EnumerateObject()) {
+                    if(!names.Add(member.Name))throw new InvalidDataException("External candidate has duplicate fields");
+                    RequireUniqueMembers(member.Value);
+                }
+            } else if(element.ValueKind==JsonValueKind.Array)
+                foreach(var item in element.EnumerateArray())RequireUniqueMembers(item);
+        }
     }
     internal async Task<string> ImportAsync(string ticketHash,Candidate candidate,CancellationToken token=default) {
         var ticket=Load(ticketHash);var request=Request;var starting=JsonSerializer.Deserialize<AttemptStartingState.Snapshot>(Store.ReadEvidence(ticket.StartingStateHash))!;
