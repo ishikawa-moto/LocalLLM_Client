@@ -17,6 +17,12 @@ if(args.Length is 6 or 7 && args[0]=="--review-loopback-policy-host" && Operatin
 if(args.Length==3 && args[0]=="--review-native-dns-host" && OperatingSystem.IsWindows()){
     await ReviewerLoopbackPolicyTests.NativeDnsHostAsync(args[1],args[2]);return;
 }
+if(args.Length==5 && args[0]=="--review-system-dns-host" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.SystemDnsHostAsync(args[1],args[2],int.Parse(args[3]),args[4]);return;
+}
+if(args.Length==3 && args[0]=="--review-loopback-policy-child" && args[1]=="system-dns" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.SystemDnsChildAsync(args[2]);return;
+}
 if(args.Length==4 && args[0]=="--review-loopback-policy-child" && args[1]=="native-dns" && OperatingSystem.IsWindows()){
     await ReviewerLoopbackPolicyTests.NativeDnsChildAsync(int.Parse(args[2]),args[3]);return;
 }

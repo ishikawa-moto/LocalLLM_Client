@@ -63,6 +63,72 @@ internal static class ReviewerLoopbackPolicyTests
         return start;
     }
 
+    internal static async Task SystemDnsHostAsync(string bundle,string packageSid,int dnsServicePid,string traceName)
+    {
+        bundle=Path.GetFullPath(bundle);
+        ReviewQualification.GuardRoot(bundle);
+        var sid=new SecurityIdentifier(packageSid);
+        HostValidationCleanup.Grant(bundle,sid,false);
+        try {
+            var controlName="control-"+Guid.NewGuid().ToString("N")+".test.";
+            var isolatedName="isolated-"+Guid.NewGuid().ToString("N")+".test.";
+            var traceStart=new ProcessStartInfo(Path.Combine(bundle,"dns-trace","DnsTrace.exe")) {
+                UseShellExecute=false,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true
+            };
+            foreach(var arg in new[]{dnsServicePid.ToString(),Environment.ProcessId.ToString(),controlName,isolatedName,traceName})
+                traceStart.ArgumentList.Add(arg);
+            using var trace=Process.Start(traceStart)??throw new IOException("Could not launch DNS trace fixture");
+            using var limit=new CancellationTokenSource(TimeSpan.FromSeconds(29));
+            var traceErrors=trace.StandardError.ReadToEndAsync(limit.Token);
+            try {
+                if(await trace.StandardOutput.ReadLineAsync(limit.Token)!="DNS_TRACE_READY")
+                    throw new IOException("DNS trace fixture did not start: "+await traceErrors);
+                var control=await SystemDnsStatusAsync(controlName);
+                var start=IsolatedStart(Path.Combine(bundle,Path.GetFileName(Environment.ProcessPath!)),bundle);
+                start.Environment["DOTNET_ROOT"]=Path.Combine(bundle,"dotnet");
+                foreach(var arg in new[]{"--review-loopback-policy-child","system-dns",isolatedName})start.ArgumentList.Add(arg);
+                using var job=WindowsChildJob.StartNetworkBoundaryFixture(start,sid.Value);
+                var isolated=job.Output.ReadToEndAsync(limit.Token);
+                var errors=job.Error.ReadToEndAsync(limit.Token);
+                await job.Process.WaitForExitAsync(limit.Token);
+                if(job.Process.ExitCode!=0)throw new IOException("DNS child failed: "+await errors);
+                using var trial=JsonDocument.Parse(await isolated);
+                trace.StandardInput.Close();
+                var raw=await trace.StandardOutput.ReadToEndAsync(limit.Token);
+                await trace.WaitForExitAsync(limit.Token);
+                if(trace.ExitCode!=0)throw new IOException("DNS trace fixture failed: "+await traceErrors);
+                using var evidence=JsonDocument.Parse(raw);
+                Console.WriteLine(JsonSerializer.Serialize(new {dns_service_pid=dnsServicePid,control_pid=Environment.ProcessId,
+                    control_dns_status=control,isolated=trial.RootElement,trace=evidence.RootElement,model_requests=0}));
+            } finally {
+                if(!trace.HasExited) {
+                    trace.StandardInput.Close();
+                    if(!trace.WaitForExit(5000)) {trace.Kill();trace.WaitForExit();}
+                }
+            }
+        } finally {
+            var directory=new DirectoryInfo(bundle);
+            var acl=directory.GetAccessControl();
+            acl.PurgeAccessRules(sid);
+            directory.SetAccessControl(acl);
+        }
+    }
+
+    internal static async Task SystemDnsChildAsync(string name)
+    {
+        if(!System.Text.RegularExpressions.Regex.IsMatch(name,@"^isolated-[0-9a-f]{32}\.test\.$"))
+            throw new ArgumentException("Expected a synthetic DNS name");
+        Console.WriteLine(JsonSerializer.Serialize(new {pid=Environment.ProcessId,dns_status=await SystemDnsStatusAsync(name)}));
+    }
+
+    private static async Task<int> SystemDnsStatusAsync(string name)
+    {
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(7));
+        try { await Dns.GetHostAddressesAsync(name,deadline.Token);return 0; }
+        catch(SocketException failure) {return failure.NativeErrorCode;}
+        catch(OperationCanceledException) {return -1;}
+    }
+
     internal static async Task NativeDnsHostAsync(string bundle,string packageSid)
     {
         bundle=Path.GetFullPath(bundle);

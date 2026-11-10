@@ -7,7 +7,8 @@ param(
     [switch]$Wfp,
     [switch]$DurableWfp,
     [switch]$Relay,
-    [switch]$NativeDns
+    [switch]$NativeDns,
+    [switch]$SystemDns
 )
 
 $ErrorActionPreference = 'Stop'
@@ -178,6 +179,25 @@ try {
         $result = & $exe --review-native-dns-host $bundleItem.FullName $PackageSid
         if ($LASTEXITCODE -ne 0) { throw "Native DNS qualification failed with exit $LASTEXITCODE" }
         $result
+        return
+    }
+    if ($SystemDns) {
+        if (!$Wfp -or !$DurableWfp -or $Relay -or $NativeDns) { throw 'Expected separate durable WFP fixture' }
+        $service = Get-CimInstance Win32_Service -Filter "Name='Dnscache'"
+        if ($service.State -ne 'Running' -or !$service.ProcessId) { throw 'DNS Client service is unavailable' }
+        $traceName = 'LocalBrain.DnsTrial.' + [guid]::NewGuid().ToString('N')
+        $logman = Join-Path $env:SystemRoot 'System32/logman.exe'
+        try {
+            $result = & $exe --review-system-dns-host $bundleItem.FullName $PackageSid $service.ProcessId $traceName
+            if ($LASTEXITCODE -ne 0) { throw "System DNS qualification failed with exit $LASTEXITCODE" }
+            $result
+        } finally {
+            & $logman query $traceName -ets *> $null
+            if ($LASTEXITCODE -eq 0) {
+                & $logman stop $traceName -ets *> $null
+                if ($LASTEXITCODE -ne 0) { throw "Could not remove trial ETW session $traceName" }
+            }
+        }
         return
     }
 
