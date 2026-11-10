@@ -93,7 +93,7 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -115,6 +115,11 @@ internal static class AgentV2Commands
                 Console.WriteLine(JsonSerializer.Serialize(new{intent_hash=new DecisionAdoption(store,task.TaskId).PrepareProposal(receipt,requestId),adoption_status="PENDING_EXPLICIT_KNOWLEDGE_ADOPTION_CONFIRMATION"}));return;
             }
             var boundHash=args.ElementAtOrDefault(2)??throw new ArgumentException("Exact manifest/ticket/intent/approval identity required");
+            if(command=="learning-preview") {
+                var candidate=new DifferentialLearning(journal).RequireCandidate(boundHash);
+                Console.WriteLine(JsonSerializer.Serialize(candidate,ClientConfig.JsonOptions));
+                return;
+            }
             if(command=="adoption-prepare-human"){
                 var references=await RescueInput.ReadAsync(Console.OpenStandardInput());
                 var requestId=args.ElementAtOrDefault(3)??throw new ArgumentException("Exact adoption request ID required");

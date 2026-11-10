@@ -108,6 +108,37 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(candidate));
         Record("differential_learning_candidate",hash+"_claim",new{packet_hash=packetHash,candidate_hash=hash,adoption_status=candidate.adoption_status},[packetHash,hash,responseHash],"model_claim");return hash;
     }
+    internal Candidate RequireCandidate(string candidateHash)
+    {
+        var events = Events();
+        var workspace = HostTaskJournal.WorkspaceId(journal.WindowsRoot);
+        var receipt = Single(events, "differential_learning_candidate", candidateHash, workspace, "model_claim");
+        var refs = receipt.Input.EvidenceRefs;
+        const string quarantined = "QUARANTINED_NOT_ADOPTED";
+        if (receipt.Input.WorkerId is not null || receipt.Input.ProducerEventId is not null ||
+            refs.Length != 3 || refs[1] != candidateHash || Field(receipt, "candidate_hash") != candidateHash ||
+            Field(receipt, "packet_hash") != refs[0] || Field(receipt, "adoption_status") != quarantined)
+            throw new UnauthorizedAccessException("Learning candidate event bindings changed");
+
+        var candidate = Read<Candidate>(candidateHash);
+        if (candidate.packet_hash != refs[0] || candidate.response_hash != refs[2] ||
+            candidate.verification_status != "model_claim" || candidate.adoption_status != quarantined)
+            throw new UnauthorizedAccessException("Learning candidate record bindings changed");
+
+        _ = RequirePacket(candidate.packet_hash);
+        var packetEvents = events.Where(e => e.Input.EvidenceRefs.Contains(candidate.packet_hash, StringComparer.Ordinal)).ToArray();
+        var response = Single(packetEvents, "differential_learning_model_response", candidate.response_hash, workspace, "model_claim");
+        if (response.Input.WorkerId is not null || response.Input.ProducerEventId is not null ||
+            Field(response, "packet_hash") != candidate.packet_hash || Field(response, "response_hash") != candidate.response_hash ||
+            !response.Input.EvidenceRefs.SequenceEqual([candidate.packet_hash, candidate.response_hash], StringComparer.Ordinal))
+            throw new UnauthorizedAccessException("Learning response event bindings changed");
+
+        var responseText = DecisionProtocol.Utf8.GetString(Store.ReadEvidence(candidate.response_hash));
+        if (ParseClaims(responseText) != candidate.claims)
+            throw new InvalidDataException("Learning claims differ from the stored model response");
+        return candidate;
+    }
+
     internal async Task<string> ExtractAsync(string ticketHash,string validationHash,CancellationToken token=default) {
         var hash=Assemble(ticketHash,validationHash);var packet=RequirePacket(hash);
         string Diff(string id) {var bytes=Store.ReadEvidence(id);return bytes.Length<=16_000?HostEgress.Redact(new UTF8Encoding(false,true).GetString(bytes)).Text:"[Diff exceeds local inference budget; use hash-bound state changes only]";}

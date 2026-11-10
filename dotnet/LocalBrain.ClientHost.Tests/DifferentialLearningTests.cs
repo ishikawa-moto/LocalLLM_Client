@@ -54,6 +54,10 @@ internal static class DifferentialLearningTests
             if(infer)claimsHash=await learning.ExtractAsync(fixture.TicketHash,fixture.ValidationHash!);
             else claimsHash=learning.SaveClaims(packetHash,"{\"cause\":\"Synthetic test claim; causality unproven\",\"trigger\":\"Synthetic failed bytes differ\",\"action\":\"Check actual test and diff evidence before reuse\"}");
             var candidate=JsonSerializer.Deserialize<DifferentialLearning.Candidate>(store.ReadEvidence(claimsHash))!;
+            Check(learning.RequireCandidate(claimsHash)==candidate,"Canonical learning candidate could not be recovered");
+            Reject(()=>learning.RequireCandidate(packetHash),"A learning packet was accepted as a candidate");
+            using(var foreignJournal=new HostTaskJournal(store,fixture.MainRoot,other,HostRescueTests.Request,fixture.Head))
+                Reject(()=>new DifferentialLearning(foreignJournal).RequireCandidate(claimsHash),"Foreign task recovered a learning candidate");
             Check(candidate.verification_status=="model_claim" && candidate.adoption_status=="QUARANTINED_NOT_ADOPTED","Learning claims promoted to truth");File.WriteAllBytes(Path.Combine(outputRoot,"candidate.json"),store.ReadEvidence(claimsHash));
         }
         using(var store=new CanonicalStore(host))using(var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,HostRescueTests.Request,fixture.Head)) {
@@ -61,6 +65,11 @@ internal static class DifferentialLearningTests
             var ticket=new HostRescue(journal).Load(fixture.TicketHash);var request=HostRescueTests.Request;
             store.ReserveAssignment(new(fixture.TaskId,"learning_stale_"+Guid.NewGuid().ToString("N"),ticket.WorkerId,ticket.WorkspaceId,HostTaskJournal.RepositoryId(fixture.MainRoot),ticket.BaseCommit,ticket.StartingStateHash,ticket.StartingDiffHash,request.AllowedFiles,[],request.Requirement,request.AcceptanceCriteria,request.RequiredTests,[],2));
             Reject(()=>learning.Assemble(fixture.TicketHash,fixture.ValidationHash!),"Stale assignment generated a new learning packet");_=learning.RequirePacket(packetHash);
+            var candidate=learning.RequireCandidate(claimsHash!);
+            var response=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id))
+                .Single(e=>e.Input.EventType=="differential_learning_model_response" && e.Input.EvidenceRefs.Contains(candidate.response_hash));
+            store.Append(response.Input with{IdempotencyKey="duplicate_candidate_response_for_test"});
+            Reject(()=>learning.RequireCandidate(claimsHash!),"Duplicate learning response was accepted");
         }
         Check(OriginalState()==originalState,"Original preserved canonical store changed");
         Console.WriteLine(JsonSerializer.Serialize(new{status="PASS_PRESERVED_HOST_EVIDENCE_LEARNING_PACKET",fixture.TaskId,packet_hash=packetHash,claims_hash=claimsHash,local_model_inference=infer,original_store_unchanged=true,closure_same_task_verified=true,idempotence_restart_verified=true,tampered_blob_rejected=true,cross_task_rejected=true,stale_assignment_rejected=true,repeated_starting_state_disambiguated=true,original_store_hash=originalState,adoption_status="QUARANTINED_NOT_ADOPTED",provenance="Original Phase5 Host Git/WSL tests and Critic actual; failing state and candidate synthetic; no external Codex authorship established"}));
