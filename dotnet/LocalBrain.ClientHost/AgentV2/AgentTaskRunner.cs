@@ -102,6 +102,11 @@ internal static class AgentTaskRunner
         }
         var fileOnly = request.CommandExecution?.MaxCommands == 0;
         var knowledge = fileOnly ? SecondBrainEvidence.Packet.Empty : await SecondBrainEvidence.FetchAsync(config, request.Requirement, token);
+        if (knowledge.HasEvidence)
+            journal.Record("secondbrain_sources", new {
+                chunk_ids = knowledge.ChunkIds,
+                markdown_sha256 = HashText(knowledge.Markdown)
+            }, "runtime_observed");
         // A failed Actor may already have produced the complete allowed diff.
         // Recheck that exact checkpoint with fresh tests and reviewers before
         // asking the same Pi session to edit it again. HIGH still follows its
@@ -118,7 +123,7 @@ internal static class AgentTaskRunner
         }
         var actorPrompt = recover || checkpoint?.Phase is "handoff_ready" or "handoff_pending" or "running" ? BuildRecoveryPrompt(request, before.ReviewDiff, knowledge) :
             checkpoint is null ? BuildActorPrompt(request, knowledge) :
-            BuildRepairPrompt(request, [], new CriticReview("NOT_RUN", []), before.ChangedFiles,before.ReviewDiff);
+            BuildRepairPrompt(request, [], new CriticReview("NOT_RUN", []), before.ChangedFiles,before.ReviewDiff,knowledge);
         if(recover || checkpoint?.Phase is "handoff_ready" or "handoff_pending" or "running")
             actorPrompt+="\nCanonical task evidence hashes available via host_recall:\n"+string.Join("\n",await journal.RecallRefsAsync(taskMemory,request.Requirement,token));
         if (checkpoint?.Advice is {} advice)
@@ -509,7 +514,8 @@ internal static class AgentTaskRunner
     }
 
     private static string BuildRepairPrompt(AgentTaskRequest request,
-        IReadOnlyList<ToolRouter.TestResult> tests, CriticReview review, string[] changedFiles,string? currentDiff=null)
+        IReadOnlyList<ToolRouter.TestResult> tests, CriticReview review, string[] changedFiles,
+        string? currentDiff=null, SecondBrainEvidence.Packet? knowledge=null)
     {
         var text = new StringBuilder();
         text.AppendLine("Continue the same scoped task in the current Pi session. Repair the remaining evidence gaps.")
@@ -542,6 +548,7 @@ internal static class AgentTaskRunner
             text.AppendLine("Fresh Critic issues:");
             foreach (var issue in review.Issues) text.Append("- ").AppendLine(issue);
         }
+        if (knowledge is not null) AppendKnowledge(text, knowledge);
         return text.ToString();
     }
 
