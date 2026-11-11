@@ -367,7 +367,7 @@ internal sealed partial class CanonicalStore : IDisposable
             ON CONFLICT(worker_id) DO UPDATE SET capabilities_json=$caps,max_parallel_tasks=$max;
             """, null, ("$id", workerId), ("$caps", JsonSerializer.Serialize(capabilities)), ("$max", maxParallelTasks));
     }
-    public AssignmentReceipt ReserveAssignment(TaskSpec spec)
+    public AssignmentReceipt ReserveAssignment(TaskSpec spec, bool requireUnassigned = false)
     {
         ValidateId(spec.AssignmentId); ValidateId(spec.WorkerId);
         ValidateHash(spec.StartingStateHash); ValidateHash(spec.StartingDiffHash);
@@ -387,6 +387,8 @@ internal sealed partial class CanonicalStore : IDisposable
             // Reservation persists a protocol packet only. It never starts ServerPC or grants completion authority.
             var generation = Convert.ToInt32(Scalar("SELECT coalesce(max(generation),0)+1 FROM assignments WHERE task_id=$task;",
                 tx, ("$task", spec.TaskId)));
+            if (requireUnassigned && generation != 1)
+                throw new InvalidOperationException("A prior assignment must be reconciled before recovering a rescue reservation");
             Execute("UPDATE assignments SET status='STALE' WHERE task_id=$task AND status!='STALE';",tx,("$task",spec.TaskId));
             Execute("""
                 INSERT INTO assignments(assignment_id,task_id,worker_id,workspace_id,generation,status,task_spec_hash,task_spec_json)

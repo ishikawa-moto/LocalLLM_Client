@@ -47,7 +47,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var ticket=JsonSerializer.Deserialize<Ticket>(Store.ReadEvidence(hash))??throw new InvalidDataException("Invalid rescue ticket");RequireTicket(ticket,hash);return ticket;
     }
     internal async Task<string> ReserveAsync(AttemptStartingState.Saved starting,CancellationToken token=default,
-        FailureObservation? observation=null) {
+        FailureObservation? observation=null, string? expectedFailureDiffHash=null) {
         Slack.RestrictedExecution.DenyExternal();
         var exportPolicy=Store.RequireExportPolicy(journal.TaskId).Policy;journal.RequireMutationApproval();
         var source=Store.ReadTaskEvent(journal.TaskId,starting.EventId);
@@ -58,6 +58,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if(failure.Head!=starting.State.Head)throw new UnauthorizedAccessException("Failure HEAD changed");
         var snapshot=await GitEvidence.CaptureAsync(journal.WindowsRoot,Request.AllowedFiles,token);
         if(snapshot.UnexpectedFiles.Length!=0)throw new UnauthorizedAccessException("Failure changed outside write_scope");
+        if (expectedFailureDiffHash is not null && AgentTaskRunner.HashTextForHost(snapshot.ReviewDiff) != expectedFailureDiffHash)
+            throw new UnauthorizedAccessException("Stopped worktree differs from the Canonical checkpoint");
         var startingFiles=starting.State.Files.Where(f=>Request.AllowedFiles.Contains(f.Path,StringComparer.OrdinalIgnoreCase)).ToArray();
         var sources=new List<object>();
         var sourceBytes=0;
@@ -76,7 +78,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         Store.RegisterWorker(worker,["candidate_patch","host_export_result_protocol"]);
         var spec=new CanonicalStore.TaskSpec(journal.TaskId,assignment,worker,workspace,HostTaskJournal.RepositoryId(journal.WindowsRoot),starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
             Request.AllowedFiles,[],Request.Requirement,Request.AcceptanceCriteria,Request.RequiredTests,[],1);
-        var reserved=Store.ReserveAssignment(spec);
+        var reserved=Store.ReserveAssignment(spec,requireUnassigned:expectedFailureDiffHash is not null);
         // Only an explicit file export scope adds complete starting source.
         var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",requested_model=ReviewerCli.Model("sol"),
             task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
@@ -97,6 +99,44 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var queue=Path.Combine(Store.Root,"rescue-queue");CanonicalStore.GuardPath(queue);Directory.CreateDirectory(queue);CanonicalStore.GuardPath(queue);
         var path=Path.Combine(queue,assignment+".json");using(var file=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough)){var bytes=JsonSerializer.SerializeToUtf8Bytes(new{ticket_hash=hash,status="RESERVED_PROTOCOL_ONLY"});file.Write(bytes);file.Flush(true);}
         return hash;
+    }
+
+    internal async Task<string> ReserveStoppedTrialAsync(CanonicalStore.TaskSnapshot task, CancellationToken token=default)
+    {
+        if (task.TaskId != journal.TaskId || Request.CommandExecution is null ||
+            !Request.RequiredTests.Any(test => test.Kind == "dotnet_test") ||
+            Request.RequiredTests.Any(test => test.Kind is not ("dotnet_test" or "dotnet_build")))
+            throw new UnauthorizedAccessException("Stopped rescue requires the exact managed .NET task");
+        using var document = JsonDocument.Parse(task.StateJson);
+        var state = document.RootElement;
+        if (state.GetProperty("phase").GetString() != "needs_work" || !state.GetProperty("no_progress").GetBoolean() ||
+            state.GetProperty("test_mutated_worktree").GetBoolean() || state.GetProperty("false_verified").GetBoolean())
+            throw new UnauthorizedAccessException("Checkpoint does not establish a clean, stopped validation failure");
+        var failed = state.GetProperty("pending_tests").EnumerateArray().Select(test => test.GetString()!).ToArray();
+        var attempt = state.GetProperty("actor_turns").GetInt32();
+        if (failed.Length == 0 || attempt != task.ActorTurns)
+            throw new UnauthorizedAccessException("Stopped checkpoint lacks failed required tests or exact attempt identity");
+        var current = await GitEvidence.CaptureAsync(journal.WindowsRoot, Request.AllowedFiles, token);
+        var failureDiffHash = state.GetProperty("review_diff_sha256").GetString();
+        if (current.Head != journal.ExpectedHead || current.UnexpectedFiles.Length != 0 ||
+            AgentTaskRunner.HashTextForHost(current.ReviewDiff) != failureDiffHash)
+            throw new UnauthorizedAccessException("Stopped worktree differs from the Canonical checkpoint");
+        var existing = Events("codex_rescue_reserved").SingleOrDefault();
+        if (existing is not null)
+        {
+            var hash = existing.Input.Metadata.GetProperty("ticket_hash").GetString()!;
+            _ = Load(hash);
+            return hash;
+        }
+        var source = Events("attempt_starting_state").LastOrDefault(e => e.Input.WorkspaceId == task.WorkspaceId &&
+            e.Input.VerificationStatus == "host_verified" && e.Input.Metadata.GetProperty("attempt").GetInt32() == attempt)
+            ?? throw new InvalidDataException("No Canonical pre-attempt state matches the stopped task");
+        var stateHash = source.Input.Metadata.GetProperty("starting_state_hash").GetString()!;
+        var baseline = JsonSerializer.Deserialize<AttemptStartingState.Snapshot>(Store.ReadEvidence(stateHash))
+            ?? throw new InvalidDataException("Stopped attempt starting state is missing");
+        var repeats = state.GetProperty("tests_without_improvement").GetInt32();
+        var observation = new FailureObservation(attempt, repeats == 0, repeats, "STOPPED", failed, "qwen_stalled");
+        return await ReserveAsync(new(baseline, stateHash, source.EventId), token, observation, failureDiffHash);
     }
     internal HostEgress.Prepared PreparedExport(Ticket ticket) {
         var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(Store.ReadEvidence(ticket.ExportManifestHash))!;

@@ -100,7 +100,8 @@ internal static class AgentTaskRunner
             if (planReview.Verdict != "PASS")
                 throw new InvalidOperationException("Sol plan review did not pass");
         }
-        var fileOnly = request.CommandExecution?.MaxCommands == 0;
+        var fileOnly = request.CommandExecution?.MaxCommands == 0 &&
+            request.RequiredTests.All(test => test.Kind == "git_diff_check");
         var knowledge = fileOnly ? SecondBrainEvidence.Packet.Empty : await SecondBrainEvidence.FetchAsync(config, request.Requirement, token);
         if (knowledge.HasEvidence)
             journal.Record("secondbrain_sources", new {
@@ -294,7 +295,8 @@ internal static class AgentTaskRunner
         var solRescue = checkpoint?.Advice is {} usedAdvice
             ? new SolReviewer.Rescue("GUIDANCE", usedAdvice.Steps, 1)
             : new SolReviewer.Rescue("NOT_RUN", [], 0);
-        if (checkpoint?.Advice is null && !fileOnly && noProgress && after.UnexpectedFiles.Length == 0 && !testMutatedWorktree)
+        if (checkpoint?.Advice is null && request.CommandExecution?.MaxCommands != 0 && noProgress &&
+            after.UnexpectedFiles.Length == 0 && !testMutatedWorktree)
         {
             try
             {

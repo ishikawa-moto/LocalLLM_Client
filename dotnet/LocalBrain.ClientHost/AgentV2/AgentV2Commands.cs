@@ -94,7 +94,9 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-reserve-stopped" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+            if (command == "rescue-reserve-stopped" && (controlRoot is null || args.Length != 3))
+                throw new ArgumentException("Stopped rescue reservation requires the dedicated trial and exact task ID");
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
@@ -102,6 +104,8 @@ internal static class AgentV2Commands
                 ?store.ResolveAdoptionOwner(canonicalWorkspaceId,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact intent/approval identity required"),command=="adoption-dispatch")
                 :store.LatestTask(canonicalWorkspaceId)??throw new InvalidDataException("No canonical task");
             var request=AgentTaskRequest.Parse(store.TaskRequest(task.TaskId));var state=JsonDocument.Parse(task.StateJson);
+            if (command == "rescue-reserve-stopped" && task.TaskId != args[2])
+                throw new UnauthorizedAccessException("Stopped rescue task is not the current workspace task");
             var head=state.RootElement.GetProperty("git_head").GetString()??throw new InvalidDataException("No canonical HEAD");
             var submissionLock=Path.Combine(TaskAgentCoordinator.WorkspaceDirectory(root,controlRoot),"submission.lock");
             if(request.CommandExecution is not null)CanonicalStore.GuardPath(submissionLock);
@@ -111,6 +115,11 @@ internal static class AgentV2Commands
                 TaskAgentCoordinator.EnterStoppedTaskGrant(root,task.TaskId,controlRoot);
             using var journal=new HostTaskJournal(store,root,task.TaskId,request,head);
             if(config.PersonalValidation)journal.EnablePersonalValidation();
+            if (command == "rescue-reserve-stopped") {
+                var ticketHash = await new HostRescue(journal).ReserveStoppedTrialAsync(task);
+                Console.WriteLine(JsonSerializer.Serialize(new { ticket_hash = ticketHash, status = "RESERVED_PROTOCOL_ONLY" }));
+                return;
+            }
             if(command=="egress-pending") {
                 var manifestEvents=store.EventIds(task.TaskId).Select(id=>store.ReadTaskEvent(task.TaskId,id)).Where(e=>e.Input.EventType=="external_export_prepared");
                 Console.WriteLine(JsonSerializer.Serialize(manifestEvents.Select(e=>new{e.EventId,e.Input.Metadata}),ClientConfig.JsonOptions));return;
