@@ -43,6 +43,14 @@ internal static class SupervisorRulesTests
             !assisted.Contains("Current bounded Git diff and new-file excerpts:"+Environment.NewLine+"test diff",StringComparison.Ordinal))
             throw new Exception("A fresh Pi session must retain the same bounded advice and diff");
 
+        var packet = new SecondBrainEvidence.Packet("Reviewed reference excerpt", [new string('e', 64)]);
+        var repair = AgentTaskRunner.BuildRepairPrompt(task, [failure], new("NOT_RUN", []),
+            ["Fixture.cs"], "test diff", packet, new("hash", [step]));
+        if (!repair.Contains(step, StringComparison.Ordinal) ||
+            !repair.Contains(packet.Markdown, StringComparison.Ordinal) ||
+            !repair.Contains("CS1234", StringComparison.Ordinal))
+            throw new Exception("An ordinary repair must retain approved advice, cited knowledge, and Host test evidence");
+
         await CheckDecisionContextAsync();
     }
 

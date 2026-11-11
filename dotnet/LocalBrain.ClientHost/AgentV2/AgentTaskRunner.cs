@@ -20,7 +20,7 @@ internal static class AgentTaskRunner
         string ReviewRoute = "legacy", string CopilotVerdict = "NOT_RUN",
         string[]? CopilotIssues = null, string AstraStatus = "NOT_RUN",
         bool ExternalReviewPassed = false);
-    private sealed record CriticReview(string Verdict, string[] Issues);
+    internal sealed record CriticReview(string Verdict, string[] Issues);
     private sealed record ResumeCheckpoint(string TaskId, string SessionId, string Head,
         string[] ChangedFiles, int ActorTurns, string Phase, int RecoveryCount,
         string? ReviewRoute,int Replans=0,int TestsWithoutImprovement=0,bool FalseVerified=false,
@@ -287,7 +287,8 @@ internal static class AgentTaskRunner
                 decision.Action is "STOP" or "ESCALATE_SOL") break;
             replans++;
             previousDiff = after.ReviewDiff;
-            actorPrompt = BuildRepairPrompt(request, tests, review, after.ChangedFiles,after.ReviewDiff);
+            actorPrompt = BuildRepairPrompt(request, tests, review, after.ChangedFiles,
+                after.ReviewDiff, knowledge, activeAdvice);
             await WriteTaskStateAsync(windowsRoot, taskId, "repairing", actor.SessionId,
                 before.Head, after.ChangedFiles, after.ReviewDiff, tests, actor, actorTurns, replans,
                 testsWithoutImprovement, totalToolCalls, totalToolErrors, requestHash,
@@ -533,9 +534,10 @@ internal static class AgentTaskRunner
         return text.ToString();
     }
 
-    private static string BuildRepairPrompt(AgentTaskRequest request,
+    internal static string BuildRepairPrompt(AgentTaskRequest request,
         IReadOnlyList<ToolRouter.TestResult> tests, CriticReview review, string[] changedFiles,
-        string? currentDiff=null, SecondBrainEvidence.Packet? knowledge=null)
+        string? currentDiff=null, SecondBrainEvidence.Packet? knowledge=null,
+        HostRescue.PendingAdvice? advice=null)
     {
         var text = new StringBuilder();
         text.AppendLine("Continue the same scoped task in the current Pi session. Repair the remaining evidence gaps.")
@@ -569,6 +571,7 @@ internal static class AgentTaskRunner
             foreach (var issue in review.Issues) text.Append("- ").AppendLine(issue);
         }
         if (knowledge is not null) AppendKnowledge(text, knowledge);
+        if (advice is not null) text.Append(AdviceReference(advice));
         return text.ToString();
     }
 
