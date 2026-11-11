@@ -128,9 +128,11 @@ internal static class AgentV2Commands
                 return;
             }
             if(command=="learning-adoption-preview") {
-                var body=new DifferentialLearning(journal).DraftAdoptionBody(boundHash);
+                var learning=new DifferentialLearning(journal);
+                var body=learning.DraftAdoptionBody(boundHash);
+                var compact=learning.DraftAdoptionBody(boundHash,compact:true);
                 Console.WriteLine(JsonSerializer.Serialize(new {
-                    candidate_hash=boundHash, body, adoption_status="QUARANTINED_NOT_ADOPTED"
+                    candidate_hash=boundHash, body, compact_body=compact, adoption_status="QUARANTINED_NOT_ADOPTED"
                 },ClientConfig.JsonOptions));
                 return;
             }

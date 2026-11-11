@@ -189,13 +189,13 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         return candidate;
     }
 
-    internal string DraftAdoptionBody(string candidateHash)
+    internal string DraftAdoptionBody(string candidateHash, bool compact=false)
     {
         var candidate = RequireCandidate(candidateHash);
         var packet = RequirePacket(candidate.packet_hash);
         var claims = candidate.claims;
         // Quote claims so model-supplied lines cannot masquerade as Host provenance.
-        var body = $"""
+        var body = compact ? CompactAdoptionBody(candidateHash,candidate,packet) : $"""
             Adoption draft (quarantined)
             Candidate SHA-256: {candidateHash}
             Packet SHA-256: {candidate.packet_hash}
@@ -207,11 +207,44 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
             Candidate provenance: {packet.candidate_provenance}
             Passing tests do not establish causality. Current repository evidence takes precedence.
             """;
-        if (Encoding.UTF8.GetByteCount(body) > 4096)
+        if (Encoding.UTF8.GetByteCount(body) > (compact ? 1100 : 4096))
             throw new InvalidDataException("Adoption draft exceeds local review budget");
         if (body.Contains("[REDACTED:", StringComparison.OrdinalIgnoreCase) || HostEgress.Redact(body).Count != 0)
             throw new UnauthorizedAccessException("Adoption draft contains sensitive or redacted content");
         return body;
+    }
+
+    private string CompactAdoptionBody(string candidateHash,Candidate candidate,Manifest packet)
+    {
+        var validation=Read<HostRescue.Validation>(packet.validation_hash);
+        var testCount=validation.Tests.Sum(test=>test.ExecutedTests??0);
+        var claims=candidate.claims;
+        return $"""
+            Candidate SHA-256: {candidateHash}
+            Packet SHA-256: {candidate.packet_hash}
+            Host verified: {validation.Tests.Length} required test operations passed, {testCount} test cases reported, Critic {validation.CriticVerdict}.
+            Unverified cause: {QuoteForRetrieval(claims.cause,145)}
+            Trigger: {QuoteForRetrieval(claims.trigger,125)}
+            Suggested action: {QuoteForRetrieval(claims.action,465)}
+            Check against current source and tests before reuse.
+            """;
+    }
+
+    private static string QuoteForRetrieval(string text,int byteBudget)
+    {
+        var quoted=JsonSerializer.Serialize(text);
+        if(Encoding.UTF8.GetByteCount(quoted)<=byteBudget)return quoted;
+        var result=new StringBuilder();
+        var remaining=byteBudget-5; // Leave room for two quotes and three dots.
+        foreach(var rune in text.EnumerateRunes())
+        {
+            var character=rune.ToString();
+            var size=Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(character))-2;
+            if(size>remaining)break;
+            result.Append(character);
+            remaining-=size;
+        }
+        return JsonSerializer.Serialize(result.Append("...").ToString());
     }
 
     internal async Task<string> ExtractAsync(string ticketHash,string validationHash,CancellationToken token=default) {

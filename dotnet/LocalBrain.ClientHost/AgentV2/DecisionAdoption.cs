@@ -145,9 +145,11 @@ internal sealed class DecisionAdoption(CanonicalStore store, string taskId)
     {
         if (journal.TaskId != taskId || journal.Canonical != store)
             throw new UnauthorizedAccessException("Learning candidate must belong to this Host adoption task");
-        var expectedBody = new DifferentialLearning(journal).DraftAdoptionBody(candidateHash);
+        var learning = new DifferentialLearning(journal);
         var proposal = DecisionProtocol.Proposal(DecisionProtocol.Parse(receiptJson));
-        if (!string.Equals(proposal.GetProperty("body").GetString(), expectedBody, StringComparison.Ordinal))
+        var body = proposal.GetProperty("body").GetString();
+        if (!string.Equals(body, learning.DraftAdoptionBody(candidateHash), StringComparison.Ordinal) &&
+            !string.Equals(body, learning.DraftAdoptionBody(candidateHash,compact:true), StringComparison.Ordinal))
             throw new UnauthorizedAccessException("Proposal body differs from the verified learning draft");
         return PrepareProposal(receiptJson, requestId, candidateHash);
     }
