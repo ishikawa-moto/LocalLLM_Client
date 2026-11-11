@@ -145,57 +145,91 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal sealed record ExternalResult(string Status,string? CandidateHash=null,string? ValidationHash=null,string? Reason=null);
 
-    internal HostEgress.Prepared PrepareAdvice(string ticketHash) => PrepareRescueMode(ticketHash,"advice",
-        "Return exactly {\"verdict\":\"GUIDANCE\",\"steps\":[\"concrete next step\"]} or {\"verdict\":\"UNRESOLVED\",\"steps\":[]}. Use only the enclosed data. Recommend at most three steps within the write scope and named tests. Do not use tools or edit files.");
+    internal HostEgress.Prepared PrepareAdvice(string ticketHash, bool formatRetry=false) => PrepareRescueMode(ticketHash,"advice",
+        "Review the approved task data on stdin. Return structured advice with verdict GUIDANCE and one to three actionable steps, each at most 240 characters, or verdict UNRESOLVED and no steps. Use only the supplied data. Do not call tools, run commands, or edit files.", formatRetry);
 
-    internal HostEgress.Prepared PrepareDirectEdit(string ticketHash) => PrepareRescueMode(ticketHash,"edit",
-        "Use tools to make the actual source edits in your current working directory, which contains only the scoped source files. Modify only write_scope. Do not access other directories or run the project's tests here. The Host collects your edits and independently runs the required tests. Return a short plain-text summary of the changes.");
+    internal HostEgress.Prepared PrepareDirectEdit(string ticketHash, bool formatRetry=false) => PrepareRescueMode(ticketHash,"edit",
+        "Complete this coding task by editing the actual file in your current working directory. Use your file editing tools before giving a final response. Read the approved task data on stdin and modify only its write_scope. Do not access other directories or run the project's tests. The Host independently tests the edit. After the file is saved, return a short plain-text summary.", formatRetry);
 
-    private HostEgress.Prepared PrepareRescueMode(string ticketHash,string mode,string instructions)
+    private HostEgress.Prepared PrepareRescueMode(string ticketHash,string mode,string instructions,bool formatRetry)
     {
         Slack.RestrictedExecution.DenyExternal();
         var ticket=Load(ticketHash);
         journal.RequireMutationApproval();
-        var eventType="codex_rescue_"+mode+"_prepared";
+        var eventType="codex_rescue_"+mode+(formatRetry?"_format_retry":"")+"_prepared";
         var existing=Events(eventType).SingleOrDefault();
         if (existing is not null)
         {
             if (existing.Input.EvidenceRefs[0]!=ticketHash)
                 throw new UnauthorizedAccessException("Sol packet was prepared for another rescue assignment");
             var existingHash=existing.Input.EvidenceRefs[1];
-            var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(Store.ReadEvidence(existingHash))!;
-            return new(manifest,existingHash,new UTF8Encoding(false,true).GetString(Store.ReadEvidence(manifest.ExportHash)));
+            return ReadPrepared(existingHash);
+        }
+        if (formatRetry)
+        {
+            var original = Events("codex_rescue_"+mode+"_prepared").SingleOrDefault();
+            var resultType = mode=="advice"?"codex_rescue_advice":"codex_rescue_edit_rejected";
+            var field = mode=="advice"?"status":"reason";
+            var expected = mode=="advice"?"INVALID":"Sol left all approved files unchanged";
+            if (original is null || original.Input.EvidenceRefs[0]!=ticketHash ||
+                !Events(resultType).Any(e=>e.Input.Metadata.GetProperty("manifest_hash").GetString()==original.Input.EvidenceRefs[1] &&
+                    e.Input.Metadata.GetProperty(field).GetString()==expected))
+                throw new InvalidOperationException("One corrected export is allowed only after a recorded format or unchanged-edit result");
         }
         var packet=PreparedExport(ticket);
         if (packet.Manifest.PolicyMode!="manual" || packet.Manifest.RedactionCount!=0)
             throw new UnauthorizedAccessException("Sol requires an exact manual export");
         var input=System.Text.Json.Nodes.JsonNode.Parse(packet.Payload)!.AsObject();
         input["response_schema"]=instructions;
+        input["explicit_development_prompt"]=true;
+        if (formatRetry) input["format_retry"]=true;
         var prepared=journal.PrepareExternalPacket(input.ToJsonString(),"codex_protocol",files:Request.AllowedFiles);
         Record(eventType,new{ticket_hash=ticketHash,manifest_hash=prepared.ManifestHash},
-            [ticketHash,prepared.ManifestHash],key:ticket.AssignmentId+"_"+mode+"_prepared");
+            [ticketHash,prepared.ManifestHash],key:ticket.AssignmentId+"_"+eventType);
         return prepared;
+    }
+
+    private HostEgress.Prepared ReadPrepared(string manifestHash)
+    {
+        var manifest = JsonSerializer.Deserialize<HostEgress.Manifest>(Store.ReadEvidence(manifestHash))!;
+        return new(manifest, manifestHash, new UTF8Encoding(false,true).GetString(Store.ReadEvidence(manifest.ExportHash)));
+    }
+
+    private HostEgress.Prepared ApprovedMode(string ticketHash,string manifestHash,string mode)
+    {
+        var original = Events("codex_rescue_"+mode+"_prepared");
+        var corrected = Events("codex_rescue_"+mode+"_format_retry_prepared");
+        if (!original.Concat(corrected).Any(e=>e.Input.EvidenceRefs.SequenceEqual([ticketHash,manifestHash])))
+            throw new UnauthorizedAccessException("Sol approval is for a different rescue operation or manifest");
+        return ReadPrepared(manifestHash);
+    }
+
+    private static string? ExplicitPrompt(HostEgress.Prepared export)
+    {
+        using var doc = JsonDocument.Parse(export.Payload);
+        return doc.RootElement.TryGetProperty("explicit_development_prompt", out var value) && value.GetBoolean()
+            ? doc.RootElement.GetProperty("response_schema").GetString() : null;
     }
 
     internal async Task<SolReviewer.Rescue> RunAdviceAsync(string ticketHash,string manifestHash,
         string? developmentCodex,CancellationToken token=default)
     {
         var ticket=Load(ticketHash);
-        var export=PrepareAdvice(ticketHash);
-        if (export.ManifestHash!=manifestHash)
-            throw new UnauthorizedAccessException("Sol advice approval is for a different manifest");
+        var export=ApprovedMode(ticketHash,manifestHash,"advice");
         if (Events("external_dispatch_authorized").Any(e=>e.Input.EvidenceRefs.Contains(manifestHash)))
             throw new InvalidOperationException("Sol advice was already dispatched for this task");
         if (AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.MainRoot,null,token))!=ticket.FailureStateHash)
             throw new UnauthorizedAccessException("Task worktree changed before Sol advice");
         var diff=await GitEvidence.CaptureAsync(ticket.MainRoot,Request.AllowedFiles,token);
-        var reply=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex);
+        var prompt=ExplicitPrompt(export);
+        var reply=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex,
+            developmentPrompt:prompt, adviceSchema:prompt is not null);
         var advice=reply.Status=="OK"?SolReviewer.ParseRescue(reply.Answer,1):new(reply.Status,[],1);
         if (reply.Status!="OK") return advice;
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(advice));
         Record("codex_rescue_advice",new{ticket_hash=ticketHash,manifest_hash=manifestHash,
             diff_hash=AgentTaskRunner.HashTextForHost(diff.ReviewDiff),status=advice.Verdict,reply.ExitCode},
-            [ticketHash,manifestHash,hash],"untrusted_candidate",key:ticket.AssignmentId+"_advice");
+            [ticketHash,manifestHash,hash],"untrusted_candidate",key:ticket.AssignmentId+"_advice_"+manifestHash);
         return advice;
     }
 
@@ -206,8 +240,9 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var events=store.EventIds(taskId).Select(id=>store.ReadTaskEvent(taskId,id))
             .Where(e=>e.Input.Producer=="windows_host").ToArray();
         if (events.Any(e=>e.Input.EventType=="codex_rescue_advice_consumed")) return null;
-        var result=events.SingleOrDefault(e=>e.Input.EventType=="codex_rescue_advice");
-        if (result is null || result.Input.Metadata.GetProperty("status").GetString()!="GUIDANCE" ||
+        var result=events.SingleOrDefault(e=>e.Input.EventType=="codex_rescue_advice" &&
+            e.Input.Metadata.GetProperty("status").GetString()=="GUIDANCE");
+        if (result is null ||
             result.Input.Metadata.GetProperty("diff_hash").GetString()!=diffHash) return null;
         var hash=result.Input.EvidenceRefs[2];
         var advice=JsonSerializer.Deserialize<SolReviewer.Rescue>(store.ReadEvidence(hash))!;
@@ -301,8 +336,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if(required.Length==0 || required.Any(test=>test.Kind is not ("dotnet_build" or "dotnet_test")) ||
             !required.Any(test=>test.Kind=="dotnet_test"))
             throw new UnauthorizedAccessException("External code rescue requires isolated dotnet_test validation");
-        var export=editManifestHash is null?PreparedExport(ticket):PrepareDirectEdit(ticketHash);
-        if(editManifestHash is not null && (export.ManifestHash!=editManifestHash || developmentCodex is null))
+        var export=editManifestHash is null?PreparedExport(ticket):ApprovedMode(ticketHash,editManifestHash,"edit");
+        if(editManifestHash is not null && developmentCodex is null)
             throw new UnauthorizedAccessException("Direct Sol editing requires its exact manual export and development CLI");
         var received=Events("codex_rescue_external_response").SingleOrDefault(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash);
         if(received is not null && received.Input.Metadata.GetProperty("manifest_hash").GetString()!=export.ManifestHash)
@@ -335,7 +370,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             if(AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=ticket.StartingStateHash)
                 throw new UnauthorizedAccessException("Rescue worktree changed before dispatch");
             var edit=editManifestHash is null?null:PrepareEditDirectory(ticket,export);
-            var response=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex,edit?.Root);
+            var response=await ReviewerCli.GenerateRescueAsync(journal,export,token,developmentCodex,edit?.Root,
+                edit is null?null:ExplicitPrompt(export));
             if(response.Status!="OK") {
                 Record("codex_rescue_external_unavailable",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
                     response.Status,response.Reason,response.ExitCode},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);

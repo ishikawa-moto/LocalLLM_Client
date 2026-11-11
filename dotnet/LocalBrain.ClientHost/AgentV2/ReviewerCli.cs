@@ -110,7 +110,8 @@ internal static class ReviewerCli
     }
 
     internal static Task<Reply> GenerateRescueAsync(HostTaskJournal journal, HostEgress.Prepared export,
-        CancellationToken token, string? developmentCodex = null, string? editRoot = null)
+        CancellationToken token, string? developmentCodex = null, string? editRoot = null,
+        string? developmentPrompt = null, bool adviceSchema = false)
     {
         Slack.RestrictedExecution.DenyExternal();
         token.ThrowIfCancellationRequested();
@@ -121,7 +122,8 @@ internal static class ReviewerCli
         if (developmentCodex is not null)
         {
             HostValidationPolicy.RequireRegisteredPublisher(journal);
-            return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token, editRoot);
+            return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token, editRoot,
+                developmentPrompt, adviceSchema);
         }
         if (editRoot is not null)
             throw new InvalidOperationException("Direct editing requires the explicit development Codex CLI");
@@ -134,11 +136,13 @@ internal static class ReviewerCli
     }
 
     private static async Task<Reply> RunApprovedDevelopmentRescueAsync(HostTaskJournal journal,
-        HostEgress.Prepared export, string executable, CancellationToken token, string? editRoot)
+        HostEgress.Prepared export, string executable, CancellationToken token, string? editRoot,
+        string? developmentPrompt, bool adviceSchema)
     {
         RequireDevelopmentExecutable(executable);
         using var dispatch = new HostEgress(journal.Canonical).AuthorizeDispatch(export, "codex_protocol");
-        return await RunDevelopmentRescueCliAsync(journal, export, executable, token, editRoot);
+        return await RunDevelopmentRescueCliAsync(journal, export, executable, token, editRoot,
+            developmentPrompt, adviceSchema);
     }
 
     private static void RequireDevelopmentExecutable(string executable)
@@ -152,7 +156,8 @@ internal static class ReviewerCli
 
     // Used by the administrative development route and the public fixture after HostEgress authorization.
     internal static async Task<Reply> RunDevelopmentRescueCliAsync(HostTaskJournal journal,
-        HostEgress.Prepared export, string executable, CancellationToken token = default, string? editRoot = null)
+        HostEgress.Prepared export, string executable, CancellationToken token = default, string? editRoot = null,
+        string? developmentPrompt = null, bool adviceSchema = false)
     {
         Slack.RestrictedExecution.DenyExternal();
         RequireDevelopmentExecutable(executable);
@@ -171,13 +176,25 @@ internal static class ReviewerCli
             "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox",
             editRoot is null ? "read-only" : "workspace-write", "--cd", work, "--model", Model("sol"),
             "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
-            "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"", "-" })
+            "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"" })
             start.ArgumentList.Add(arg);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromMinutes(5));
         token.ThrowIfCancellationRequested();
+        string? schemaPath = null;
         try
         {
+            if (adviceSchema)
+            {
+                schemaPath = Path.GetTempFileName();
+                File.WriteAllText(schemaPath, """
+                    {"type":"object","properties":{"verdict":{"type":"string","enum":["GUIDANCE","UNRESOLVED"]},"steps":{"type":"array","items":{"type":"string"}}},"required":["verdict","steps"],"additionalProperties":false}
+                    """, new UTF8Encoding(false));
+                start.ArgumentList.Add("--output-schema");
+                start.ArgumentList.Add(schemaPath);
+            }
+            // The approved packet carries this exact instruction and remains the only stdin data.
+            start.ArgumentList.Add(developmentPrompt ?? "-");
             using var binary = new FileStream(executable, FileMode.Open, FileAccess.Read, FileShare.Read);
             var sha256 = Convert.ToHexStringLower(SHA256.HashData(binary));
             using var process = Process.Start(start) ?? throw new IOException("Codex CLI failed to start");
@@ -200,7 +217,7 @@ internal static class ReviewerCli
                 }
                 var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000, allowEditEvents: editRoot is not null) :
                     new Reply("UNAVAILABLE", Reason: FailureReason(await stdout + await stderr));
-                if (editRoot is not null)
+                if (editRoot is not null || developmentPrompt is not null)
                     journal.Record("development_rescue_cli_completed", new {
                         manifest_hash = export.ManifestHash, process.ExitCode, reply.Status, reply.Reason,
                         reply.EditEvents, reply.CommandEvents, answer_bytes = Encoding.UTF8.GetByteCount(reply.Answer)
@@ -220,6 +237,10 @@ internal static class ReviewerCli
         catch (Exception error) when (error is IOException or System.ComponentModel.Win32Exception or InvalidDataException)
         {
             return new("UNAVAILABLE", Reason: error.GetType().Name);
+        }
+        finally
+        {
+            if (schemaPath is not null) File.Delete(schemaPath);
         }
     }
     internal static async Task<Reply> InvokeAsync(string provider, string packet, string effort, CancellationToken token,

@@ -190,13 +190,15 @@ internal static class AgentV2Commands
                 return;
             }
             if(command is "rescue-preview" or "rescue-advice-prepare" or "rescue-edit-prepare") {
-                var approve=args.Length==4 && args[3]=="--approve";
-                if((args.Length!=3 && !approve) || Console.IsOutputRedirected ||
+                var flags=args.Skip(3).ToArray();
+                var approve=flags.Contains("--approve",StringComparer.Ordinal);
+                var retry=flags.Contains("--retry-format",StringComparer.Ordinal);
+                if(flags.Length!=(approve?1:0)+(retry?1:0) || (retry && command=="rescue-preview") || Console.IsOutputRedirected ||
                     (approve && Console.IsInputRedirected))
                     throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
                 var export=command switch {
-                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash),
-                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash),
+                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash,retry),
+                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash,retry),
                     _=>rescue.PreparedExport(ticket)
                 };
                 if (approve)
