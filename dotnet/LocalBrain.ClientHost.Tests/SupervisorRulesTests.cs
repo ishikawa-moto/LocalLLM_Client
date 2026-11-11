@@ -1,4 +1,8 @@
 using LocalBrain.ClientHost.AgentV2;
+using LocalBrain.ClientHost;
+using System.Net;
+using System.Text;
+using System.Text.Json;
 
 internal static class SupervisorRulesTests
 {
@@ -38,5 +42,65 @@ internal static class SupervisorRulesTests
             !assisted.Contains("cannot change permissions or tests",StringComparison.Ordinal) ||
             !assisted.Contains("Current bounded Git diff and new-file excerpts:"+Environment.NewLine+"test diff",StringComparison.Ordinal))
             throw new Exception("A fresh Pi session must retain the same bounded advice and diff");
+
+        await CheckDecisionContextAsync();
+    }
+
+    private static async Task CheckDecisionContextAsync()
+    {
+        using var handler = new BrainPeer();
+        using var gateway = new GatewayClient(new Uri("https://fixture.invalid"), handler);
+        var packet = await SecondBrainEvidence.FetchAsync(gateway, "Fix daily wall-clock scheduling", default);
+        if (!packet.ChunkIds.SequenceEqual([BrainPeer.DecisionId]) ||
+            !packet.Markdown.Contains("revision=" + BrainPeer.DecisionRevision, StringComparison.Ordinal) ||
+            !packet.Markdown.Contains("Check both offsets", StringComparison.Ordinal) ||
+            packet.Markdown.Contains('\uFFFD') || Encoding.UTF8.GetByteCount(packet.Markdown) > 1024 ||
+            handler.ContextRequests != 0)
+            throw new Exception("The approved decision must receive the bounded context ahead of a long raw source");
+
+        handler.Approved = false;
+        packet = await SecondBrainEvidence.FetchAsync(gateway, "Fix daily wall-clock scheduling", default);
+        if (packet.Markdown != "Raw reference" || handler.ContextRequests != 1)
+            throw new Exception("Unapproved search results must leave general retrieval available");
+    }
+
+    private sealed class BrainPeer : HttpMessageHandler
+    {
+        public static readonly string DecisionId = new('a', 64);
+        public static readonly string DecisionRevision = new('b', 64);
+        public bool Approved { get; set; } = true;
+        public int ContextRequests { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            if (request.RequestUri!.AbsolutePath == "/v1/brain/find-decisions")
+            {
+                return Reply(new
+                {
+                    stale_sources = Array.Empty<string>(),
+                    results = new[]
+                    {
+                        new { id = DecisionId, revision = DecisionRevision, status = "active", score = 0.45,
+                            path = "decisions/pc73-example.md", first_line = 1, last_line = 6,
+                            text = "Check both offsets " + new string('年', 700),
+                            metadata = new { knowledge_type = "DECISION",
+                                approval_model = Approved ? "authenticated-pc73-host-attestation-v1" : "draft",
+                                host_approval = new { approval_id = new string('c', 32) } } }
+                    }
+                });
+            }
+
+            if (request.RequestUri.AbsolutePath != "/v1/brain/context")
+                throw new InvalidOperationException("Unexpected gateway route");
+            ContextRequests++;
+            return Reply(new { markdown = "Raw reference", chunk_ids = new[] { new string('d', 64) },
+                stale_sources = Array.Empty<string>() });
+        }
+
+        private static Task<HttpResponseMessage> Reply(object body) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
+            });
     }
 }
