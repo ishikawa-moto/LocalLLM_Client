@@ -243,9 +243,8 @@ internal static class AgentTaskRunner
             noProgress = actor.NoProgress || decision.Action == "ESCALATE_SOL";
             if (tests.Count > 0)
             {
-                var failedTests = string.Join("|", tests.Where(item => !item.Passed)
-                    .Select(item => $"{item.Kind}:{item.ExitCode}:{item.StdoutSha256}:{item.StderrSha256}"));
-                testsWithoutImprovement = !testsPassed && !changedThisTurn &&
+                var failedTests = StableTestFailures(tests);
+                testsWithoutImprovement = failedTests.Length != 0 && !changedThisTurn &&
                     failedTests == previousFailedTests ? testsWithoutImprovement + 1 : 0;
                 previousFailedTests = failedTests;
                 decision = await SupervisorDecider.DecideAsync(new SupervisorState("validation",
@@ -476,6 +475,18 @@ internal static class AgentTaskRunner
             externalReview?.Copilot.Verdict ?? "NOT_RUN",
             externalReview?.Copilot.Issues ?? [],
             externalReview?.AstraStatus ?? "NOT_RUN", externalReview?.Passed ?? false);
+    }
+
+    internal static string StableTestFailures(IReadOnlyList<ToolRouter.TestResult> tests)
+    {
+        var failures = tests.Where(test => !test.Passed).ToArray();
+        if (failures.Any(test => test.FailureCodes.Any(code => code.StartsWith("isolation_", StringComparison.Ordinal))))
+            return "";
+        // Console evidence includes run-specific paths and durations. Keep it in the journal,
+        // but compare the stable outcome of the same ordered required operations for retry decisions.
+        if (failures.Length == 0) return "";
+        return string.Join("|", tests.Select(test => test.Passed ? "passed" :
+            $"{test.Kind}:{test.Route}:{test.ExitCode}:{test.ExecutedTests}:{string.Join(",", test.FailureCodes.Order(StringComparer.Ordinal))}"));
     }
 
     private static string BuildActorPrompt(AgentTaskRequest request, SecondBrainEvidence.Packet knowledge)
