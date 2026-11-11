@@ -27,5 +27,16 @@ internal static class SupervisorRulesTests
             AgentTaskRunner.StableTestFailures([passed]).Length != 0 ||
             AgentTaskRunner.StableTestFailures([passed, failure]) == AgentTaskRunner.StableTestFailures([failure, passed]))
             throw new Exception("Test stall evidence must track stable failures without treating cancellation as a failed test");
+
+        var task = AgentTaskRequest.Parse("""
+            {"requirement":"Fix the public fixture","acceptance_criteria":["Tests pass"],"risk":"LOW","approved_high_risk":false,"allowed_files":["Fixture.cs"],"required_tests":[{"kind":"dotnet_test","target":"Fixture.csproj"}]}
+            """);
+        var step = "Check both offsets of a local time fold";
+        var ordinary = AgentTaskRunner.BuildRecoveryPrompt(task,"test diff",SecondBrainEvidence.Packet.Empty);
+        var assisted = AgentTaskRunner.BuildRecoveryPrompt(task,"test diff",SecondBrainEvidence.Packet.Empty,new("hash",[step]));
+        if (ordinary.Contains(step,StringComparison.Ordinal) || !assisted.Contains(step,StringComparison.Ordinal) ||
+            !assisted.Contains("cannot change permissions or tests",StringComparison.Ordinal) ||
+            !assisted.Contains("Current bounded Git diff and new-file excerpts:"+Environment.NewLine+"test diff",StringComparison.Ordinal))
+            throw new Exception("A fresh Pi session must retain the same bounded advice and diff");
     }
 }
