@@ -62,7 +62,7 @@ internal static class ModelRelay
             {
                 status = (int)response.StatusCode,
                 content_type = response.Content.Headers.ContentType?.ToString() ?? "application/json",
-                body_base64 = Convert.ToBase64String(buffer.ToArray())
+                body_base64 = Convert.ToBase64String(PiResponseBody((int)response.StatusCode, buffer.ToArray()))
             };
             Console.Out.WriteLine(JsonSerializer.Serialize(result));
         }
@@ -73,5 +73,38 @@ internal static class ModelRelay
                 cause = error.GetType().Name }));
             Environment.ExitCode = 1;
         }
+    }
+
+    private static byte[] PiResponseBody(int status, byte[] body)
+    {
+        if (status != 422 || body.Length > 4096) return body;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("error", out var error) ||
+                error.ValueKind != JsonValueKind.Object || !error.TryGetProperty("code", out var code) ||
+                code.ValueKind != JsonValueKind.String || code.GetString() != "dispatch_outcome_unknown" ||
+                !error.TryGetProperty("automatic_retry", out var retry) || retry.ValueKind != JsonValueKind.False)
+                return body;
+
+            string? id = null;
+            if (error.TryGetProperty("request_id", out var requestId) &&
+                requestId.ValueKind == JsonValueKind.String && Guid.TryParseExact(requestId.GetString(), "D", out var parsed))
+                id = parsed.ToString("D");
+            // Pi scans the whole error text for words such as "timeout", including
+            // property names. Bridge retains the diagnostic flag in its audit.
+            return JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                error = new
+                {
+                    code = "dispatch_outcome_unknown",
+                    message = "Model dispatch outcome is unknown. Inspect the existing request before another attempt.",
+                    request_id = id,
+                    automatic_retry = false
+                }
+            });
+        }
+        catch (JsonException) { return body; }
     }
 }

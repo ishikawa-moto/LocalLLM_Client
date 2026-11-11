@@ -134,7 +134,7 @@ internal static class PiRpcRunner
                     {
                         providerError = true;
                         var raw=completed.TryGetProperty("errorMessage",out var reason)?reason.GetString()??"":"";
-                        providerErrorCode=new[]{"ContextMeasurementUnavailable","Windows Host request failed","Host capability is unavailable","InvalidDataException","UnauthorizedAccessException","context_handoff_required"}
+                        providerErrorCode=new[]{"dispatch_outcome_unknown","ContextMeasurementUnavailable","Windows Host request failed","Host capability is unavailable","InvalidDataException","UnauthorizedAccessException","context_handoff_required"}
                             .FirstOrDefault(code=>raw.Contains(code,StringComparison.Ordinal))??"UnclassifiedProviderError";
                         HostTaskJournal.Current?.Record("provider_error",new {code=providerErrorCode},"runtime_observed");
                     }
