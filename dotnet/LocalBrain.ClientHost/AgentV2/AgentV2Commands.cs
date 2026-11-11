@@ -9,6 +9,15 @@ internal static class AgentV2Commands
         string? controlRoot = null)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "health";
+        if (command == "resume-advice-after-runtime-fault")
+        {
+            if (controlRoot is null || args.Length != 3)
+                throw new ArgumentException("Corrected advice resume requires the dedicated trial and exact task ID");
+            var report = await TaskAgentCoordinator.ResumeAdviceAfterRuntimeFaultAsync(allowlist.Resolve(args[1]),controlRoot,args[2]);
+            Console.WriteLine(JsonSerializer.Serialize(report,ClientConfig.JsonOptions));
+            if (!report.EligibleForCompletion) Environment.ExitCode = 2;
+            return;
+        }
         if(command is "managed-status" or "managed-cancel"){
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
             Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root,controlRoot):

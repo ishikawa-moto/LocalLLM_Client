@@ -11,6 +11,8 @@ internal static class TaskAgentCoordinator
         string ControlRoot,string ConfigHash,string RuntimeDll,string RuntimeHash,TaskCommandAuthorization.Pending Authorization);
     internal sealed record Report(string TaskId,string State,bool EligibleForCompletion,int ActorTurns,
         string? Reason,DateTimeOffset UpdatedAt,DateTimeOffset? ActiveSince=null);
+    internal sealed record AdviceResumeRuntime(string TaskId,string OriginalRuntimeHash,string RuntimeDll,
+        string RuntimeHash,string AdviceHash,DateTimeOffset FaultReportedAt);
     internal static string WorkspaceDirectory(string root,string? control=null)=>Path.Combine(control??CanonicalStore.DefaultRoot,"agent-jobs",HostTaskJournal.WorkspaceId(root));
     internal static bool IsAlive(int pid,long birth)
     {
@@ -221,7 +223,47 @@ internal static class TaskAgentCoordinator
             Save(dir,report with{State="cancelled",EligibleForCompletion=false,Reason="candidate_discarded_evidence_retained",UpdatedAt=DateTimeOffset.UtcNow});
     }
     private static void Save(string dir,Report report)=>TaskCommandGate.WriteReplace(Path.Combine(dir,"report.json"),report);
-    internal static async Task RunWorkerAsync(string dir,ClientConfig config)
+    internal static async Task<Report> ResumeAdviceAfterRuntimeFaultAsync(string root,string control,string taskId)
+    {
+        var directory = CurrentDirectory(root,control) ?? throw new InvalidOperationException("No managed trial task");
+        var submission = Path.Combine(WorkspaceDirectory(root,control),"submission.lock");
+        CanonicalStore.GuardPath(submission);
+        using var lease = new FileStream(submission,FileMode.Open,FileAccess.ReadWrite,FileShare.None);
+        if (directory != CurrentDirectory(root,control)) throw new UnauthorizedAccessException("Managed owner changed");
+        var job = Read<Job>(Path.Combine(directory,"job.json"));
+        var report = Read<Report>(Path.Combine(directory,"report.json"));
+        using var grant = EnterStoppedTaskGrant(root,taskId,control);
+        var request = AgentTaskRequest.Parse(job.RequestJson);
+        if (report.Reason != "InvalidOperationException: Sequence contains more than one matching element" ||
+            !File.Exists(Path.Combine(directory,"worker-resume-launch-intent.json")) ||
+            request.CommandExecution is not {} contract || report.ActiveSince is not {} since ||
+            DateTimeOffset.UtcNow >= since.AddMinutes(contract.MaxTaskMinutes))
+            throw new UnauthorizedAccessException("No eligible failed advice resume within the original task budget");
+        var git = await GitEvidence.CaptureAsync(root,request.AllowedFiles);
+        HostRescue.PendingAdvice advice;
+        using (var store = new CanonicalStore(control))
+        {
+            var task = store.GetTask(taskId) ?? throw new InvalidDataException("Missing Canonical task");
+            using var state = JsonDocument.Parse(task.StateJson);
+            if (task.RequestHash != job.RequestHash || task.ActorTurns != report.ActorTurns ||
+                state.RootElement.GetProperty("phase").GetString() != "needs_work" ||
+                git.Head != job.Head || git.UnexpectedFiles.Length != 0)
+                throw new UnauthorizedAccessException("Stopped advice task identity or worktree changed");
+            advice = HostRescue.ReadPendingAdvice(store,taskId,AgentTaskRunner.HashTextForHost(git.ReviewDiff))
+                ?? throw new UnauthorizedAccessException("No unused, exact guidance exists for this stopped task");
+        }
+        var runtime = Path.GetFullPath(typeof(TaskAgentCoordinator).Assembly.Location);
+        var hash = CanonicalStore.Hash(File.ReadAllBytes(runtime));
+        if (hash == job.RuntimeHash) throw new UnauthorizedAccessException("Use a corrected trial worker build");
+        var intent = new AdviceResumeRuntime(taskId,job.RuntimeHash,runtime,hash,advice.Hash,report.UpdatedAt);
+        var intentPath = Path.Combine(directory,"worker-advice-runtime-intent.json");
+        if (File.Exists(intentPath)) throw new InvalidOperationException("The corrected trial worker was already reserved");
+        TaskCommandGate.WriteNew(intentPath,intent);
+        await RunWorkerAsync(directory,ClientConfig.Load(Path.Combine(directory,"worker-config.json")),intent);
+        return Read<Report>(Path.Combine(directory,"report.json"));
+    }
+
+    internal static async Task RunWorkerAsync(string dir,ClientConfig config,AdviceResumeRuntime? adviceRuntime=null)
     {
         CanonicalStore.GuardPath(dir);var job=Read<Job>(Path.Combine(dir,"job.json"));
         if(Path.GetFullPath(dir)!=Path.GetFullPath(Path.Combine(WorkspaceDirectory(job.Root,job.ControlRoot),job.TaskId)))throw new UnauthorizedAccessException("Managed job is outside its Host-owned workspace");
@@ -235,7 +277,13 @@ internal static class TaskAgentCoordinator
         void Report(string state,string? reason=null,bool complete=false)=>Save(dir,new(job.TaskId,state,complete,turns,reason,DateTimeOffset.UtcNow,activeSince));
         var v3Attempt=false;
         try{
-            if(!string.Equals(Path.GetFullPath(typeof(TaskAgentCoordinator).Assembly.Location),Path.GetFullPath(job.RuntimeDll),StringComparison.OrdinalIgnoreCase)||
+            if (adviceRuntime is not null && (adviceRuntime != Read<AdviceResumeRuntime>(Path.Combine(dir,"worker-advice-runtime-intent.json")) ||
+                adviceRuntime.TaskId != job.TaskId || adviceRuntime.OriginalRuntimeHash != job.RuntimeHash ||
+                adviceRuntime.FaultReportedAt != previousReport.UpdatedAt))
+                throw new UnauthorizedAccessException("Trial worker runtime intent drift");
+            var expectedRuntime = adviceRuntime?.RuntimeDll ?? job.RuntimeDll;
+            if(!string.Equals(Path.GetFullPath(typeof(TaskAgentCoordinator).Assembly.Location),Path.GetFullPath(expectedRuntime),StringComparison.OrdinalIgnoreCase)||
+                CanonicalStore.Hash(File.ReadAllBytes(expectedRuntime))!=(adviceRuntime?.RuntimeHash ?? job.RuntimeHash)||
                 CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions))!=job.ConfigHash||
                 CanonicalStore.Hash(File.ReadAllBytes(job.RuntimeDll))!=job.RuntimeHash||CanonicalStore.Hash(File.ReadAllBytes(Path.Combine(dir,"worker-config.json")))!=job.ConfigHash||
                 AgentTaskRunner.RequestHash(request)!=job.RequestHash||!string.Equals(new ProjectAllowlist(config).Resolve(job.Root),job.Root,StringComparison.OrdinalIgnoreCase)||ProjectAllowlist.CurrentHead(job.Root)!=job.Head)

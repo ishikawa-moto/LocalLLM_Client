@@ -27,7 +27,7 @@ internal sealed class RunnerMcpScope(string workspace)
                 ["task_evidence_only", .. files.Select(path => "file:" + path)])], Environment.UserName);
             return;
         }
-        if (command is not ("run" or "resume" or "managed-status" or "managed-cancel" or
+        if (command is not ("run" or "resume" or "resume-advice-after-runtime-fault" or "managed-status" or "managed-cancel" or
             "validation-register" or "egress-pending" or "approve-export" or "rescue-reserve-stopped" or "rescue-preview" or "rescue-run" or
             "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-promote" or
             "learning-extract" or "learning-adoption-preview" or "learning-adoption-prepare" or
