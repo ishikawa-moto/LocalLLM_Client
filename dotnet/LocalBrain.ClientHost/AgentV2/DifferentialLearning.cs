@@ -207,7 +207,7 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
             Candidate provenance: {packet.candidate_provenance}
             Passing tests do not establish causality. Current repository evidence takes precedence.
             """;
-        if (Encoding.UTF8.GetByteCount(body) > (compact ? 1100 : 4096))
+        if (Encoding.UTF8.GetByteCount(body) > (compact ? 920 : 4096))
             throw new InvalidDataException("Adoption draft exceeds local review budget");
         if (body.Contains("[REDACTED:", StringComparison.OrdinalIgnoreCase) || HostEgress.Redact(body).Count != 0)
             throw new UnauthorizedAccessException("Adoption draft contains sensitive or redacted content");
@@ -220,13 +220,13 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         var testCount=validation.Tests.Sum(test=>test.ExecutedTests??0);
         var claims=candidate.claims;
         return $"""
+            Host verified: {validation.Tests.Length} required test operations passed, {testCount} test cases reported, Critic {validation.CriticVerdict}.
+            Suggested action: {QuoteForRetrieval(claims.action,420)}
+            Check against current source and tests before reuse.
+            Trigger: {QuoteForRetrieval(claims.trigger,58)}
+            Unverified cause: {QuoteForRetrieval(claims.cause,57)}
             Candidate SHA-256: {candidateHash}
             Packet SHA-256: {candidate.packet_hash}
-            Host verified: {validation.Tests.Length} required test operations passed, {testCount} test cases reported, Critic {validation.CriticVerdict}.
-            Unverified cause: {QuoteForRetrieval(claims.cause,145)}
-            Trigger: {QuoteForRetrieval(claims.trigger,125)}
-            Suggested action: {QuoteForRetrieval(claims.action,465)}
-            Check against current source and tests before reuse.
             """;
     }
 
