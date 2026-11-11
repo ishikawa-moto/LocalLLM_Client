@@ -185,9 +185,17 @@ internal static class AgentV2Commands
                 return;
             }
             if(command is "rescue-advice-prepare" or "rescue-edit-prepare") {
-                if(args.Length!=3 || Console.IsOutputRedirected)
+                var approve=args.Length==4 && args[3]=="--approve";
+                if((args.Length!=3 && !approve) || Console.IsOutputRedirected ||
+                    (approve && Console.IsInputRedirected))
                     throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
                 var export=command=="rescue-edit-prepare"?rescue.PrepareDirectEdit(boundHash):rescue.PrepareAdvice(boundHash);
+                if (approve)
+                {
+                    Console.WriteLine(export.Payload);
+                    new HostEgress(store).ApproveInteractive(export.Manifest,export.ManifestHash,journal);
+                    return;
+                }
                 Console.WriteLine(JsonSerializer.Serialize(new{manifest_hash=export.ManifestHash,
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
                 return;
