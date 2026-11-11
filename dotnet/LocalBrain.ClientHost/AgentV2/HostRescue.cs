@@ -16,7 +16,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     internal sealed record Validation(string TicketHash,string CandidateHash,string ResultStateHash,string ResultDiffHash,
         ToolRouter.TestResult[] Tests,string CriticVerdict,bool ExternalPassed);
     internal sealed record FailureObservation(int ActorTurns,bool ActorReportedNoProgress,int TestsWithoutImprovement,
-        string SupervisorAction,string[] FailedRequiredTests);
+        string SupervisorAction,string[] FailedRequiredTests,string Reason);
     private CanonicalStore Store=>journal.Canonical;
     private AgentTaskRequest Request=>AgentTaskRequest.Parse(Store.TaskRequest(journal.TaskId));
     private CanonicalStore.EventReceipt Record(string type,object data,string[] refs,string verification="host_verified",string? workspace=null,string? key=null) =>
@@ -82,7 +82,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
             base_commit=starting.State.Head,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,
             requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=Request.AllowedFiles,required_tests=Request.RequiredTests,
-            failed_diff=snapshot.ReviewDiff,parity_deviation=starting.State.ParityDeviation,
+            failed_diff=snapshot.ReviewDiff,failure_observation=observation,parity_deviation=starting.State.ParityDeviation,
             response_schema="Candidate{TaskId,AssignmentId,Generation,BaseCommit,StartingStateHash,StartingDiffHash,Changes[{Path,BeforeHash,Content}],Summary}. Return proposed full UTF8 file contents only; no shell commands. BeforeHash must equal the starting file hash, or null for a new file.",
             starting_write_files=startingFiles.Select(f=>new{f.Path,f.Hash}),starting_source=sources,
             locally_verified_tests_required=true,candidate_is_untrusted=true});

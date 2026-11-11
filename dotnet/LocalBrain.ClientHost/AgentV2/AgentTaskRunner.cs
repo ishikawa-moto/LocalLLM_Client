@@ -304,10 +304,14 @@ internal static class AgentTaskRunner
                 solRescue = new("UNAVAILABLE", [], 0);
             }
         }
-        if(!fileOnly && noProgress && rescueStarting is not null && after.UnexpectedFiles.Length==0 && !testMutatedWorktree) {
+        var failedRequiredTests = tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray();
+        var actorTurnLimit = request.CommandExecution?.MaxActorTurns ?? (recoveryCount == 1 ? 9 : 6);
+        var actorBudgetEndedWithFailures = actorTurns >= actorTurnLimit && failedRequiredTests.Length != 0;
+        if(!fileOnly && (noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
+            after.UnexpectedFiles.Length==0 && !testMutatedWorktree && decision.Action!="STOP") {
             try {await new HostRescue(journal).ReserveAsync(rescueStarting,token,
                 new(actorTurns,actor?.NoProgress==true,testsWithoutImprovement,decision.Action,
-                    tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray()));}
+                    failedRequiredTests,noProgress?"qwen_stalled":"actor_turn_budget_with_failed_tests"));}
             catch(Exception error)when(error is IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
                 journal.Record("codex_rescue_unavailable",new{reason=error.GetType().Name,scope="Optional rescue unavailable; task state retained"},"host_verified");
             }
