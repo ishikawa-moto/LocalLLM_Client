@@ -178,6 +178,8 @@ internal static class PublicRescueFixture
         using var journal = new HostTaskJournal(store, repository, ticket.TaskId, request, head);
         var rescue = new HostRescue(journal);
         var export = rescue.PreparedExport(rescue.Load(ticketHash));
+        var direct = operation == "--public-rescue-solve" && manifestHash.StartsWith("direct:", StringComparison.Ordinal);
+        if (direct) manifestHash = manifestHash["direct:".Length..];
         using var packet = JsonDocument.Parse(export.Payload);
         var source = packet.RootElement.GetProperty("starting_source");
         if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != "manual" ||
@@ -187,6 +189,24 @@ internal static class PublicRescueFixture
             source[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
             source[0].GetProperty("Content").GetString() != await File.ReadAllTextAsync(Path.Combine(repository, "Arithmetic.cs")))
             throw new UnauthorizedAccessException("Public handoff must use the exact prepared fixture packet");
+
+        if (direct)
+        {
+            if (codexExecutable is null || Console.IsInputRedirected || Console.IsOutputRedirected)
+                throw new InvalidOperationException("Public direct edit requires the installed Codex CLI and interactive approval");
+            RequirePublicValidationConfig(root);
+            journal.EnablePersonalValidation();
+            HostValidationPolicy.RequireRegisteredPublisher(journal);
+            var edit = rescue.PrepareDirectEdit(ticketHash);
+            Console.WriteLine("Public fixture only. Sol edits the scoped Arithmetic.cs copy and the Host runs the required tests.");
+            Console.WriteLine(edit.Payload);
+            new HostEgress(store).ApproveInteractive(edit.Manifest, edit.ManifestHash, journal);
+            var result = await rescue.RunExternalAsync(ticketHash, developmentCodex:codexExecutable,
+                editManifestHash:edit.ManifestHash);
+            Console.WriteLine(JsonSerializer.Serialize(result, ClientConfig.JsonOptions));
+            if (result.Status != "VALIDATED_IN_RESCUE") Environment.ExitCode = 2;
+            return;
+        }
 
         var packetPath = Path.Combine(root, "approved-sol-packet.json");
         CanonicalStore.GuardPath(packetPath);
@@ -288,20 +308,7 @@ internal static class PublicRescueFixture
         if (!imported)
             throw new UnauthorizedAccessException("No matching imported public response");
 
-        var configPath = Path.Combine(root, "clientsettings.json");
-        CanonicalStore.GuardPath(configPath);
-        if (!string.Equals(configPath, Environment.GetEnvironmentVariable("LOCALBRAIN_CLIENT_CONFIG"),
-                StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The public trial requires its own explicit Host configuration");
-        var config = ClientConfig.Load();
-        var agentRoot = Path.Combine(root, "pi-agent");
-        CanonicalStore.GuardPath(agentRoot);
-        CanonicalStore.GuardPath(config.AuditLog);
-        CanonicalStore.GuardPath(config.ProjectsFile);
-        var wslAgentRoot = "/mnt/" + char.ToLowerInvariant(agentRoot[0]) + agentRoot[2..].Replace('\\', '/');
-        if (agentRoot[1] != ':' || !config.PersonalValidation || !CanonicalStore.Within(root, config.AuditLog) ||
-            !CanonicalStore.Within(root, config.ProjectsFile) || config.PiRuntime?.AgentDirectory != wslAgentRoot)
-            throw new UnauthorizedAccessException("Public trial configuration escaped the trial root");
+        RequirePublicValidationConfig(root);
         journal.EnablePersonalValidation();
         if (validate)
         {
@@ -316,6 +323,24 @@ internal static class PublicRescueFixture
             learning_candidate_hash = learningHash,
             adoption_status = "QUARANTINED_NOT_ADOPTED"
         }));
+    }
+
+    private static void RequirePublicValidationConfig(string root)
+    {
+        var configPath = Path.Combine(root, "clientsettings.json");
+        CanonicalStore.GuardPath(configPath);
+        if (!string.Equals(configPath, Environment.GetEnvironmentVariable("LOCALBRAIN_CLIENT_CONFIG"),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("The public trial requires its own explicit Host configuration");
+        var config = ClientConfig.Load();
+        var agentRoot = Path.Combine(root, "pi-agent");
+        CanonicalStore.GuardPath(agentRoot);
+        CanonicalStore.GuardPath(config.AuditLog);
+        CanonicalStore.GuardPath(config.ProjectsFile);
+        var wslAgentRoot = "/mnt/" + char.ToLowerInvariant(agentRoot[0]) + agentRoot[2..].Replace('\\', '/');
+        if (agentRoot[1] != ':' || !config.PersonalValidation || !CanonicalStore.Within(root, config.AuditLog) ||
+            !CanonicalStore.Within(root, config.ProjectsFile) || config.PiRuntime?.AgentDirectory != wslAgentRoot)
+            throw new UnauthorizedAccessException("Public trial configuration escaped the trial root");
     }
 
     private static async Task<string> RequireCleanFixtureAsync(string repository)

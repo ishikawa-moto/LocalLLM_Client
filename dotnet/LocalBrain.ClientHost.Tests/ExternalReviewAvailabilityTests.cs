@@ -54,6 +54,9 @@ internal static class ExternalReviewAvailabilityTests
             "Opus tool restrictions or stdin packet input changed");
         const string answer="{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"verdict\\\":\\\"PASS\\\",\\\"issues\\\":[]}\"}}\n{\"type\":\"turn.completed\"}";
         Check(ReviewerCli.DecodeCodex(answer).Status=="OK","CLI JSONL answer rejected");
+        const string disabledCodeMode="{\"type\":\"item.completed\",\"item\":{\"type\":\"error\",\"message\":\"Code Mode is unavailable because code-mode host is disabled.\"}}";
+        Check(ReviewerCli.DecodeCodex(disabledCodeMode+"\n"+answer,allowEditEvents:true).CodeModeUnavailable,
+            "Missing code-mode host could not be distinguished from an unused edit tool");
         Check(ReviewerCli.DecodeCodex("{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}\n"+answer).Status=="INVALID","Tool event passed");
         Check(ReviewerCli.DecodeCodex(answer.Split('\n')[0]).Status!="OK","Incomplete turn passed");
         Check(ReviewerCli.FailureReason("rate limit reached")=="USAGE_LIMIT" &&

@@ -13,7 +13,7 @@ internal static class ReviewerCli
         bool PacketBoundaryVerified = false);
     internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null);
     internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null,
-        string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0);
+        string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0, bool CodeModeUnavailable = false);
     internal static string Model(string provider) => provider switch {
         "sol" => "gpt-6.1-sol", "copilot" => "claude-opus-5.5",
         _ => throw new InvalidDataException("Unknown reviewer")
@@ -178,6 +178,13 @@ internal static class ReviewerCli
             "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
             "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"" })
             start.ArgumentList.Add(arg);
+        if (editRoot is not null)
+        {
+            // Ignoring the user config also drops its Windows execution mode. Use the
+            // native mode verified for this PC73 development command, with workspace-write.
+            start.ArgumentList.Add("-c");
+            start.ArgumentList.Add("windows.sandbox=\"mxc\"");
+        }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromMinutes(5));
         token.ThrowIfCancellationRequested();
@@ -202,7 +209,8 @@ internal static class ReviewerCli
             {
                 journal.Record("development_rescue_cli_started", new {
                     manifest_hash = export.ManifestHash, packet_hash = export.Manifest.ExportHash,
-                    pid = process.Id, requested_model = Model("sol"), sha256, direct_edit = editRoot is not null
+                    pid = process.Id, requested_model = Model("sol"), sha256, direct_edit = editRoot is not null,
+                    windows_sandbox = editRoot is null ? null : "mxc"
                 }, "host_observed");
                 var stdout = ReadBoundedAsync(process.StandardOutput, 96_000, timeout.Token);
                 var stderr = ReadBoundedAsync(process.StandardError, 16_000, timeout.Token);
@@ -220,7 +228,8 @@ internal static class ReviewerCli
                 if (editRoot is not null || developmentPrompt is not null)
                     journal.Record("development_rescue_cli_completed", new {
                         manifest_hash = export.ManifestHash, process.ExitCode, reply.Status, reply.Reason,
-                        reply.EditEvents, reply.CommandEvents, answer_bytes = Encoding.UTF8.GetByteCount(reply.Answer)
+                        reply.EditEvents, reply.CommandEvents, reply.CodeModeUnavailable,
+                        answer_bytes = Encoding.UTF8.GetByteCount(reply.Answer)
                     }, "host_observed");
                 return reply with { ExitCode = process.ExitCode };
             }
@@ -363,6 +372,7 @@ internal static class ReviewerCli
         string? answer=null;var completed=false;
         var editEvents=0;
         var commandEvents=0;
+        var codeModeUnavailable=false;
         try {
             foreach(var line in lines.Split('\n',StringSplitOptions.RemoveEmptyEntries)) {
                 using var document=JsonDocument.Parse(line);var root=document.RootElement;var type=root.GetProperty("type").GetString();
@@ -382,16 +392,21 @@ internal static class ReviewerCli
                     else if(itemType is not ("agent_message" or "reasoning" or "error"))
                         return new("INVALID",Reason:"REVIEW_TOOL_EVENT");
                     // code-mode host disabled is a local fail-closed warning, not a reviewer verdict.
-                    else if(itemType=="error" && !item.GetProperty("message").GetString()!.StartsWith("Code Mode is unavailable because code-mode host is disabled.",StringComparison.Ordinal))
-                        return new("UNAVAILABLE",Reason:FailureReason(item.GetRawText()));
+                    else if(itemType=="error")
+                    {
+                        if (!item.GetProperty("message").GetString()!.StartsWith("Code Mode is unavailable because code-mode host is disabled.",StringComparison.Ordinal))
+                            return new("UNAVAILABLE",Reason:FailureReason(item.GetRawText()));
+                        codeModeUnavailable=true;
+                    }
                 } else if(type is not ("thread.started" or "turn.started")) return new("INVALID",Reason:"UNKNOWN_CLI_EVENT");
             }
         } catch(JsonException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         catch(InvalidOperationException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         catch(KeyNotFoundException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         return completed && answer is not null && Encoding.UTF8.GetByteCount(answer)<=answerLimit
-            ? new("OK",answer,EditEvents:editEvents,CommandEvents:commandEvents)
-            : new("UNAVAILABLE",Reason:"NO_COMPLETED_ANSWER",EditEvents:editEvents,CommandEvents:commandEvents);
+            ? new("OK",answer,EditEvents:editEvents,CommandEvents:commandEvents,CodeModeUnavailable:codeModeUnavailable)
+            : new("UNAVAILABLE",Reason:"NO_COMPLETED_ANSWER",EditEvents:editEvents,CommandEvents:commandEvents,
+                CodeModeUnavailable:codeModeUnavailable);
     }
     internal static string FailureReason(string text)
     {
