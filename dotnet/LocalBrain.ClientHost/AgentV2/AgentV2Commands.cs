@@ -166,12 +166,6 @@ internal static class AgentV2Commands
                 return;
             }
             var rescue=new HostRescue(journal);var ticket=rescue.Load(boundHash);
-            if(command=="rescue-preview") {
-                if(Console.IsOutputRedirected)throw new InvalidOperationException("Rescue preview requires an interactive terminal");
-                var export=rescue.PreparedExport(ticket);
-                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.Model("sol"),manifest_hash=export.ManifestHash,
-                    manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));return;
-            }
             if(command is "rescue-run" or "rescue-edit-run") {
                 var direct=command=="rescue-edit-run";
                 if(direct ? args.Length!=5 : args.Length!=3 && (args.Length!=5 || args[3]!="--development-codex"))
@@ -184,19 +178,23 @@ internal static class AgentV2Commands
                 if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
                 return;
             }
-            if(command is "rescue-advice-prepare" or "rescue-edit-prepare") {
+            if(command is "rescue-preview" or "rescue-advice-prepare" or "rescue-edit-prepare") {
                 var approve=args.Length==4 && args[3]=="--approve";
                 if((args.Length!=3 && !approve) || Console.IsOutputRedirected ||
                     (approve && Console.IsInputRedirected))
                     throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
-                var export=command=="rescue-edit-prepare"?rescue.PrepareDirectEdit(boundHash):rescue.PrepareAdvice(boundHash);
+                var export=command switch {
+                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash),
+                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash),
+                    _=>rescue.PreparedExport(ticket)
+                };
                 if (approve)
                 {
                     Console.WriteLine(export.Payload);
                     new HostEgress(store).ApproveInteractive(export.Manifest,export.ManifestHash,journal);
                     return;
                 }
-                Console.WriteLine(JsonSerializer.Serialize(new{manifest_hash=export.ManifestHash,
+                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.Model("sol"),manifest_hash=export.ManifestHash,
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
                 return;
             }

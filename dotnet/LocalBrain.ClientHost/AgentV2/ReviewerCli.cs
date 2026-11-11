@@ -12,7 +12,8 @@ internal static class ReviewerCli
     internal sealed record Endpoint(string Path, string Sha256, bool SubscriptionVerified = false,
         bool PacketBoundaryVerified = false);
     internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null);
-    internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null, string Diagnostic = "");
+    internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null,
+        string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0);
     internal static string Model(string provider) => provider switch {
         "sol" => "gpt-6.1-sol", "copilot" => "claude-opus-5.5",
         _ => throw new InvalidDataException("Unknown reviewer")
@@ -168,7 +169,7 @@ internal static class ReviewerCli
                 start.Environment.Remove(key);
         foreach (var arg in new[] { "--ask-for-approval", "never", "exec", "--ignore-user-config",
             "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox",
-            editRoot is null ? "read-only" : "workspace-write", "--model", Model("sol"),
+            editRoot is null ? "read-only" : "workspace-write", "--cd", work, "--model", Model("sol"),
             "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
             "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"", "-" })
             start.ArgumentList.Add(arg);
@@ -199,6 +200,11 @@ internal static class ReviewerCli
                 }
                 var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000, allowEditEvents: editRoot is not null) :
                     new Reply("UNAVAILABLE", Reason: FailureReason(await stdout + await stderr));
+                if (editRoot is not null)
+                    journal.Record("development_rescue_cli_completed", new {
+                        manifest_hash = export.ManifestHash, process.ExitCode, reply.Status, reply.Reason,
+                        reply.EditEvents, reply.CommandEvents, answer_bytes = Encoding.UTF8.GetByteCount(reply.Answer)
+                    }, "host_observed");
                 return reply with { ExitCode = process.ExitCode };
             }
             finally
@@ -334,6 +340,8 @@ internal static class ReviewerCli
     internal static Reply DecodeCodex(string lines,int answerLimit=8_000,bool allowEditEvents=false)
     {
         string? answer=null;var completed=false;
+        var editEvents=0;
+        var commandEvents=0;
         try {
             foreach(var line in lines.Split('\n',StringSplitOptions.RemoveEmptyEntries)) {
                 using var document=JsonDocument.Parse(line);var root=document.RootElement;var type=root.GetProperty("type").GetString();
@@ -342,7 +350,14 @@ internal static class ReviewerCli
                 else if(type is "item.started" or "item.updated" or "item.completed") {
                     var item=root.GetProperty("item");var itemType=item.GetProperty("type").GetString();
                     if(itemType=="agent_message" && type=="item.completed")answer=item.GetProperty("text").GetString();
-                    else if(allowEditEvents && itemType is ("command_execution" or "file_change"))continue;
+                    else if(allowEditEvents && itemType is ("command_execution" or "file_change"))
+                    {
+                        if(type=="item.completed")
+                        {
+                            if(itemType=="file_change")editEvents++;
+                            else commandEvents++;
+                        }
+                    }
                     else if(itemType is not ("agent_message" or "reasoning" or "error"))
                         return new("INVALID",Reason:"REVIEW_TOOL_EVENT");
                     // code-mode host disabled is a local fail-closed warning, not a reviewer verdict.
@@ -354,7 +369,8 @@ internal static class ReviewerCli
         catch(InvalidOperationException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         catch(KeyNotFoundException){return new("INVALID",Reason:"MALFORMED_CLI_EVENTS");}
         return completed && answer is not null && Encoding.UTF8.GetByteCount(answer)<=answerLimit
-            ? new("OK",answer) : new("UNAVAILABLE",Reason:"NO_COMPLETED_ANSWER");
+            ? new("OK",answer,EditEvents:editEvents,CommandEvents:commandEvents)
+            : new("UNAVAILABLE",Reason:"NO_COMPLETED_ANSWER",EditEvents:editEvents,CommandEvents:commandEvents);
     }
     internal static string FailureReason(string text)
     {

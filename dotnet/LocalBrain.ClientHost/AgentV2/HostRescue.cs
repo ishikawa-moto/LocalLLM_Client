@@ -242,8 +242,10 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         }
         if (edit.Baseline.Any(file=>file.Value is not null && !File.Exists(Path.Combine(edit.Root,file.Key))))
             throw new UnauthorizedAccessException("Sol deleted an approved source file");
-        if (changes.Count==0 || Encoding.UTF8.GetByteCount(summary)>2_000)
-            throw new InvalidDataException("Direct Sol editing did not produce a bounded change and summary");
+        if (changes.Count==0)
+            throw new InvalidDataException("Sol left all approved files unchanged");
+        if (Encoding.UTF8.GetByteCount(summary)>2_000)
+            throw new InvalidDataException("Sol's edit summary exceeded the byte budget");
         return new(ticket.TaskId,ticket.AssignmentId,ticket.Generation,ticket.BaseCommit,ticket.StartingStateHash,
             ticket.StartingDiffHash,changes.OrderBy(change=>change.Path,StringComparer.Ordinal).ToArray(),summary);
     }
@@ -299,8 +301,18 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                     response.Status,response.Reason,response.ExitCode},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
                 return new(response.Status,Reason:response.Reason);
             }
-            var candidateText=edit is null?response.Answer:
-                JsonSerializer.Serialize(CollectDirectCandidate(ticket,edit,response.Answer));
+            string candidateText;
+            try
+            {
+                candidateText=edit is null?response.Answer:
+                    JsonSerializer.Serialize(CollectDirectCandidate(ticket,edit,response.Answer));
+            }
+            catch(Exception error) when(edit is not null && error is InvalidDataException or UnauthorizedAccessException)
+            {
+                Record("codex_rescue_edit_rejected",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
+                    reason=error.Message},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
+                return new("INVALID",Reason:error.Message);
+            }
             candidate=ParseExternalCandidate(candidateText);
             candidateResponseHash=Store.PutEvidence(Encoding.UTF8.GetBytes(candidateText));
             Record("codex_rescue_external_response",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
