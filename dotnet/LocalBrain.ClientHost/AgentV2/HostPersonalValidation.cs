@@ -111,7 +111,8 @@ internal static class HostPersonalValidation
             var outBytes=stdout.ToArray();var errBytes=stderr.ToArray();
             var passed=reason=="completed" && exit==0;
             var result=new ToolRouter.TestResult(test.Kind,"trusted_personal_"+(test.Kind=="npm_test"?"wsl":"windows"),passed,exit,
-                outBytes.LongLength,errBytes.LongLength,Hash(outBytes),Hash(errBytes),watch.ElapsedMilliseconds,null,
+                outBytes.LongLength,errBytes.LongLength,Hash(outBytes),Hash(errBytes),watch.ElapsedMilliseconds,
+                passed && test.Kind=="npm_test"?ToolRouter.PassedNpmTestCount(outBytes):null,
                 passed?[]:[reason=="completed"?"process_exit_nonzero":reason]);
             var outHash=journal.Canonical.PutEvidence(outBytes);var errHash=journal.Canonical.PutEvidence(errBytes);
             journal.Record("trusted_personal_validation_result",new{result,stdout_evidence=outHash,stderr_evidence=errHash,reason,

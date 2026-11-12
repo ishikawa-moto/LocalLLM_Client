@@ -101,6 +101,7 @@ if(args.Length==1 && args[0]=="--supervisor-rules-proof"){await SupervisorRulesT
 if(args.Length==1 && args[0]=="--external-review-availability-proof"){await ExternalReviewAvailabilityTests.RunAsync();return;}
 if(args.Length==2 && args[0]=="--external-rescue-proof"){await HostRescueTests.ExternalProofAsync(args[1]);return;}
 if(args.Length==2 && args[0]=="--public-rescue-prepare"){await PublicRescueFixture.PrepareAsync(args[1]);return;}
+if(args.Length==2 && args[0]=="--public-rescue-default-prepare"){await PublicRescueFixture.PrepareAsync(args[1],"haiku",defaultEgress:true);return;}
 if(args.Length==3 && args[0]=="--public-rescue-prepare" && args[2] is ("haiku" or "opus")){
     await PublicRescueFixture.PrepareAsync(args[1],args[2]);return;
 }

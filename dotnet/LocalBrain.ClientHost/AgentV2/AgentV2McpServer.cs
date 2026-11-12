@@ -33,6 +33,7 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                 acceptance_criteria = new { type = "array", items = new { type = "string" } },
                 risk = new { type = "string", @enum = new[] { "LOW", "NORMAL", "HIGH" } },
                 approved_high_risk = new { type = "boolean" },
+                external_ai_disabled = new { type = "boolean", description = "Set true to keep this task on local AI only." },
                 allowed_files = new { type = "array", description = "Git-root-relative files. With command_execution, ** grants the whole trusted project or folder/** a subtree; protected metadata/secrets remain excluded from file tools.", items = new { type = "string" } },
                 required_tests = new { type = "array", items = new { type = "object",
                     properties = new { kind = new { type = "string", @enum = new[] {

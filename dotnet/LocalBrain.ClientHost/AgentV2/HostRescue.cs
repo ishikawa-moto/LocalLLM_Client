@@ -18,6 +18,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     internal sealed record FailureObservation(int ActorTurns,bool ActorReportedNoProgress,int TestsWithoutImprovement,
         string SupervisorAction,string[] FailedRequiredTests,string Reason);
     private sealed class VerifiedTestFailureException() : InvalidOperationException("The isolated tests rejected the rescue candidate");
+    private sealed class UnverifiedCandidateException() : InvalidOperationException("Rescue lacks a verified non-empty test run");
     private CanonicalStore Store=>journal.Canonical;
     private AgentTaskRequest Request=>AgentTaskRequest.Parse(Store.TaskRequest(journal.TaskId));
     private CanonicalStore.EventReceipt Record(string type,object data,string[] refs,string verification="host_verified",string? workspace=null,string? key=null) =>
@@ -50,9 +51,10 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     internal async Task<string> ReserveAsync(AttemptStartingState.Saved starting,CancellationToken token=default,
         FailureObservation? observation=null, string? expectedFailureDiffHash=null, string provider="sol") {
         Slack.RestrictedExecution.DenyExternal();
-        var exportPolicy=Store.RequireExportPolicy(journal.TaskId).Policy;journal.RequireMutationApproval();
+        var accepted=Store.RequireExportPolicy(journal.TaskId,allowDefaultRescue:true);
+        var exportPolicy=accepted.Policy;journal.RequireMutationApproval();
         var model=ReviewerCli.ConfiguredRescueModel(ReviewerCli.Load(Store.Root),provider);
-        if (exportPolicy.Mode=="auto" && (!exportPolicy.ExportScope.Contains("task_evidence_only",StringComparer.Ordinal) ||
+        if (!accepted.DefaultRescue && exportPolicy.Mode=="auto" && (!exportPolicy.ExportScope.Contains("task_evidence_only",StringComparer.Ordinal) ||
             Request.AllowedFiles.Any(path=>!exportPolicy.ExportScope.Contains("file:"+path,StringComparer.OrdinalIgnoreCase))))
             throw new UnauthorizedAccessException("Automatic rescue requires explicit file export scopes");
         var source=Store.ReadTaskEvent(journal.TaskId,starting.EventId);
@@ -65,7 +67,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if(snapshot.UnexpectedFiles.Length!=0)throw new UnauthorizedAccessException("Failure changed outside write_scope");
         if (expectedFailureDiffHash is not null && AgentTaskRunner.HashTextForHost(snapshot.ReviewDiff) != expectedFailureDiffHash)
             throw new UnauthorizedAccessException("Stopped worktree differs from the Canonical checkpoint");
-        var startingFiles=starting.State.Files.Where(f=>Request.AllowedFiles.Contains(f.Path,StringComparer.OrdinalIgnoreCase)).ToArray();
+        var fileScope=accepted.DefaultRescue?exportPolicy.WriteScope:Request.AllowedFiles;
+        var startingFiles=starting.State.Files.Where(f=>fileScope.Contains(f.Path,StringComparer.OrdinalIgnoreCase)).ToArray();
         var sources=new List<object>();
         var sourceBytes=0;
         foreach(var file in startingFiles) {
@@ -84,16 +87,16 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var spec=new CanonicalStore.TaskSpec(journal.TaskId,assignment,worker,workspace,HostTaskJournal.RepositoryId(journal.WindowsRoot),starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
             Request.AllowedFiles,[],Request.Requirement,Request.AcceptanceCriteria,Request.RequiredTests,[],1);
         var reserved=Store.ReserveAssignment(spec,requireUnassigned:expectedFailureDiffHash is not null);
-        // Only an explicit file export scope adds complete starting source.
+        // Default delegation excludes Qwen's working diff and any retrieved private knowledge.
         var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",requested_model=model,
             task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
             base_commit=starting.State.Head,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,
-            requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=Request.AllowedFiles,required_tests=Request.RequiredTests,
-            failed_diff=snapshot.ReviewDiff,failure_observation=observation,parity_deviation=starting.State.ParityDeviation,
+            requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=fileScope,required_tests=Request.RequiredTests,
+            failed_diff=accepted.DefaultRescue?"":snapshot.ReviewDiff,failure_observation=observation,parity_deviation=starting.State.ParityDeviation,
             response_schema="Return one JSON object only, without markdown. Candidate{TaskId,AssignmentId,Generation,BaseCommit,StartingStateHash,StartingDiffHash,Changes[{Path,BeforeHash,Content}],Summary}. Return proposed full UTF8 file contents; no shell commands. BeforeHash must equal the starting file hash, or null for a new file.",
             starting_write_files=startingFiles.Select(f=>new{f.Path,f.Hash}),starting_source=sources,
             locally_verified_tests_required=true,candidate_is_untrusted=true});
-        var export=journal.PrepareExternalPacket(packet,"codex_protocol",files:Request.AllowedFiles);
+        var export=journal.PrepareExternalPacket(packet,"codex_protocol",files:fileScope,allowDefaultRescue:true);
         var ticket=new Ticket(journal.TaskId,assignment,reserved.Generation,worker,workspace,journal.WindowsRoot,root,starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
             starting.EventId,failureHash,export.ManifestHash,export.Manifest.ExportHash);
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(ticket));
@@ -158,12 +161,9 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
 
     internal bool CanDispatchAutomatically()
     {
-        if (Request.RequiredTests.Length==0 || !Request.RequiredTests.Any(test=>test.Kind=="dotnet_test") ||
-            Request.RequiredTests.Any(test=>test.Kind is not ("dotnet_test" or "dotnet_build")) ||
-            Store.ReadPolicy(HostTaskJournal.RepositoryId(journal.WindowsRoot),journal.WindowsRoot) is not
-                { AuditMatched:true, Mode:"auto" })
-            return false;
-        return true;
+        try { return Store.RequireExportPolicy(journal.TaskId,allowDefaultRescue:true).Policy.Mode=="auto"; }
+        catch(Exception error) when(error is UnauthorizedAccessException or InvalidDataException or IOException
+            or JsonException or InvalidOperationException) { return false; }
     }
 
     internal AttemptStartingState.Saved? InitialStartingState()
@@ -185,7 +185,6 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     {
         if (providers.Length==0 || Events("codex_rescue_automatic_started").Length!=0)
             return false;
-        HostValidationPolicy.RequireRegisteredPublisher(journal);
         Record("codex_rescue_automatic_started",new{providers,observation},[starting.StateHash]);
         var failedState = AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(journal.WindowsRoot,null,token));
         foreach(var provider in providers)
@@ -205,6 +204,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                 throw;
             }
             Record("codex_rescue_automatic_result",new{provider,result.Status,result.Reason},[ticket]);
+            if(result.Status=="CANDIDATE_UNVERIFIED")return false;
             if (result is {Status:"VALIDATED_IN_RESCUE",ValidationHash:{} validation})
             {
                 await PromoteAsync(ticket,validation,token);
@@ -417,12 +417,10 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         Slack.RestrictedExecution.DenyExternal();
         var ticket=Load(ticketHash);
         journal.RequireMutationApproval();
-        // The generated code is untrusted. Only the existing OS-isolated .NET test path may execute it.
-        var required=Request.RequiredTests;
-        if(required.Length==0 || required.Any(test=>test.Kind is not ("dotnet_build" or "dotnet_test")) ||
-            !required.Any(test=>test.Kind=="dotnet_test"))
-            throw new UnauthorizedAccessException("External code rescue requires isolated dotnet_test validation");
+        var accepted=Store.RequireExportPolicy(journal.TaskId,allowDefaultRescue:true);
         var export=editManifestHash is null?PreparedExport(ticket):ApprovedMode(ticketHash,editManifestHash,"edit");
+        if(export.Manifest.PolicyHash!=accepted.Hash)
+            throw new UnauthorizedAccessException("Rescue export policy changed");
         var (provider,model)=ReviewerCli.RescueTarget(export);
         if(editManifestHash is not null && developmentCodex is null)
             throw new UnauthorizedAccessException("Direct Sol editing requires its exact manual export and development CLI");
@@ -490,12 +488,28 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                 [ticketHash,export.ManifestHash,candidateResponseHash],"untrusted_candidate",ticket.WorkspaceId,
                 key:ticket.AssignmentId+"_external_candidate");
         }
+        var request=Request;
+        var cannotVerify=request.RequiredTests.Select(test=>HostValidationPolicy.UnavailableReason(journal,test,rescue:true))
+            .FirstOrDefault(reason=>reason is not null);
+        if(cannotVerify is null && (!request.RequiredTests.Any(test=>test.Kind is "dotnet_test" or "npm_test") ||
+            request.AllowedFiles.Any(path=>path.IndexOfAny(['*','?'])>=0)))
+            cannotVerify="NO_OBJECTIVE_RESCUE_VALIDATION";
+        if(cannotVerify is null && AutomaticCompletion.ChangesVerificationInputs(request,candidate.Changes.Select(change=>change.Path)))
+            cannotVerify="CANDIDATE_CHANGES_VERIFICATION_INPUTS";
+        ExternalResult RetainUnverified(string reason)
+        {
+            Record("codex_rescue_candidate_unverified",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
+                response_hash=candidateResponseHash,reason},[ticketHash,candidateResponseHash],workspace:ticket.WorkspaceId);
+            return new("CANDIDATE_UNVERIFIED",candidateResponseHash,Reason:reason);
+        }
+        if(cannotVerify is not null)return RetainUnverified(cannotVerify);
         var candidateHash=await ImportAsync(ticketHash,candidate,token);
         string validationHash;
         try { validationHash=await ValidateAsync(ticketHash,candidateHash,token,automatic); }
         catch (VerifiedTestFailureException) when (automatic) {
             return new("VERIFIED_TEST_FAILURE",candidateHash,Reason:"REQUIRED_TEST_CASES_FAILED");
         }
+        catch (UnverifiedCandidateException) { return RetainUnverified("NO_OBJECTIVE_TEST_RESULT"); }
         RecordExternalValidation(ticketHash,ticket,export.ManifestHash,candidateResponseHash,candidateHash,validationHash);
         return new("VALIDATED_IN_RESCUE",candidateHash,validationHash);
     }
@@ -538,7 +552,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             throw new UnauthorizedAccessException("Stale or invalid candidate identity");
         var originalCandidateHash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(candidate));
         candidate=candidate with{Changes=candidate.Changes.Select(c=>c with{Path=request.AllowedFiles.SingleOrDefault(p=>string.Equals(HostEgress.NormalizePath(ticket.RescueRoot,p),HostEgress.NormalizePath(ticket.RescueRoot,c.Path),StringComparison.OrdinalIgnoreCase))??throw new UnauthorizedAccessException("Candidate path not in assigned write_scope")}).ToArray()};
-        var accepted=Store.RequireExportPolicy(ticket.TaskId);
+        var accepted=Store.RequireExportPolicy(ticket.TaskId,allowDefaultRescue:true);
         var scope=request.AllowedFiles.Select(p=>HostEgress.NormalizePath(ticket.RescueRoot,p)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         if(!accepted.Policy.WriteScope.Contains("task_allowed_files") && scope.Any(p=>!accepted.Policy.WriteScope.Contains(p,StringComparer.OrdinalIgnoreCase)))throw new UnauthorizedAccessException("Host write_scope denies candidate");
         var before=await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token);
@@ -616,8 +630,9 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                 throw new VerifiedTestFailureException();
             throw new InvalidDataException("Rescue required tests did not pass");
         }
-        if(hostCompletion && !AutomaticCompletion.HasPassingTests(request,tests))
-            throw new InvalidDataException("Rescue lacks a verified non-empty test run");
+        if((hostCompletion || Events("codex_rescue_external_response").Any(e=>e.Input.EvidenceRefs.Contains(ticketHash))) &&
+            !AutomaticCompletion.HasPassingTests(request,tests))
+            throw new UnverifiedCandidateException();
         var prompt=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]))+"\nYou are a fresh independent local Critic. Assess every acceptance criterion and test evidence. Return exactly JSON {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Do not modify files.";
         var critic=await PiRpcRunner.RunAsync(wsl,prompt,true,windowsRoot:ticket.RescueRoot,taskId:ticket.TaskId,token:token);
         var parsed=CopilotReviewer.Parse(critic.Text);var criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(critic.Text));
@@ -656,7 +671,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var promotionScope=Request.AllowedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var priorPromotion=Events("codex_rescue_promotion_intent").Any(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash && e.Input.EvidenceRefs.Contains(validationHash));
         if(AttemptStartingState.Hash(main)!=ticket.FailureStateHash && (!priorPromotion || !MatchesPartial(main,failure,rescue,promotionScope)))throw new UnauthorizedAccessException("Main drift is not a Host-authorized partial promotion");
-        journal.RequireMutationApproval();var policy=Store.RequireExportPolicy(ticket.TaskId).Policy;
+        journal.RequireMutationApproval();var policy=Store.RequireExportPolicy(ticket.TaskId,allowDefaultRescue:true).Policy;
         if(!policy.WriteScope.Contains("task_allowed_files") && Request.AllowedFiles.Any(p=>!policy.WriteScope.Contains(p,StringComparer.OrdinalIgnoreCase)))throw new UnauthorizedAccessException("Promotion write_scope denied");
         var changes=new List<(string Path,string Content)>();
         foreach(var relative in Request.AllowedFiles) {

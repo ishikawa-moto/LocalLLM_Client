@@ -43,6 +43,31 @@ internal static class HostValidationPolicy
         using(var output=new FileStream(staging,FileMode.CreateNew,FileAccess.Write,FileShare.None)){output.Write(bytes);output.Flush(true);}File.Move(staging,path,true);return hash;
     }
     internal static void RequireRegisteredPublisher(HostTaskJournal journal)=>Load(journal);
+    internal static string? UnavailableReason(HostTaskJournal journal,RequiredTest test,bool rescue)
+    {
+        if(test.Kind is "dotnet_test" or "dotnet_build")
+        {
+            var config=Config(journal);
+            CanonicalStore.GuardPath(config);
+            if(!File.Exists(config) || journal.Canonical.CurrentValidationPublisher(HostTaskJournal.RepositoryId(journal.WindowsRoot)) is null)
+                return "DOTNET_VALIDATION_NOT_REGISTERED";
+        }
+        if(test.Kind=="npm_test" && !journal.PersonalValidationEnabled)
+            return "NPM_VALIDATION_NOT_ENABLED";
+        if(rescue && test.Kind=="command_exit")
+            return "COMMAND_RECEIPT_NOT_AVAILABLE_FOR_RESCUE";
+        return null;
+    }
+    internal static Task<ToolRouter.TestResult> RunTaskCheckAsync(HostTaskJournal journal,string windowsRoot,
+        string wslRoot,RequiredTest test,CancellationToken token)
+    {
+        var reason=UnavailableReason(journal,test,rescue:false);
+        if(reason is null)return RunAsync(journal,windowsRoot,wslRoot,test,token);
+        var empty=CanonicalStore.Hash([]);
+        var result=new ToolRouter.TestResult(test.Kind,"unavailable",false,-1,0,0,empty,empty,0,null,[reason]);
+        journal.Record("required_test_result",result,"host_verified");
+        return Task.FromResult(result);
+    }
     private static Policy Load(HostTaskJournal journal){
         var path=Config(journal);CanonicalStore.GuardPath(path);if(!File.Exists(path))throw new UnauthorizedAccessException("No Host-registered validation publisher policy");
         if(new FileInfo(path).Length>4096)throw new InvalidDataException("Publisher reference exceeds budget");

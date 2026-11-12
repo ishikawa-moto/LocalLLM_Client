@@ -15,6 +15,9 @@ internal sealed record AgentTaskRequest(
     [JsonPropertyName("command_execution")]
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public TaskCommandContract? CommandExecution {get;init;}
+    [JsonPropertyName("external_ai_disabled")]
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ExternalAiDisabled {get;init;}
     private static readonly Regex HighRisk = new(
         @"production\s+deploy|force[ -]?push|drop\s+(table|database)|delete\s+(database|account)|credential|private\s+key|billing|本番|デプロイ|強制プッシュ|削除|認証情報|秘密鍵|課金|DB移行",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
