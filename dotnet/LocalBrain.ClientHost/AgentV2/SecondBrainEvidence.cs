@@ -33,7 +33,7 @@ internal static class SecondBrainEvidence
         if (string.IsNullOrWhiteSpace(requirement)) return Packet.Empty;
         var query = requirement.Length <= 240 ? requirement : requirement[..240];
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        timeout.CancelAfter(TimeSpan.FromSeconds(35));
         try
         {
             // An unreviewed source can consume the entire context budget before a matching
@@ -76,7 +76,9 @@ internal static class SecondBrainEvidence
     private static async Task<Packet> FindApprovedDecisionAsync(GatewayClient gateway, string query, CancellationToken token)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        // The Gateway can spend 15 seconds making its knowledge services ready
+        // after an idle period. Allow startup and the query before falling back.
+        timeout.CancelAfter(TimeSpan.FromSeconds(25));
         try
         {
             var request = JsonSerializer.Serialize(new { query, limit = 4 });

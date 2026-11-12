@@ -56,7 +56,7 @@ internal static class SupervisorRulesTests
 
     private static async Task CheckDecisionContextAsync()
     {
-        using var handler = new BrainPeer();
+        using var handler = new BrainPeer { DecisionDelay = TimeSpan.FromMilliseconds(3250) };
         using var gateway = new GatewayClient(new Uri("https://fixture.invalid"), handler);
         var packet = await SecondBrainEvidence.FetchAsync(gateway, "Fix daily wall-clock scheduling", default);
         if (!packet.ChunkIds.SequenceEqual([BrainPeer.DecisionId]) ||
@@ -64,8 +64,9 @@ internal static class SupervisorRulesTests
             !packet.Markdown.Contains("Check both offsets", StringComparison.Ordinal) ||
             packet.Markdown.Contains('\uFFFD') || Encoding.UTF8.GetByteCount(packet.Markdown) > 1024 ||
             handler.ContextRequests != 0)
-            throw new Exception("The approved decision must receive the bounded context ahead of a long raw source");
+            throw new Exception("A delayed approved decision must receive the bounded context ahead of a long raw source");
 
+        handler.DecisionDelay = TimeSpan.Zero;
         handler.Approved = false;
         packet = await SecondBrainEvidence.FetchAsync(gateway, "Fix daily wall-clock scheduling", default);
         if (packet.Markdown != "Raw reference" || handler.ContextRequests != 1)
@@ -77,12 +78,14 @@ internal static class SupervisorRulesTests
         public static readonly string DecisionId = new('a', 64);
         public static readonly string DecisionRevision = new('b', 64);
         public bool Approved { get; set; } = true;
+        public TimeSpan DecisionDelay { get; set; }
         public int ContextRequests { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             if (request.RequestUri!.AbsolutePath == "/v1/brain/find-decisions")
             {
+                await Task.Delay(DecisionDelay, token);
                 return Reply(new
                 {
                     stale_sources = Array.Empty<string>(),
@@ -105,10 +108,10 @@ internal static class SupervisorRulesTests
                 stale_sources = Array.Empty<string>() });
         }
 
-        private static Task<HttpResponseMessage> Reply(object body) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        private static HttpResponseMessage Reply(object body) =>
+            new(HttpStatusCode.OK)
             {
                 Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-            });
+            };
     }
 }
