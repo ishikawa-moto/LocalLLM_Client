@@ -64,6 +64,24 @@ internal static class HostRescueTests
             HostRescue.AutomaticProviders("LOW",new(Sol:enabled,Terra:enabled)).SequenceEqual(["terra"]) &&
             HostRescue.AutomaticProviders("LOW",new(Sol:enabled)).Length==0,
             "Terra staging must keep LOW bounded and prefer Terra for NORMAL");
+        var all=new ReviewerCli.Settings(Sol:enabled,Opus:enabled,Terra:enabled,Haiku:enabled,FullRescueRouting:true);
+        Check(HostRescue.AutomaticProviders("LOW",all).SequenceEqual(["terra","haiku"]) &&
+            HostRescue.AutomaticProviders("MEDIUM",all).SequenceEqual(["terra","haiku","sol","opus"]) &&
+            HostRescue.AutomaticProviders("HIGH",all).SequenceEqual(["sol","opus"]) &&
+            HostRescue.AutomaticProviders("NORMAL",all with{Haiku=null}).SequenceEqual(["terra","sol","opus"]),
+            "Full routing must follow the requested order and omit disabled providers");
+        Check(RescueRouting.Decide("LOW","""{"difficulty":"LOW","confidence":0.75}""",0.75).Level=="LOW" &&
+            RescueRouting.Decide("LOW","""{"difficulty":"LOW","confidence":0.74}""",0.75).Level=="NORMAL" &&
+            RescueRouting.Decide("NORMAL","""{"difficulty":"HIGH","confidence":0.1}""",0.75).Level=="HIGH" &&
+            RescueRouting.Decide("HIGH","""{"difficulty":"LOW","confidence":1}""",0.75).Level=="HIGH",
+            "Difficulty must respect the 0.75 boundary, task floor, and sticky HIGH");
+        var dotnet=request with{RequiredTests=[new("dotnet_test","Fixture.csproj")]};
+        var realTest=new ToolRouter.TestResult("dotnet_test","windows",true,0,40,0,"","",10,3,[]);
+        Check(AutomaticCompletion.HasPassingTests(dotnet,[realTest]) &&
+            !AutomaticCompletion.HasPassingTests(dotnet,[realTest with{ExecutedTests=0}]) &&
+            AutomaticCompletion.ChangesVerificationInputs(dotnet,["Fixture.csproj","tests/assertion.cs"]) &&
+            !AutomaticCompletion.ChangesVerificationInputs(dotnet,["Arithmetic.cs"]),
+            "Automatic completion requires a non-empty passed test run without modified verification inputs");
         Check(HostRescue.AutomaticFallback(new("UNAVAILABLE",Reason:"USAGE_LIMIT")) &&
             HostRescue.AutomaticFallback(new("VERIFIED_TEST_FAILURE")) &&
             !HostRescue.AutomaticFallback(new("UNAVAILABLE",Reason:"CONNECTION")) &&
@@ -167,7 +185,7 @@ internal static class HostRescueTests
                 response_hash=responseHash,provider="sol",requested_model=ReviewerCli.Model("sol")})));
         await Reject(()=>Task.FromResult(new DifferentialLearning(editJournal).Assemble(editFixture.TicketHash,validationHash)),
             "Learning accepted a late Sol response without the exact prior dispatch");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=32,actual_model_requests=0,task_id=fixture.TaskId,
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=35,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {

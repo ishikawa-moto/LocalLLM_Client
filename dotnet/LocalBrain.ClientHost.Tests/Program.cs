@@ -104,7 +104,10 @@ if(args.Length==2 && args[0]=="--public-rescue-prepare"){await PublicRescueFixtu
 if(args.Length==3 && args[0]=="--public-rescue-prepare" && args[2] is ("haiku" or "opus")){
     await PublicRescueFixture.PrepareAsync(args[1],args[2]);return;
 }
-if(args.Length==4 && args[0]=="--public-rescue-solve-copilot"){
+if(args.Length==3 && args[0]=="--public-rescue-reuse"){
+    await PublicRescueFixture.ReuseAsync(args[1],args[2]);return;
+}
+if(args.Length==4 && args[0] is ("--public-rescue-solve-copilot" or "--public-rescue-fallback")){
     await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0]);return;
 }
 if(args.Length==4 && args[0]=="--public-rescue-baseline"){await PublicRescueFixture.ValidateBaselineAsync(args[1],args[2],args[3]);return;}

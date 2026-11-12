@@ -13,7 +13,7 @@ internal static class ReviewerCli
     internal sealed record Endpoint(string Path, string Sha256, bool SubscriptionVerified = false,
         bool PacketBoundaryVerified = false, string? Model = null, bool RescueEnabled = false);
     internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null, Endpoint? Terra = null,
-        Endpoint? Haiku = null);
+        Endpoint? Haiku = null, bool FullRescueRouting = false, double DifficultyConfidenceThreshold = 0.75);
     internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null,
         string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0, bool CodeModeUnavailable = false);
     internal static string Model(string provider) => provider switch {
@@ -583,6 +583,8 @@ internal static class ReviewerCli
         text=text.ToLowerInvariant();
         if(text.Contains("usage limit") || text.Contains("rate limit") || text.Contains("quota"))return "USAGE_LIMIT";
         if(text.Contains("authentication") || text.Contains("sign in") || text.Contains("login") || text.Contains("unauthorized"))return "AUTHENTICATION";
+        if(text.Contains("model_not_found") || text.Contains("model is not available") ||
+            text.Contains("unsupported model"))return "MODEL_UNAVAILABLE";
         if(text.Contains("connection") || text.Contains("network") || text.Contains("timeout"))return "CONNECTION";
         return "CLI_FAILURE";
     }

@@ -14,7 +14,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     internal sealed record Candidate(string TaskId,string AssignmentId,int Generation,string BaseCommit,
         string StartingStateHash,string StartingDiffHash,Change[] Changes,string Summary);
     internal sealed record Validation(string TicketHash,string CandidateHash,string ResultStateHash,string ResultDiffHash,
-        ToolRouter.TestResult[] Tests,string CriticVerdict,bool ExternalPassed);
+        ToolRouter.TestResult[] Tests,string CriticVerdict,bool ExternalPassed,bool HostCompletionVerified=false);
     internal sealed record FailureObservation(int ActorTurns,bool ActorReportedNoProgress,int TestsWithoutImprovement,
         string SupervisorAction,string[] FailedRequiredTests,string Reason);
     private sealed class VerifiedTestFailureException() : InvalidOperationException("The isolated tests rejected the rescue candidate");
@@ -152,22 +152,36 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
 
     internal static string[] AutomaticProviders(string risk,ReviewerCli.Settings settings)
     {
-        string[] order = risk switch { "LOW"=>["terra"], "NORMAL"=>["terra","sol"], _=>[] };
+        var order=RescueRouting.Order(risk,settings.FullRescueRouting);
         return order.Where(provider=>ReviewerCli.RescueEndpoint(settings,provider)?.RescueEnabled==true).ToArray();
     }
 
-    internal string[] AutomaticProviders()
+    internal ReviewerCli.Settings? AutomaticSettings()
     {
         if (Request.RequiredTests.Length==0 || !Request.RequiredTests.Any(test=>test.Kind=="dotnet_test") ||
             Request.RequiredTests.Any(test=>test.Kind is not ("dotnet_test" or "dotnet_build")) ||
             Store.ReadPolicy(HostTaskJournal.RepositoryId(journal.WindowsRoot),journal.WindowsRoot) is not
                 { AuditMatched:true, Mode:"auto" })
-            return [];
-        return AutomaticProviders(Request.EffectiveRisk,ReviewerCli.Load(Store.Root));
+            return null;
+        return ReviewerCli.Load(Store.Root);
+    }
+
+    internal AttemptStartingState.Saved? InitialStartingState()
+    {
+        var workspace=HostTaskJournal.WorkspaceId(journal.WindowsRoot);
+        var initial=Events("attempt_starting_state").FirstOrDefault(row=>row.Input.WorkspaceId==workspace &&
+            row.Input.VerificationStatus=="host_verified" && row.Input.Metadata.GetProperty("attempt").GetInt32()==1);
+        if(initial is null)return null;
+        var hash=initial.Input.Metadata.GetProperty("starting_state_hash").GetString()!;
+        var state=JsonSerializer.Deserialize<AttemptStartingState.Snapshot>(Store.ReadEvidence(hash))
+            ?? throw new InvalidDataException("Initial rescue baseline is missing");
+        if(state.Head!=journal.ExpectedHead || AttemptStartingState.Hash(state)!=hash)
+            throw new InvalidDataException("Initial rescue baseline changed");
+        return new(state,hash,initial.EventId);
     }
 
     internal async Task<bool> TryAutomaticAsync(string[] providers,AttemptStartingState.Saved starting,
-        FailureObservation observation,CancellationToken token)
+        FailureObservation? observation,CancellationToken token)
     {
         if (providers.Length==0 || Events("codex_rescue_automatic_started").Length!=0)
             return false;
@@ -181,7 +195,15 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             if (AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(journal.WindowsRoot,null,token))!=failedState)
                 throw new UnauthorizedAccessException("Task worktree changed between rescue attempts");
             var ticket = await ReserveAsync(starting,token,observation,provider:provider);
-            var result = await RunExternalAsync(ticket,token,automatic:true);
+            ExternalResult result;
+            try { result=await RunExternalAsync(ticket,token,automatic:true); }
+            catch(Exception error) when(error is IOException or InvalidDataException or InvalidOperationException
+                or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                Record("codex_rescue_automatic_unresolved",new{provider,reason="HOST_VALIDATION_STOP",
+                    error_type=error.GetType().Name},[ticket]);
+                throw;
+            }
             Record("codex_rescue_automatic_result",new{provider,result.Status,result.Reason},[ticket]);
             if (result is {Status:"VALIDATED_IN_RESCUE",ValidationHash:{} validation})
             {
@@ -196,7 +218,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
 
     internal static bool AutomaticFallback(ExternalResult result) => result.Status=="VERIFIED_TEST_FAILURE" ||
         result.Status=="UNAVAILABLE" && result.Reason is
-            ("AUTHENTICATION" or "CHATGPT_LOGIN_REQUIRED" or "USAGE_LIMIT" or "RESCUE_CLI_NOT_INSTALLED" or
+            ("AUTHENTICATION" or "CHATGPT_LOGIN_REQUIRED" or "USAGE_LIMIT" or "MODEL_UNAVAILABLE" or "RESCUE_CLI_NOT_INSTALLED" or
              "CLI_HASH_CHANGED" or "RESCUE_MODEL_CHANGED" or "AUTOMATIC_RESCUE_NOT_ENABLED");
 
     internal HostEgress.Prepared PrepareAdvice(string ticketHash, bool formatRetry=false, string provider="sol") => PrepareRescueMode(ticketHash,"advice",
@@ -581,6 +603,9 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         bool distinguishTestFailure=false) {
         var source=await RequireValidationSourceAsync(ticketHash,candidateHash,Load(ticketHash).RescueRoot,token);var ticket=source.Ticket;var request=Request;
         var stateHash=source.StateHash;var diff=await GitEvidence.CaptureAsync(ticket.RescueRoot,request.AllowedFiles,token);
+        var hostCompletion=distinguishTestFailure && ReviewerCli.Load(Store.Root).FullRescueRouting;
+        if(hostCompletion && AutomaticCompletion.ChangesVerificationInputs(request,diff.ChangedFiles))
+            throw new UnauthorizedAccessException("A rescue candidate changed verification inputs");
         var wsl=await WslWorkspace.ResolveRegisteredRescueAsync(Store,ticket.WorkspaceId,token);var tests=new List<ToolRouter.TestResult>();
         foreach(var required in request.RequiredTests)tests.Add(await HostValidationPolicy.RunRescueAsync(journal,ticketHash,candidateHash,ticket.RescueRoot,wsl,required,token));
         var afterTests=await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token);
@@ -591,6 +616,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                 throw new VerifiedTestFailureException();
             throw new InvalidDataException("Rescue required tests did not pass");
         }
+        if(hostCompletion && !AutomaticCompletion.HasPassingTests(request,tests))
+            throw new InvalidDataException("Rescue lacks a verified non-empty test run");
         var prompt=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]))+"\nYou are a fresh independent local Critic. Assess every acceptance criterion and test evidence. Return exactly JSON {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Do not modify files.";
         var critic=await PiRpcRunner.RunAsync(wsl,prompt,true,windowsRoot:ticket.RescueRoot,taskId:ticket.TaskId,token:token);
         var parsed=CopilotReviewer.Parse(critic.Text);var criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(critic.Text));
@@ -603,13 +630,13 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         }
         if(parsed.Verdict!="PASS" || critic.ToolErrors>0)throw new InvalidDataException("Fresh local Rescue Critic did not pass");
         var externalPassed=request.EffectiveRisk=="LOW";
-        if(!externalPassed) {
+        if(!hostCompletion && !externalPassed) {
             var external=await ExternalReviewCoordinator.RunAsync(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]),token);
             externalPassed=external.Passed;
         }
-        if(!externalPassed || AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=stateHash)
+        if((!externalPassed && !hostCompletion) || AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token))!=stateHash)
             throw new InvalidDataException("Rescue review failed or source changed");
-        var diffHash=Store.PutEvidence(Encoding.UTF8.GetBytes(diff.ReviewDiff));var validation=new Validation(ticketHash,candidateHash,stateHash,diffHash,tests.ToArray(),parsed.Verdict,externalPassed);
+        var diffHash=Store.PutEvidence(Encoding.UTF8.GetBytes(diff.ReviewDiff));var validation=new Validation(ticketHash,candidateHash,stateHash,diffHash,tests.ToArray(),parsed.Verdict,externalPassed,hostCompletion);
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(validation));Record("codex_rescue_validated",new{ticket_hash=ticketHash,validation_hash=hash,result_state_hash=stateHash},[ticketHash,hash,stateHash,diffHash,criticHash],workspace:ticket.WorkspaceId);
         // Packet assembly is local and best-effort; a learning failure never replays verified file effects.
         try{new DifferentialLearning(journal).Assemble(ticketHash,hash);}catch(Exception e)when(e is InvalidDataException or UnauthorizedAccessException or IOException){Record("differential_learning_unavailable",new{ticket_hash=ticketHash,validation_hash=hash,error_type=e.GetType().Name},[ticketHash,hash],workspace:ticket.WorkspaceId);}
@@ -617,7 +644,9 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal async Task PromoteAsync(string ticketHash,string validationHash,CancellationToken token=default) {
         var ticket=Load(ticketHash);var validation=JsonSerializer.Deserialize<Validation>(Store.ReadEvidence(validationHash))!;
-        if(validation.TicketHash!=ticketHash || validation.CriticVerdict!="PASS" || !validation.ExternalPassed || validation.Tests.Length!=Request.RequiredTests.Length || validation.Tests.Any(t=>!t.Passed) ||
+        if(validation.TicketHash!=ticketHash || validation.CriticVerdict!="PASS" ||
+            (!validation.ExternalPassed && !validation.HostCompletionVerified) ||
+            validation.Tests.Length!=Request.RequiredTests.Length || validation.Tests.Any(t=>!t.Passed) ||
             !Store.EventIds(ticket.TaskId).Select(id=>Store.ReadTaskEvent(ticket.TaskId,id)).Any(e=>e.Input.EventType=="codex_rescue_validated" && e.Input.Producer=="windows_host" && e.Input.EvidenceRefs.Contains(validationHash)))
             throw new UnauthorizedAccessException("No matching Host-verified rescue validation");
         var rescue=await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token);
