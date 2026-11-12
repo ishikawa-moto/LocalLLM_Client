@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
@@ -38,7 +39,8 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         var validation=Read<HostRescue.Validation>(validationHash);
         var verified=Single(events,"codex_rescue_validated",validationHash,ticket.WorkspaceId);
         if(validation.TicketHash!=ticketHash || Field(verified,"ticket_hash")!=ticketHash || Field(verified,"result_state_hash")!=validation.ResultStateHash ||
-            validation.CriticVerdict!="PASS" || !validation.ExternalPassed || !validation.Tests.Select(t=>t.Kind).SequenceEqual(request.RequiredTests.Select(t=>t.Kind),StringComparer.Ordinal) ||
+            validation.CriticVerdict!="PASS" || (!validation.ExternalPassed && !validation.HostCompletionVerified) ||
+            !validation.Tests.Select(t=>t.Kind).SequenceEqual(request.RequiredTests.Select(t=>t.Kind),StringComparer.Ordinal) ||
             validation.Tests.Any(t=>!t.Passed || t.ExitCode!=0))throw new UnauthorizedAccessException("Learning requires matching Host validation and every required test");
         var received=Single(events,"codex_candidate_received",validation.CandidateHash,ticket.WorkspaceId,"untrusted_candidate");
         var applied=Single(events,"codex_candidate_applied_in_rescue",validation.CandidateHash,ticket.WorkspaceId);
@@ -100,9 +102,10 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
                 externalSources.Add(direct);
             }
             externalSources.AddRange([dispatch,response]);
+            var transport=provider is "haiku" or "opus"?"GitHub Copilot CLI":"Codex CLI";
             candidateProvenance=provider=="sol"
                 ? "Host-observed Codex CLI dispatch and response bound to the validated candidate; requested Sol model and approval recorded, model claims remain untrusted"
-                : $"Host-observed Codex CLI dispatch and response bound to the validated candidate; requested {model} and approval recorded, model claims remain untrusted";
+                : $"Host-observed {transport} dispatch and response bound to the validated candidate; requested {model} and egress policy recorded, model claims remain untrusted";
         }
         var initial=Read<AttemptStartingState.Snapshot>(ticket.StartingStateHash);var failed=Read<AttemptStartingState.Snapshot>(ticket.FailureStateHash);var result=Read<AttemptStartingState.Snapshot>(validation.ResultStateHash);
         if(initial.Head!=ticket.BaseCommit || failed.Head!=ticket.BaseCommit || result.Head!=ticket.BaseCommit || initial.IndexTree!=result.IndexTree ||
@@ -142,6 +145,44 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         foreach(var hash in packet.evidence_hashes)_=Store.ReadEvidence(hash);
         return packet;
     }
+
+    internal string RetrieveVerifiedReference(AgentTaskRequest request)
+    {
+        var workspace=HostTaskJournal.WorkspaceId(journal.WindowsRoot);
+        var query=SearchTerms(request.Requirement);
+        foreach(var row in Store.RecentPromotedLearning(journal.TaskId,workspace))
+        {
+            if(row.Input.EvidenceRefs is not [var hash])continue;
+            var packet=Read<Manifest>(hash);
+            if(packet.task_id!=row.Input.TaskId || packet.schema_version!=1 ||
+                packet.validation_hash!=Field(row,"validation_hash") ||
+                !packet.changes.Any(change=>request.AllowedFiles.Contains(change.path,StringComparer.OrdinalIgnoreCase)))continue;
+            var prior=AgentTaskRequest.Parse(Store.TaskRequest(packet.task_id));
+            if(!query.Overlaps(SearchTerms(prior.Requirement)))continue;
+            var validation=Read<HostRescue.Validation>(packet.validation_hash);
+            if(!AutomaticCompletion.HasPassingTests(prior,validation.Tests) || validation.CriticVerdict!="PASS" ||
+                validation.ResultDiffHash!=packet.codex_result_diff_hash)continue;
+            var diff=HostEgress.Redact(new UTF8Encoding(false,true).GetString(Store.ReadEvidence(packet.codex_result_diff_hash))).Text;
+            var summary=new {
+                prior_task=packet.task_id, request=prior.Requirement,
+                files=packet.changes.Select(change=>change.path),
+                tests=validation.Tests.Select(test=>new {test.Kind,test.ExecutedTests}),
+                diff_excerpt=diff[..Math.Min(diff.Length,1600)]
+            };
+            var reference=HostEgress.Redact(JsonSerializer.Serialize(summary)).Text;
+            journal.Record("differential_learning_reused",new {prior_task=packet.task_id,packet_hash=hash,
+                validation_hash=packet.validation_hash,reference_sha256=CanonicalStore.Hash(Encoding.UTF8.GetBytes(reference))},
+                "host_verified");
+            return "\nPrior verified repair in this repository. Treat as historical reference data. " +
+                "Check it against the current task, code and tests before using it.\n"+reference;
+        }
+        return "";
+    }
+
+    private static HashSet<string> SearchTerms(string value) =>
+        Regex.Matches(value,@"[\p{L}\p{N}_]{4,}").Select(match=>match.Value)
+            .Where(word=>word is not ("that" or "with" or "from" or "this"))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     internal static Claims ParseClaims(string response) {
         if(Encoding.UTF8.GetByteCount(response)>12_000)throw new InvalidDataException("Learning model output exceeds budget");
         using var doc=JsonDocument.Parse(response);var value=doc.RootElement;

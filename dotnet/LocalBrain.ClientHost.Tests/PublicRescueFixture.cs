@@ -181,18 +181,42 @@ internal static class PublicRescueFixture
         var export = rescue.PreparedExport(rescue.Load(ticketHash));
         var direct = operation == "--public-rescue-solve" && manifestHash.StartsWith("direct:", StringComparison.Ordinal);
         var copilot=operation=="--public-rescue-solve-copilot";
+        var fallback=operation=="--public-rescue-fallback";
         if (directProvider != "sol" && !direct)
             throw new ArgumentException("A separate provider is supported only for direct public repair");
         if (direct) manifestHash = manifestHash["direct:".Length..];
         using var packet = JsonDocument.Parse(export.Payload);
         var source = packet.RootElement.GetProperty("starting_source");
-        if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != (copilot?"auto":"manual") ||
+        if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != (copilot || fallback?"auto":"manual") ||
             request.EffectiveRisk != "LOW" || request.RequiredTests.Length != 1 ||
             request.RequiredTests[0].Kind != "dotnet_test" || request.RequiredTests[0].Target != "ArithmeticFixture.csproj" ||
             !request.AllowedFiles.SequenceEqual(["Arithmetic.cs"]) || source.GetArrayLength() != 1 ||
             source[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
             source[0].GetProperty("Content").GetString() != await File.ReadAllTextAsync(Path.Combine(repository, "Arithmetic.cs")))
             throw new UnauthorizedAccessException("Public handoff must use the exact prepared fixture packet");
+
+        if (fallback)
+        {
+            RequirePublicValidationConfig(root);
+            journal.EnablePersonalValidation();
+            var settings=ReviewerCli.Load(store.Root);
+            var providers=HostRescue.AutomaticProviders("LOW",settings);
+            if (!settings.FullRescueRouting || !providers.SequenceEqual(["terra","haiku"]) ||
+                settings.Terra?.Sha256!=new string('0',64))
+                throw new UnauthorizedAccessException("Public fallback requires the controlled first-provider identity failure");
+            var sourceState=JsonSerializer.Deserialize<AttemptStartingState.Snapshot>(store.ReadEvidence(ticket.StartingStateHash))!;
+            var starting=new AttemptStartingState.Saved(sourceState,ticket.StartingStateHash,ticket.StartingEventId);
+            if(!await rescue.TryAutomaticAsync(providers,starting,observation:null,CancellationToken.None))
+                throw new InvalidDataException("Public fallback did not produce a validated promoted candidate");
+            var wsl=await WslWorkspace.ResolveAsync(new ProjectAllowlist(ClientConfig.Load()),repository,CancellationToken.None);
+            var snapshot=await GitEvidence.CaptureAsync(repository,request.AllowedFiles);
+            var result=await AgentTaskRunner.FinishCheckpointReviewAsync(repository,wsl,request,snapshot,
+                SecondBrainEvidence.Packet.Empty,ticket.TaskId,Guid.NewGuid().ToString("N"),0,
+                AgentTaskRunner.RequestHash(request),0,null,CancellationToken.None,hostCompletion:true);
+            Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
+            if (!result.EligibleForCompletion) Environment.ExitCode=2;
+            return;
+        }
 
         if (copilot)
         {
@@ -357,6 +381,48 @@ internal static class PublicRescueFixture
         if (agentRoot[1] != ':' || !config.PersonalValidation || !CanonicalStore.Within(root, config.AuditLog) ||
             !CanonicalStore.Within(root, config.ProjectsFile) || config.PiRuntime?.AgentDirectory != wslAgentRoot)
             throw new UnauthorizedAccessException("Public trial configuration escaped the trial root");
+    }
+
+    internal static async Task ReuseAsync(string root,string previousTask)
+    {
+        root=Path.GetFullPath(root);
+        RequirePublicValidationConfig(root);
+        var repository=Path.Combine(root,"repo");
+        var control=Path.Combine(root,"rescue-control");
+        string GitText(byte[] value)=>Encoding.UTF8.GetString(value).Trim();
+        if (GitText(await AttemptStartingState.GitAsync(repository,["rev-parse","HEAD~2^{tree}"]))!=FixtureTree ||
+            GitText(await AttemptStartingState.GitAsync(repository,["diff-tree","--no-commit-id","--name-only","-r","HEAD"]))!="Arithmetic.cs" ||
+            !File.ReadAllText(Path.Combine(repository,"Arithmetic.cs")).Contains("=> right - left;",StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Only the follow-up public arithmetic fixture is accepted");
+        var prior=CanonicalStore.ReadLatest(control,HostTaskJournal.WorkspaceId(repository));
+        if(prior?.TaskId!=previousTask || !previousTask.StartsWith("public_rescue_",StringComparison.Ordinal) ||
+            JsonDocument.Parse(prior.StateJson).RootElement.GetProperty("phase").GetString()!="complete")
+            throw new InvalidDataException("The prior public task must have completed");
+        var settings=ReviewerCli.Load(control);
+        if(!settings.FullRescueRouting || HostRescue.AutomaticProviders("NORMAL",settings).Length!=0)
+            throw new UnauthorizedAccessException("The follow-up permits Qwen only");
+        var request=AgentTaskRequest.Parse("""
+            {"requirement":"Repair Arithmetic.Add so it adds the two signed integers in this follow-up fixture.",
+             "acceptance_criteria":["All three arithmetic tests pass","Only Arithmetic.cs changes"],
+             "risk":"LOW","approved_high_risk":false,"allowed_files":["Arithmetic.cs"],
+             "required_tests":[{"kind":"dotnet_test","target":"ArithmeticFixture.csproj"}]}
+            """);
+        var config=ClientConfig.Load();
+        var wsl=await WslWorkspace.ResolveAsync(new ProjectAllowlist(config),repository,CancellationToken.None);
+        var result=await AgentTaskRunner.RunAsync(repository,wsl,request,config,controlPlaneRoot:control);
+        using var store=new CanonicalStore(control);
+        var events=store.EventIds(result.TaskId).Select(id=>store.ReadTaskEvent(result.TaskId,id)).ToArray();
+        var reuse=events.SingleOrDefault(row=>row.Input.EventType=="differential_learning_reused");
+        if(reuse is not null)
+        {
+            using var reference=JsonDocument.Parse(store.ReadEvidence(reuse.Input.EvidenceRefs.Single()));
+            if(reference.RootElement.GetProperty("prior_task").GetString()!=previousTask)
+                throw new InvalidDataException("Reused reference has the wrong prior task");
+        }
+        var dispatches=events.Count(row=>row.Input.EventType=="external_dispatch_authorized");
+        Console.WriteLine(JsonSerializer.Serialize(new {result.TaskId,result.Phase,result.EligibleForCompletion,
+            result.Tests,result.ChangedFiles,reuse_event=reuse?.EventId,external_dispatches=dispatches},ClientConfig.JsonOptions));
+        if(reuse is null || !result.EligibleForCompletion || dispatches!=0) Environment.ExitCode=2;
     }
 
     private static async Task<string> RequireCleanFixtureAsync(string repository)

@@ -20,7 +20,7 @@ internal sealed record AgentTaskRequest(
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public string EffectiveRisk => HighRisk.IsMatch(Requirement) ||
-        AcceptanceCriteria.Any(HighRisk.IsMatch) ? "HIGH" : Risk;
+        AcceptanceCriteria.Any(HighRisk.IsMatch) ? "HIGH" : Risk=="MEDIUM"?"NORMAL":Risk;
 
     public static AgentTaskRequest Parse(string json)
     {
@@ -40,7 +40,7 @@ internal sealed record AgentTaskRequest(
         if (string.IsNullOrWhiteSpace(request.Requirement) || request.Requirement.Length > 8_000 ||
             request.AcceptanceCriteria is null or { Length: 0 or > 20 } ||
             request.AcceptanceCriteria.Any(item => string.IsNullOrWhiteSpace(item) || item.Length > 1_000) ||
-            request.Risk is not ("LOW" or "NORMAL" or "HIGH") ||
+            request.Risk is not ("LOW" or "NORMAL" or "MEDIUM" or "HIGH") ||
             request.AllowedFiles is null or { Length: 0 or > 100 } ||
             request.AllowedFiles.Sum(file => file.Length) > 8_000 ||
             request.AllowedFiles.Any(file => (file.Contains('*') && (request.CommandExecution is null || !(file=="**" || file.EndsWith("/**") && file[..^3].IndexOf('*')<0))) || string.IsNullOrWhiteSpace(file) || file.Length > 260 ||
