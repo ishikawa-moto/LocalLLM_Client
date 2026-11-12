@@ -12,17 +12,19 @@ internal static class ReviewerCli
 {
     internal sealed record Endpoint(string Path, string Sha256, bool SubscriptionVerified = false,
         bool PacketBoundaryVerified = false, string? Model = null, bool RescueEnabled = false);
-    internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null, Endpoint? Terra = null);
+    internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null, Endpoint? Terra = null,
+        Endpoint? Haiku = null);
     internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null,
         string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0, bool CodeModeUnavailable = false);
     internal static string Model(string provider) => provider switch {
-        "sol" => "gpt-6.1-sol", "terra" => "gpt-6.1-terra", "copilot" => "claude-opus-5.5",
+        "sol" => "gpt-6.1-sol", "terra" => "gpt-6.1-terra", "haiku" => "claude-haiku-5.5",
+        "opus" or "copilot" => "claude-opus-5.5",
         _ => throw new InvalidDataException("Unknown reviewer")
     };
     private static bool IsCodexProvider(string provider) => provider is "sol" or "terra";
 
     private static readonly Regex RescueModelPattern = new(
-        @"\Agpt-[0-9]+(?:\.[0-9]+)?-(?<provider>sol|terra)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?\z",
+        @"\A(?:gpt-[0-9]+(?:\.[0-9]+)?-(?<provider>sol|terra)|claude-(?<provider>haiku|opus)-[0-9]+(?:\.[0-9]+)?)(?:-[0-9]{4}-?[0-9]{2}-?[0-9]{2})?\z",
         RegexOptions.CultureInvariant);
 
     internal static (string Provider, string Model) RescueTarget(HostEgress.Prepared export)
@@ -40,6 +42,7 @@ internal static class ReviewerCli
 
     internal static Endpoint? RescueEndpoint(Settings settings, string provider) =>
         provider switch { "sol" => settings.Sol, "terra" => settings.Terra,
+            "haiku" => settings.Haiku, "opus" => settings.Opus,
             _ => throw new ArgumentException("Unsupported rescue provider", nameof(provider)) };
 
     internal static string ConfiguredRescueModel(Settings settings, string provider)
@@ -155,7 +158,7 @@ internal static class ReviewerCli
         var (provider, model) = RescueTarget(export);
         if (developmentCodex is not null)
         {
-            if (export.Manifest.PolicyMode != "manual")
+            if (!IsCodexProvider(provider) || export.Manifest.PolicyMode != "manual")
                 throw new UnauthorizedAccessException("Development rescue requires exact manual export approval");
             HostValidationPolicy.RequireRegisteredPublisher(journal);
             return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token, editRoot,
@@ -174,7 +177,7 @@ internal static class ReviewerCli
         }
         if (export.Manifest.PolicyMode != "manual")
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "AUTOMATIC_RESCUE_NOT_ENABLED"));
-        if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
+        if (!IsCodexProvider(provider) || endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "HOST_ROUTE_NOT_QUALIFIED"));
         HostValidationPolicy.RequireRegisteredPublisher(journal);
         return DispatchAsync(journal, endpoint, provider, export.Payload, "high", null, null, false, token,
@@ -184,8 +187,13 @@ internal static class ReviewerCli
     private static async Task<Reply> RunConfiguredRescueAsync(HostTaskJournal journal,HostEgress.Prepared export,
         Endpoint endpoint,CancellationToken token)
     {
-        try { RequireDevelopmentExecutable(endpoint.Path); }
-        catch (ArgumentException) { return new("UNAVAILABLE",Reason:"CODEX_CLI_NOT_INSTALLED"); }
+        var (provider,model)=RescueTarget(export);
+        var codex=IsCodexProvider(provider);
+        var name=codex?"codex.exe":"copilot.exe";
+        if (!Path.IsPathFullyQualified(endpoint.Path) || !Path.GetFileName(endpoint.Path).Equals(name,StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(endpoint.Path))
+            return new("UNAVAILABLE",Reason:"RESCUE_CLI_NOT_INSTALLED");
+        CanonicalStore.GuardPath(endpoint.Path);
         // Keep the configured executable immutable from identity check through exit.
         using var binary = new FileStream(endpoint.Path,FileMode.Open,FileAccess.Read,FileShare.Read);
         if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(binary)),endpoint.Sha256,StringComparison.Ordinal))
@@ -194,9 +202,103 @@ internal static class ReviewerCli
         try
         {
             using var dispatch = new HostEgress(journal.Canonical).AuthorizeDispatch(export,"codex_protocol");
-            return await RunDevelopmentRescueCliAsync(journal,export,endpoint.Path,token,packetRoot:work.FullName);
+            return codex
+                ? await RunDevelopmentRescueCliAsync(journal,export,endpoint.Path,token,packetRoot:work.FullName)
+                : await RunCopilotRescueAsync(journal,export,endpoint.Path,work.FullName,provider,model,endpoint.Sha256,token);
         }
         finally { work.Delete(recursive:true); }
+    }
+
+    internal static ProcessStartInfo CopilotRescueStartInfo(string executable,string work,string model)
+    {
+        var start=new ProcessStartInfo(executable) {
+            WorkingDirectory=work,UseShellExecute=false,CreateNoWindow=true,
+            RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
+            StandardInputEncoding=new UTF8Encoding(false),StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8
+        };
+        foreach(var key in start.Environment.Keys.ToArray())
+            if(!EnvironmentKeys.Contains(key))start.Environment.Remove(key);
+        foreach(var arg in new[] {"--model",model,"--silent","--stream","off","--no-ask-user",
+            "--no-custom-instructions","--sync-session=off","--disable-builtin-mcps","--available-tools=ask_user",
+            "--deny-tool=read","--deny-tool=write","--deny-tool=shell","--deny-tool=url","--disallow-temp-dir",
+            "--no-auto-update","--disable-client-telemetry","--output-format","json"})
+            start.ArgumentList.Add(arg);
+        return start;
+    }
+
+    private static async Task<Reply> RunCopilotRescueAsync(HostTaskJournal journal,HostEgress.Prepared export,
+        string executable,string work,string provider,string model,string sha256,CancellationToken token)
+    {
+        var start=CopilotRescueStartInfo(executable,work,model);
+        // The fixed protocol instruction adds no repository information to the approved packet.
+        const string instructions="Act as the LocalBrain rescue responder for the task in the following JSON. " +
+            "Use only the supplied data. Do not ask for files, invoke tools, or edit the environment. " +
+            "Follow response_schema and return exactly one JSON object without Markdown or explanation.\n";
+        var input=instructions+export.Payload;
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+        try {
+            using var process=Process.Start(start)??throw new IOException("Copilot failed to start");
+            try {
+                journal.Record("copilot_rescue_cli_started",new {
+                    provider,requested_model=model,sha256,pid=process.Id,manifest_hash=export.ManifestHash,
+                    packet_hash=export.Manifest.ExportHash,
+                    stdin_hash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(input)),
+                    authentication_policy="installed Copilot CLI credentials"
+                },"host_observed");
+                var output=ReadBoundedAsync(process.StandardOutput,96_000,timeout.Token);
+                var errors=ReadBoundedAsync(process.StandardError,16_000,timeout.Token);
+                var exit=process.WaitForExitAsync(timeout.Token);
+                await process.StandardInput.WriteAsync(input.AsMemory(),timeout.Token);
+                process.StandardInput.Close();
+                var pending=new List<Task>{output,errors,exit};
+                while(pending.Count!=0) {
+                    var completed=await Task.WhenAny(pending);
+                    pending.Remove(completed);
+                    await completed;
+                }
+                var reply=process.ExitCode==0?DecodeCopilotRescue(await output):
+                    new Reply("UNAVAILABLE",Reason:FailureReason(await output+await errors));
+                journal.Record("copilot_rescue_cli_completed",new {
+                    provider,requested_model=model,process.ExitCode,reply.Status,reply.Reason,manifest_hash=export.ManifestHash
+                },"host_observed");
+                return reply with {ExitCode=process.ExitCode};
+            }
+            finally {
+                if(!process.HasExited)process.Kill(entireProcessTree:true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+        } catch(OperationCanceledException) when(!token.IsCancellationRequested) {
+            return new("UNAVAILABLE",Reason:"CLI_TIMEOUT");
+        } catch(Exception error) when(error is IOException or InvalidDataException or System.ComponentModel.Win32Exception) {
+            return new("UNAVAILABLE",Reason:error.GetType().Name);
+        }
+    }
+
+    internal static Reply DecodeCopilotRescue(string jsonLines)
+    {
+        string? answer=null;
+        var finished=false;
+        try {
+            foreach(var line in jsonLines.Split('\n',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)) {
+                using var json=JsonDocument.Parse(line);
+                var evt=json.RootElement;
+                var type=evt.GetProperty("type").GetString();
+                if(type is "error" or "session.error")return new("UNAVAILABLE",Reason:FailureReason(line));
+                if(type?.StartsWith("tool.execution_",StringComparison.Ordinal)==true)
+                    return new("INVALID",Reason:"COPILOT_TOOL_EXECUTION_OBSERVED");
+                if(type=="assistant.message") {
+                    var data=evt.GetProperty("data");
+                    if(data.TryGetProperty("toolRequests",out var tools) && tools.GetArrayLength()!=0)
+                        return new("INVALID",Reason:"COPILOT_TOOL_REQUEST_OBSERVED");
+                    answer=data.GetProperty("content").GetString();
+                } else if(type=="result") finished=true;
+            }
+        } catch(Exception error) when(error is JsonException or KeyNotFoundException or InvalidOperationException) {
+            return new("INVALID",Reason:"COPILOT_RESCUE_RESPONSE_INVALID");
+        }
+        return finished && !string.IsNullOrWhiteSpace(answer) && Encoding.UTF8.GetByteCount(answer)<=48_000
+            ?new("OK",answer):new("INVALID",Reason:"COPILOT_RESCUE_RESPONSE_INCOMPLETE");
     }
 
     private static async Task<Reply> RunApprovedDevelopmentRescueAsync(HostTaskJournal journal,

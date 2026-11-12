@@ -8,7 +8,7 @@ internal static class PublicRescueFixture
 {
     private const string FixtureTree = "df198e70d111900066e7a33aaa9927b15048cd20";
 
-    internal static async Task PrepareAsync(string root)
+    internal static async Task PrepareAsync(string root,string provider="sol")
     {
         root = Path.GetFullPath(root);
         ReviewQualification.GuardRoot(root);
@@ -32,7 +32,8 @@ internal static class PublicRescueFixture
         using var store = new CanonicalStore(control);
         var task = "public_rescue_" + Guid.NewGuid().ToString("N");
         using var journal = new HostTaskJournal(store, repository, task, request, head);
-        store.ChangePolicies([new(HostTaskJournal.RepositoryId(repository), repository, "manual", request.AllowedFiles,
+        var policyMode=provider is "haiku" or "opus"?"auto":"manual";
+        store.ChangePolicies([new(HostTaskJournal.RepositoryId(repository), repository, policyMode, request.AllowedFiles,
             ["task_evidence_only", "file:Arithmetic.cs"])], "public_synthetic_rescue_fixture");
         journal.Record("public_rescue_trial_input", new {
             provenance = "Intentional arithmetic fault in a synthetic fixture",
@@ -41,16 +42,16 @@ internal static class PublicRescueFixture
         }, "host_verified");
         var starting = await AttemptStartingState.SaveAsync(journal, 1);
         var rescue = new HostRescue(journal);
-        var ticketHash = await rescue.ReserveAsync(starting);
+        var ticketHash = await rescue.ReserveAsync(starting,provider:provider);
         var ticket = rescue.Load(ticketHash);
         var prepared = rescue.PreparedExport(ticket);
         using var packet = JsonDocument.Parse(prepared.Payload);
         var sources = packet.RootElement.GetProperty("starting_source");
-        if (prepared.Manifest.PolicyMode != "manual" || sources.GetArrayLength() != 1 ||
+        if (prepared.Manifest.PolicyMode != policyMode || sources.GetArrayLength() != 1 ||
             sources[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
             sources[0].GetProperty("Content").GetString() != File.ReadAllText(Path.Combine(repository, "Arithmetic.cs")))
             throw new InvalidDataException("Public trial packet escaped its exact source scope");
-        try
+        if (policyMode=="manual") try
         {
             using var lease = new HostEgress(store).AuthorizeDispatch(prepared, "codex_protocol");
             throw new InvalidOperationException("Host authorized the public trial without a human receipt");
@@ -66,7 +67,7 @@ internal static class PublicRescueFixture
             manifest_hash = prepared.ManifestHash,
             payload_hash = prepared.Manifest.ExportHash,
             file_scope = request.AllowedFiles,
-            unapproved_dispatch_rejected = true,
+            unapproved_dispatch_rejected = policyMode=="manual",
             external_requests = 0,
             production_qualification = false
         }));
@@ -179,18 +180,31 @@ internal static class PublicRescueFixture
         var rescue = new HostRescue(journal);
         var export = rescue.PreparedExport(rescue.Load(ticketHash));
         var direct = operation == "--public-rescue-solve" && manifestHash.StartsWith("direct:", StringComparison.Ordinal);
+        var copilot=operation=="--public-rescue-solve-copilot";
         if (directProvider != "sol" && !direct)
             throw new ArgumentException("A separate provider is supported only for direct public repair");
         if (direct) manifestHash = manifestHash["direct:".Length..];
         using var packet = JsonDocument.Parse(export.Payload);
         var source = packet.RootElement.GetProperty("starting_source");
-        if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != "manual" ||
+        if (export.ManifestHash != manifestHash || export.Manifest.PolicyMode != (copilot?"auto":"manual") ||
             request.EffectiveRisk != "LOW" || request.RequiredTests.Length != 1 ||
             request.RequiredTests[0].Kind != "dotnet_test" || request.RequiredTests[0].Target != "ArithmeticFixture.csproj" ||
             !request.AllowedFiles.SequenceEqual(["Arithmetic.cs"]) || source.GetArrayLength() != 1 ||
             source[0].GetProperty("Path").GetString() != "Arithmetic.cs" ||
             source[0].GetProperty("Content").GetString() != await File.ReadAllTextAsync(Path.Combine(repository, "Arithmetic.cs")))
             throw new UnauthorizedAccessException("Public handoff must use the exact prepared fixture packet");
+
+        if (copilot)
+        {
+            if (ReviewerCli.RescueTarget(export).Provider is not ("haiku" or "opus"))
+                throw new UnauthorizedAccessException("Public Copilot trial requires a Copilot packet");
+            RequirePublicValidationConfig(root);
+            journal.EnablePersonalValidation();
+            var result=await rescue.RunExternalAsync(ticketHash);
+            Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
+            if (result.Status!="VALIDATED_IN_RESCUE") Environment.ExitCode=2;
+            return;
+        }
 
         if (direct)
         {

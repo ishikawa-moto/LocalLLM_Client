@@ -118,6 +118,17 @@ internal static class HostRescueTests
         var snapshotModel = "gpt-6.1-terra-2026-10-20";
         Check(ReviewerCli.ConfiguredRescueModel(new(Terra:new("codex.exe","",Model:snapshotModel)),"terra")==snapshotModel,
             "Terra model snapshots must be configurable");
+        var copilotEvents="""
+            {"type":"assistant.message","data":{"content":"fixture","toolRequests":[]}}
+            {"type":"result"}
+            """;
+        Check(ReviewerCli.DecodeCopilotRescue(copilotEvents).Answer=="fixture" &&
+            ReviewerCli.DecodeCopilotRescue(copilotEvents.Replace("[]","[{}]")).Status=="INVALID" &&
+            ReviewerCli.DecodeCopilotRescue(copilotEvents.Replace("{\"type\":\"result\"}","")).Status=="INVALID",
+            "Copilot requires a terminal reply without tool requests");
+        Check(ReviewerCli.ConfiguredRescueModel(new(),"haiku")=="claude-haiku-5.5" &&
+            ReviewerCli.ConfiguredRescueModel(new(),"opus")=="claude-opus-5.5",
+            "Copilot models must stay distinct in Host routing");
         await Reject(()=>Task.FromResult(ReviewerCli.ConfiguredRescueModel(
             new(Terra:new("codex.exe","",Model:"gpt-6.1-sol")),"terra")),"Terra configuration accepted a different model family");
         var terraUnavailable=await ReviewerCli.GenerateRescueAsync(editJournal,terraAdvice,CancellationToken.None);
@@ -156,7 +167,7 @@ internal static class HostRescueTests
                 response_hash=responseHash,provider="sol",requested_model=ReviewerCli.Model("sol")})));
         await Reject(()=>Task.FromResult(new DifferentialLearning(editJournal).Assemble(editFixture.TicketHash,validationHash)),
             "Learning accepted a late Sol response without the exact prior dispatch");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=30,actual_model_requests=0,task_id=fixture.TaskId,
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=32,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {
