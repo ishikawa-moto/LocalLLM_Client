@@ -80,6 +80,23 @@ internal static class SupervisorRulesTests
             !repair.Contains("CS1234", StringComparison.Ordinal))
             throw new Exception("An ordinary repair must retain approved advice, cited knowledge, and Host test evidence");
 
+        var singleFile = AgentTaskRequest.Parse("""
+            {"requirement":"Fix the public fixture","acceptance_criteria":["Tests pass"],"risk":"LOW","approved_high_risk":false,"allowed_files":["Fixture.cs"],"required_tests":[{"kind":"dotnet_test","target":"Fixture.csproj"}],"command_execution":{"max_command_seconds":5,"working_directories":["."],"environments":["windows"],"max_commands":0,"max_task_minutes":5,"output_directories":[],"max_output_bytes":4096,"max_actor_turns":3}}
+            """);
+        var advice = new HostRescue.PendingAdvice("hash", [step]);
+        const string oneEdit = "apply them together in one host_edit";
+        foreach (var prompt in new[]
+        {
+            AgentTaskRunner.BuildRecoveryPrompt(singleFile, "test diff", packet, advice),
+            AgentTaskRunner.BuildRepairPrompt(singleFile, [failure], new("NOT_RUN", []), ["Fixture.cs"], "test diff", packet, advice)
+        })
+            if (!prompt.Contains(oneEdit, StringComparison.Ordinal) || !prompt.Contains(step, StringComparison.Ordinal) ||
+                !prompt.Contains("test diff", StringComparison.Ordinal) || !prompt.Contains("the Host runs validation", StringComparison.Ordinal))
+                throw new Exception("A scoped advisory turn must preserve evidence and prioritize one edit before Host validation");
+        if (AgentTaskRunner.BuildRecoveryPrompt(singleFile, "test diff", packet).Contains(oneEdit, StringComparison.Ordinal) ||
+            assisted.Contains(oneEdit, StringComparison.Ordinal))
+            throw new Exception("A normal task or a different advisory scope must retain its existing prompt");
+
         await CheckDecisionContextAsync();
     }
 
