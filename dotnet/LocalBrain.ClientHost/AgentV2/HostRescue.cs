@@ -156,14 +156,14 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         return order.Where(provider=>ReviewerCli.RescueEndpoint(settings,provider)?.RescueEnabled==true).ToArray();
     }
 
-    internal ReviewerCli.Settings? AutomaticSettings()
+    internal bool CanDispatchAutomatically()
     {
         if (Request.RequiredTests.Length==0 || !Request.RequiredTests.Any(test=>test.Kind=="dotnet_test") ||
             Request.RequiredTests.Any(test=>test.Kind is not ("dotnet_test" or "dotnet_build")) ||
             Store.ReadPolicy(HostTaskJournal.RepositoryId(journal.WindowsRoot),journal.WindowsRoot) is not
                 { AuditMatched:true, Mode:"auto" })
-            return null;
-        return ReviewerCli.Load(Store.Root);
+            return false;
+        return true;
     }
 
     internal AttemptStartingState.Saved? InitialStartingState()

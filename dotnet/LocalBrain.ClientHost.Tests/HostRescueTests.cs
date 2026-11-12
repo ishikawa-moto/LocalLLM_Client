@@ -185,7 +185,15 @@ internal static class HostRescueTests
                 response_hash=responseHash,provider="sol",requested_model=ReviewerCli.Model("sol")})));
         await Reject(()=>Task.FromResult(new DifferentialLearning(editJournal).Assemble(editFixture.TicketHash,validationHash)),
             "Learning accepted a late Sol response without the exact prior dispatch");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=35,actual_model_requests=0,task_id=fixture.TaskId,
+        var newRepo=HostTaskJournal.RepositoryId(fixture.MainRoot);
+        var scoped=editStore.SetRepositoryExportPolicy(new(newRepo,fixture.MainRoot,"auto",
+            ["greeting.txt"],["task_evidence_only","file:greeting.txt"]),"proof_operator");
+        Check(scoped is {Mode:"auto",AuditMatched:true} &&
+            editStore.ReadPolicy(HostTaskJournal.RepositoryId(editFixture.MainRoot),editFixture.MainRoot) is {Mode:"manual",AuditMatched:true},
+            "One repository's policy change must preserve the existing audited repository policy");
+        var disabled=editStore.SetRepositoryExportPolicy(new(newRepo,fixture.MainRoot,"deny",[],[]),"proof_operator");
+        Check(disabled is {Mode:"deny",AuditMatched:true},"Revocation must become the current audited policy");
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=37,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {
