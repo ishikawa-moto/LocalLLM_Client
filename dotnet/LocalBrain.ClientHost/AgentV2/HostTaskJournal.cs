@@ -267,14 +267,15 @@ internal sealed class HostTaskJournal : IDisposable
         public string Packet {get;}=packet;
         public void Dispose()=>lease.Dispose();
     }
-    internal HostEgress.Prepared PrepareExternalPacket(string packet,string provider,string[]? sources=null,string[]? files=null) {
-        var accepted=store.RequireExportPolicy(taskId);var sourceIds=sources??[];
+    internal HostEgress.Prepared PrepareExternalPacket(string packet,string provider,string[]? sources=null,string[]? files=null,
+        bool allowDefaultRescue=false) {
+        var accepted=store.RequireExportPolicy(taskId,allowDefaultRescue);var sourceIds=sources??[];
         var hash=store.PutEvidence(Encoding.UTF8.GetBytes(packet));
         var normalizedFiles=(files??[]).Select(p=>HostEgress.NormalizePath(root,p)).ToArray();
         var pending=store.PendingPacket(taskId,accepted.Hash,provider,hash,sourceIds,normalizedFiles);
         if(pending is not null)return pending;
         var receipt=store.Append(Input("host_approved_export_input",new {approved_source_ids=sourceIds,approved_file_refs=normalizedFiles.Select(p=>new HostEgress.FileRef(p,hash)).ToArray(),provider},"host_verified",[hash]));
-        return new HostEgress(store).Prepare(taskId,[receipt.EventId],sourceIds,normalizedFiles.Select(p=>new HostEgress.FileRef(p,hash)).ToArray(),["Host-selected bounded review/task packet"],true);
+        return new HostEgress(store).Prepare(taskId,[receipt.EventId],sourceIds,normalizedFiles.Select(p=>new HostEgress.FileRef(p,hash)).ToArray(),["Host-selected bounded review/task packet"],true,allowDefaultRescue);
     }
     internal PacketDispatch BeginExternalPacket(string packet,string provider,string[]? sources=null,string[]? files=null) {
         var export=PrepareExternalPacket(packet,provider,sources,files);

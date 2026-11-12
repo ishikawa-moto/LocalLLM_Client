@@ -12,12 +12,20 @@ internal static class AutomaticCompletion
             var name=Path.GetFileName(path);
             if(targets.Contains(path) || path.Split('/').Any(part=>
                 part.Equals("tests",StringComparison.OrdinalIgnoreCase) ||
+                part.Equals("__tests__",StringComparison.OrdinalIgnoreCase) ||
                 part.Equals("specs",StringComparison.OrdinalIgnoreCase) ||
                 part.Equals("test",StringComparison.OrdinalIgnoreCase)) ||
                 name.Contains("Tests.",StringComparison.OrdinalIgnoreCase) ||
                 name.Contains(".Test.",StringComparison.OrdinalIgnoreCase) ||
                 name.StartsWith("Test",StringComparison.OrdinalIgnoreCase) ||
                 name.Contains(".spec.",StringComparison.OrdinalIgnoreCase) ||
+                name.Contains(".test.",StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("jest.config.",StringComparison.OrdinalIgnoreCase) ||
+                name.StartsWith("vitest.config.",StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("package.json",StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("package-lock.json",StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("npm-shrinkwrap.json",StringComparison.OrdinalIgnoreCase) ||
+                name.Equals(".npmrc",StringComparison.OrdinalIgnoreCase) ||
                 name.EndsWith(".csproj",StringComparison.OrdinalIgnoreCase) ||
                 name.EndsWith(".props",StringComparison.OrdinalIgnoreCase) ||
                 name.EndsWith(".targets",StringComparison.OrdinalIgnoreCase) ||
@@ -31,7 +39,7 @@ internal static class AutomaticCompletion
     internal static bool HasPassingTests(AgentTaskRequest request,IReadOnlyList<ToolRouter.TestResult> results) =>
         results.Count==request.RequiredTests.Length && results.Select(test=>test.Kind)
             .SequenceEqual(request.RequiredTests.Select(test=>test.Kind),StringComparer.Ordinal) &&
-        results.Any(test=>test.Kind=="dotnet_test" && test.ExecutedTests>0) &&
+        results.Any(test=>test.Kind is ("dotnet_test" or "npm_test") && test.ExecutedTests>0) &&
         results.All(test=>test.Passed && test.ExitCode==0);
 
     internal static void Record(HostTaskJournal journal,GitEvidence.Snapshot snapshot,

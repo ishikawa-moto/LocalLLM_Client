@@ -171,10 +171,7 @@ internal static class ReviewerCli
         if (model != ConfiguredRescueModel(settings,provider))
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "RESCUE_MODEL_CHANGED"));
         if (endpoint?.RescueEnabled == true)
-        {
-            HostValidationPolicy.RequireRegisteredPublisher(journal);
             return RunConfiguredRescueAsync(journal,export,endpoint,token);
-        }
         if (export.Manifest.PolicyMode != "manual")
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "AUTOMATIC_RESCUE_NOT_ENABLED"));
         if (!IsCodexProvider(provider) || endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)

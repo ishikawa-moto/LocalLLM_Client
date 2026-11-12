@@ -24,7 +24,8 @@ internal static class HostRescueTests
         await AttemptStartingState.GitAsync(main,["-c","user.name=LocalBrain fixture","-c","user.email=fixture@example.invalid","commit","-qm","fixture baseline"]);
         var head=Encoding.UTF8.GetString(await AttemptStartingState.GitAsync(main,["rev-parse","HEAD"])).Trim();var hostRoot=Path.Combine(root,"host");var task="rescue_"+Guid.NewGuid().ToString("N");
         using var store=new CanonicalStore(hostRoot);using var journal=new HostTaskJournal(store,main,task,request,head);
-        store.ChangePolicies([new(HostTaskJournal.RepositoryId(main),main,exportMode,request.AllowedFiles,exportScope??["task_evidence_only"])],"explicit_public_fixture_test");
+        if(exportMode!="default")
+            store.ChangePolicies([new(HostTaskJournal.RepositoryId(main),main,exportMode,request.AllowedFiles,exportScope??["task_evidence_only"])],"explicit_public_fixture_test");
         var starting=await AttemptStartingState.SaveAsync(journal,1);
         // Host-generated synthetic failure, explicitly distinguished from an actual Codex/Qwen response.
         await using(var gate=new SideEffectGate(main,Request.AllowedFiles,head,false,journal))foreach(var file in Request.AllowedFiles)await gate.HandleAsync(new(gate.PipeName,gate.Nonce,"write",file,"BROKEN\n"));
@@ -193,7 +194,31 @@ internal static class HostRescueTests
             "One repository's policy change must preserve the existing audited repository policy");
         var disabled=editStore.SetRepositoryExportPolicy(new(newRepo,fixture.MainRoot,"deny",[],[]),"proof_operator");
         Check(disabled is {Mode:"deny",AuditMatched:true},"Revocation must become the current audited policy");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=37,actual_model_requests=0,task_id=fixture.TaskId,
+        var defaults=await PrepareAsync(root+"-default",request,"default");
+        using var defaultStore=new CanonicalStore(defaults.HostRoot);
+        using var defaultJournal=new HostTaskJournal(defaultStore,defaults.MainRoot,defaults.TaskId,request,defaults.Head);
+        var defaultRescue=new HostRescue(defaultJournal);
+        var defaultPacket=defaultRescue.PreparedExport(defaultRescue.Load(defaults.TicketHash));
+        Check(defaultRescue.CanDispatchAutomatically() &&
+            !File.Exists(Path.Combine(defaults.HostRoot,"codex-egress-policies.json")) &&
+            !defaultPacket.Payload.Contains("BROKEN") &&
+            HostValidationPolicy.UnavailableReason(defaultJournal,request.RequiredTests.Single(),true)=="DOTNET_VALIDATION_NOT_REGISTERED",
+            "Default scoped dispatch must not require either registration or include the failed worktree");
+        await Reject(()=>Task.FromResult(defaultJournal.PrepareExternalPacket("private reference","codex_protocol",sources:["private"],allowDefaultRescue:true)),
+            "Default rescue accepted private knowledge references");
+        using(LocalBrain.ClientHost.Slack.RestrictedExecution.EnterChat())
+            await Reject(()=>Task.FromResult(defaultStore.RequireExportPolicy(defaults.TaskId,true)),"OCR context was allowed to export");
+        var taskOptOut=request with{ExternalAiDisabled=true};
+        using(var localJournal=new HostTaskJournal(defaultStore,defaults.MainRoot,defaults.TaskId+"_local",taskOptOut,defaults.Head))
+            await Reject(()=>Task.FromResult(defaultStore.RequireExportPolicy(localJournal.TaskId,true)),"Task-level opt-out was ignored");
+        var denied=defaultStore.SetRepositoryExportPolicy(new(HostTaskJournal.RepositoryId(defaults.MainRoot),defaults.MainRoot,"deny",[],[]),"proof_operator");
+        Check(denied.AuditMatched && !defaultRescue.CanDispatchAutomatically(),"Repository opt-out did not stop rescue");
+        await Reject(()=>Task.FromResult(new HostEgress(defaultStore).AuthorizeDispatch(defaultPacket,"codex_protocol")),
+            "Packet prepared before repository opt-out was authorized");
+        Check(ToolRouter.PassedNpmTestCount("# tests 3\n# suites 0\n# pass 3\n# fail 0\n"u8.ToArray())==3 &&
+            ToolRouter.PassedNpmTestCount("# tests 0\n# suites 0\n# pass 0\n# fail 0\n"u8.ToArray()) is null,
+            "npm completion requires a non-empty recognized test result");
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=44,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {

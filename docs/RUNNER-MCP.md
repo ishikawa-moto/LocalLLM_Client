@@ -20,17 +20,20 @@ Before accepting a change, inspect the diff and run independent checks for the t
 
 For rollback, remove the session-specific MCP overrides after its task reaches a terminal state. Retain the checkout, task receipts and Canonical evidence. Commit only an independently accepted diff on its task branch before considering any separately approved integration.
 
-## External rescue for managed .NET tasks
+## External rescue for managed development tasks
 
-The Host can automatically delegate a stalled Qwen task when the repository has
-an audited `auto` HostEgress policy, explicit export scope for each permitted
-file, and a registered .NET validation publisher. Keep the policy and
-`reviewers.json` in the Host control root. A project cannot enable either from
-its checkout. From the Host administration CLI, use
-`localbrain agent-v2 egress-set <registered-workspace> auto <relative-file>...`
-to audit a specific file scope for that repository. A `manual` policy requires
-its exact export approval. Use `deny` without files to revoke the repository's
-permission. Local verified .NET completion does not need export permission.
+The Host can delegate a stalled Qwen task without a repository policy entry.
+The default packet contains the task and the starting contents of its exact
+allowed files. Retrieved knowledge, raw logs, and the failed worktree diff
+stay local in the default path. Slack and OCR remain restricted.
+
+Set `external_ai_disabled: true` in the task JSON for a local-only task. From
+the Host administration CLI, use
+`localbrain agent-v2 egress-set <registered-workspace> deny` to disable egress
+for a repository, or use `default` in place of `deny` to remove the override.
+The policy is stored in `codex-egress-policies.json` under the Host control root
+and audited in Canonical. Existing explicit file-scoped `auto` and `manual`
+entries remain supported. A `manual` entry uses exact export approval.
 
 Set `fullRescueRouting` to enable the four-model order. Each enabled endpoint
 uses `rescueEnabled`, an absolute CLI path, its SHA-256, and a model in the
@@ -38,8 +41,10 @@ endpoint's family. `difficultyConfidenceThreshold` defaults to 0.75. LOW gets
 one fresh local repair before Terra and Haiku. NORMAL uses Terra, Haiku, Sol,
 and Opus. HIGH uses Sol and Opus, with its existing scope authorization.
 
-The Host only promotes a candidate that passes the registered tests and a
-fresh local Critic. Automatic completion also requires a non-empty verified
-test run and unchanged verification inputs. The same repository can retrieve
+The Host can retain a candidate without validation. Promotion requires the
+existing registered .NET tests or trusted personal npm validation with a
+recognized non-empty test result, unchanged verification inputs, and a fresh
+local Critic. Local verification and completion do not need export permission.
+The same repository can retrieve
 the completed repair as historical evidence for the next Qwen task. Adoption
 into shared SecondBrain knowledge still follows its separate approval policy.

@@ -103,10 +103,10 @@ internal static class AgentTaskRunner
         var fileOnly = request.CommandExecution?.MaxCommands == 0 &&
             request.RequiredTests.All(test => test.Kind == "git_diff_check");
         var rescue=new HostRescue(journal);
-        var settings=fileOnly?null:ReviewerCli.Load(canonical.Root);
-        var canDispatch=settings is not null && rescue.CanDispatchAutomatically();
-        var fullRescueRouting=settings?.FullRescueRouting==true &&
-            request.RequiredTests.Any(test=>test.Kind=="dotnet_test");
+        var settings=ReviewerCli.Load(canonical.Root);
+        var canDispatch=rescue.CanDispatchAutomatically();
+        var fullRescueRouting=settings.FullRescueRouting;
+        var hostCompletion=fullRescueRouting && request.RequiredTests.Any(test=>test.Kind is "dotnet_test" or "npm_test");
         var freshLowRepair=fullRescueRouting && request.EffectiveRisk=="LOW";
         if (request.EffectiveRisk == "HIGH" && checkpoint?.Phase is not
             ("awaiting_sol_review" or "awaiting_external_review"))
@@ -151,7 +151,7 @@ internal static class AgentTaskRunner
             var reviewed = await FinishCheckpointReviewAsync(windowsRoot, wslRoot, request,
                 before, knowledge, taskId, actorSessionId, actorTurns, requestHash,
                 recoveryCount, checkpoint.ReviewRoute, token,checkpoint.FalseVerified,checkpoint.Replans,
-                checkpoint.TestsWithoutImprovement,hostCompletion:fullRescueRouting);
+                checkpoint.TestsWithoutImprovement,hostCompletion:hostCompletion);
             try { await TelemetryRecorder.WriteAsync(windowsRoot, reviewed, watch.ElapsedMilliseconds); }
             catch { /* Metrics must not change a validated result. */ }
             return reviewed;
@@ -263,7 +263,7 @@ internal static class AgentTaskRunner
                 decision.Action is not ("STOP" or "ESCALATE_SOL"))
                 foreach (var required in request.RequiredTests)
                 {
-                    tests.Add(await HostValidationPolicy.RunAsync(journal,windowsRoot,wslRoot,required,token));
+                    tests.Add(await HostValidationPolicy.RunTaskCheckAsync(journal,windowsRoot,wslRoot,required,token));
                 }
             testsPassed = tests.Count == request.RequiredTests.Length && tests.All(item => item.Passed);
             if (tests.Count > 0)
@@ -367,22 +367,23 @@ internal static class AgentTaskRunner
             noProgress=true;
             journal.Record("host_automatic_verification_input_changed",new {after.ChangedFiles},"host_verified");
         }
-        if(fullRescueRouting) testsPassed &= AutomaticCompletion.HasPassingTests(request,tests);
+        if(hostCompletion) testsPassed &= AutomaticCompletion.HasPassingTests(request,tests);
         var failedRequiredTests = tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray();
         var actorTurnLimit = request.CommandExecution?.MaxActorTurns ?? (recoveryCount == 1 ? 9 : 6);
-        var actorBudgetEndedWithFailures = actorTurns >= actorTurnLimit && failedRequiredTests.Length != 0;
+        var actorBudgetEndedWithFailures = actorTurns >= actorTurnLimit &&
+            (!testsPassed || review.Verdict!="PASS" || falseVerified);
         if(freshLowRepair && actorTurns>=maxTurn && (!testsPassed || review.Verdict!="PASS" || falseVerified))
             noProgress=true;
         if(fullRescueRouting && (noProgress || actorBudgetEndedWithFailures))
             rescueStarting=rescue.InitialStartingState();
-        var rescueEligible=!fileOnly && (noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
+        var rescueEligible=(noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
             after.UnexpectedFiles.Length==0 && !testMutatedWorktree && !changedVerificationInputs && decision.Action!="STOP";
         var difficulty=rescueEligible && fullRescueRouting && canDispatch
             ? await RescueRouting.ClassifyAsync(journal,wslRoot,request,after,tests,
-                settings!.DifficultyConfidenceThreshold,token)
+                settings.DifficultyConfidenceThreshold,token)
             : null;
         var automaticProviders=rescueEligible && canDispatch
-            ? HostRescue.AutomaticProviders(difficulty?.Level??request.EffectiveRisk,settings!) : [];
+            ? HostRescue.AutomaticProviders(difficulty?.Level??request.EffectiveRisk,settings) : [];
         var solRescue = checkpoint?.Advice is {} usedAdvice
             ? new SolReviewer.Rescue("GUIDANCE", usedAdvice.Steps, 1)
             : new SolReviewer.Rescue("NOT_RUN", [], 0);
@@ -410,7 +411,7 @@ internal static class AgentTaskRunner
                 var promoted=await GitEvidence.CaptureAsync(windowsRoot,request.AllowedFiles,token);
                 return await FinishCheckpointReviewAsync(windowsRoot,wslRoot,request,promoted,knowledge,
                     taskId,actorSessionId,actorTurns,requestHash,recoveryCount,null,token,
-                    fullRescueRouting?false:falseVerified,replans,testsWithoutImprovement,hostCompletion:fullRescueRouting);
+                    fullRescueRouting?false:falseVerified,replans,testsWithoutImprovement,hostCompletion:hostCompletion);
             }
             if(fullRescueRouting) noProgress=true;
             try {
@@ -432,16 +433,16 @@ internal static class AgentTaskRunner
             solReview = externalReview.Sol;
             solReviewCount += externalReview.SolFinalAttempts;
         }
-        var solRequired = !fullRescueRouting && (externalReview?.SolRequired ?? request.EffectiveRisk == "HIGH");
+        var solRequired = !hostCompletion && (externalReview?.SolRequired ?? request.EffectiveRisk == "HIGH");
         var validation = new LocalValidationV2(testsPassed,
             testsPassed && review.Verdict == "PASS" && !noProgress && !testMutatedWorktree,
             review.Verdict == "PASS" && !noProgress && !testMutatedWorktree,
             solRequired, solReview.Verdict == "PASS" && solReviewCount >=
                 (request.EffectiveRisk == "HIGH" ? 2 : 1), after.UnexpectedFiles, falseVerified,
-            !fullRescueRouting && request.EffectiveRisk != "LOW", externalReview?.Passed ?? false,
+            !hostCompletion && request.EffectiveRisk != "LOW", externalReview?.Passed ?? false,
             externalReview?.Routing.RouteName ?? "none");
         await validation.WriteAsync(windowsRoot, token);
-        if(fullRescueRouting && validation.IsComplete) AutomaticCompletion.Record(journal,after,tests);
+        if(hostCompletion && validation.IsComplete) AutomaticCompletion.Record(journal,after,tests);
         var phase = actor?.ContextHandoffRequested==true ? "handoff_ready" : validation.IsComplete ? "complete" :
             externalReview?.Unavailable == true ? "awaiting_external_review" : "needs_work";
         await WriteTaskStateAsync(windowsRoot, taskId, phase, actorSessionId, before.Head,
@@ -521,7 +522,7 @@ internal static class AgentTaskRunner
         var tests = new List<ToolRouter.TestResult>();
         foreach (var required in request.RequiredTests)
         {
-            tests.Add(await HostValidationPolicy.RunAsync(HostTaskJournal.Current??throw new UnauthorizedAccessException("Validation requires Host journal"),windowsRoot,wslRoot,required,token));
+            tests.Add(await HostValidationPolicy.RunTaskCheckAsync(HostTaskJournal.Current??throw new UnauthorizedAccessException("Validation requires Host journal"),windowsRoot,wslRoot,required,token));
         }
         var after = await GitEvidence.CaptureAsync(windowsRoot, request.AllowedFiles, token);
         if (after.Head != before.Head)
@@ -774,8 +775,12 @@ internal static class AgentTaskRunner
             required_tests = request.RequiredTests.Select(test =>
                 new { kind = test.Kind, target = test.Target }).ToArray() };
         var json=JsonSerializer.Serialize(canonical);
-        if(request.CommandExecution is null)return json; // Existing task hashes remain byte-for-byte stable.
-        var node=System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();node["command_execution"]=JsonSerializer.SerializeToNode(request.CommandExecution,ClientConfig.JsonOptions);return node.ToJsonString();
+        if(request.CommandExecution is null && !request.ExternalAiDisabled)return json;
+        var node=System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        if(request.CommandExecution is not null)
+            node["command_execution"]=JsonSerializer.SerializeToNode(request.CommandExecution,ClientConfig.JsonOptions);
+        if(request.ExternalAiDisabled)node["external_ai_disabled"]=true;
+        return node.ToJsonString();
     }
 
     private static string CommandInstructions(AgentTaskRequest request,HostTaskJournal journal)=>journal.Commands?.AllowsCommands != true?"":

@@ -8,7 +8,7 @@ internal static class PublicRescueFixture
 {
     private const string FixtureTree = "df198e70d111900066e7a33aaa9927b15048cd20";
 
-    internal static async Task PrepareAsync(string root,string provider="sol")
+    internal static async Task PrepareAsync(string root,string provider="sol",bool defaultEgress=false)
     {
         root = Path.GetFullPath(root);
         ReviewQualification.GuardRoot(root);
@@ -32,9 +32,10 @@ internal static class PublicRescueFixture
         using var store = new CanonicalStore(control);
         var task = "public_rescue_" + Guid.NewGuid().ToString("N");
         using var journal = new HostTaskJournal(store, repository, task, request, head);
-        var policyMode=provider is "haiku" or "opus"?"auto":"manual";
-        store.ChangePolicies([new(HostTaskJournal.RepositoryId(repository), repository, policyMode, request.AllowedFiles,
-            ["task_evidence_only", "file:Arithmetic.cs"])], "public_synthetic_rescue_fixture");
+        var policyMode=defaultEgress || provider is "haiku" or "opus"?"auto":"manual";
+        if(!defaultEgress)
+            store.ChangePolicies([new(HostTaskJournal.RepositoryId(repository), repository, policyMode, request.AllowedFiles,
+                ["task_evidence_only", "file:Arithmetic.cs"])], "public_synthetic_rescue_fixture");
         journal.Record("public_rescue_trial_input", new {
             provenance = "Intentional arithmetic fault in a synthetic fixture",
             qwen_failure_observed = false,
@@ -67,6 +68,7 @@ internal static class PublicRescueFixture
             manifest_hash = prepared.ManifestHash,
             payload_hash = prepared.Manifest.ExportHash,
             file_scope = request.AllowedFiles,
+            default_egress=defaultEgress,
             unapproved_dispatch_rejected = policyMode=="manual",
             external_requests = 0,
             production_qualification = false
@@ -226,7 +228,9 @@ internal static class PublicRescueFixture
             journal.EnablePersonalValidation();
             var result=await rescue.RunExternalAsync(ticketHash);
             Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
-            if (result.Status!="VALIDATED_IN_RESCUE") Environment.ExitCode=2;
+            if (result.Status!="VALIDATED_IN_RESCUE" &&
+                !(result.Status=="CANDIDATE_UNVERIFIED" && !File.Exists(Path.Combine(control,"codex-egress-policies.json"))))
+                Environment.ExitCode=2;
             return;
         }
 

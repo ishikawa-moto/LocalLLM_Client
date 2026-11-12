@@ -5,7 +5,7 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal sealed partial class CanonicalStore
 {
-    internal PolicyStatus SetRepositoryExportPolicy(Policy policy,string operatorName)
+    internal PolicyStatus SetRepositoryExportPolicy(Policy policy,string operatorName,bool resetToDefault=false)
     {
         lock(gate)
         {
@@ -21,12 +21,14 @@ internal sealed partial class CanonicalStore
                 current=JsonSerializer.Deserialize<Policy[]>(bytes)??throw new InvalidDataException("Invalid Host export policy");
             }
             else if(expected is not null)throw new UnauthorizedAccessException("Existing audited export policy file is missing");
-            ChangePolicies(current.Where(entry=>entry.RepositoryId!=policy.RepositoryId).Append(policy).ToArray(),operatorName);
-            return ReadPolicy(policy.RepositoryId,policy.CanonicalRepoRoot);
+            var remaining=current.Where(entry=>entry.RepositoryId!=policy.RepositoryId);
+            ChangePolicies((resetToDefault?remaining:remaining.Append(policy)).ToArray(),operatorName);
+            var result=ReadPolicy(policy.RepositoryId,policy.CanonicalRepoRoot);
+            return resetToDefault && result.AuditMatched?result with{Mode="default"}:result;
         }
     }
     internal sealed record StoredEvent(string EventId, long Sequence, EventInput Input);
-    internal sealed record AcceptedPolicy(Policy Policy, string Hash);
+    internal sealed record AcceptedPolicy(Policy Policy,string Hash,string? AuditFileHash,bool DefaultRescue=false);
     private int activeExportLeases;
     public Workspace GetWorkspace(string workspaceId) {
         lock(gate) return JsonSerializer.Deserialize<Workspace>(Convert.ToString(Scalar(
@@ -47,30 +49,68 @@ internal sealed partial class CanonicalStore
             return new(eventId,reader.GetInt64(0),JsonDocument.Parse(json).RootElement.GetProperty("input").Deserialize<EventInput>()!);
         }
     }
-    public AcceptedPolicy RequireExportPolicy(string taskId) {
+    public AcceptedPolicy RequireExportPolicy(string taskId,bool allowDefaultRescue=false) {
+        Slack.RestrictedExecution.DenyExternal();
         lock(gate) {
             var task=GetTask(taskId)??throw new InvalidDataException("Unknown export task");
             var workspace=GetWorkspace(task.WorkspaceId);
-            var status=ReadPolicy(workspace.RepositoryId,workspace.CanonicalRepoRoot);
-            if(!status.AuditMatched || status.Mode=="deny" || status.Hash is null)
-                throw new UnauthorizedAccessException("Host export policy denies this repository");
-            var bytes=File.ReadAllBytes(Path.Combine(Root,"codex-egress-policies.json"));
-            if(Hash(bytes)!=status.Hash)throw new UnauthorizedAccessException("Policy changed while loading");
-            var policy=JsonSerializer.Deserialize<Policy[]>(bytes)!.Single(p=>p.RepositoryId==workspace.RepositoryId &&
-                string.Equals(Path.GetFullPath(p.CanonicalRepoRoot),Path.GetFullPath(workspace.CanonicalRepoRoot),StringComparison.OrdinalIgnoreCase));
-            return new(policy,status.Hash);
+            // Inspect only the opt-out field. Historical journal records need not be Agent v2 requests.
+            using var request=JsonDocument.Parse(TaskRequest(taskId));
+            if(request.RootElement.TryGetProperty("external_ai_disabled",out var disabled) &&
+                disabled.ValueKind!=JsonValueKind.False)
+                throw new UnauthorizedAccessException("External AI is disabled for this task");
+            var path=Path.Combine(Root,"codex-egress-policies.json");
+            GuardPath(path);
+            var auditHash=Scalar("SELECT new_hash FROM egress_policy_audit ORDER BY audit_sequence DESC LIMIT 1;") as string;
+            Policy? policy=null;
+            if(File.Exists(path))
+            {
+                if(new FileInfo(path).Length>128*1024)throw new InvalidDataException("Host export policy exceeds its budget");
+                var bytes=File.ReadAllBytes(path);
+                if(Hash(bytes)!=auditHash)throw new UnauthorizedAccessException("Host export policy does not match its audit");
+                policy=(JsonSerializer.Deserialize<Policy[]>(bytes)??throw new InvalidDataException("Invalid Host export policy"))
+                    .SingleOrDefault(entry=>entry.RepositoryId==workspace.RepositoryId ||
+                        string.Equals(Path.GetFullPath(entry.CanonicalRepoRoot),Path.GetFullPath(workspace.CanonicalRepoRoot),
+                            StringComparison.OrdinalIgnoreCase));
+            }
+            else if(auditHash is not null)throw new UnauthorizedAccessException("Audited export policy file is missing");
+            if(policy is not null)
+            {
+                if(policy.RepositoryId!=workspace.RepositoryId || !string.Equals(Path.GetFullPath(policy.CanonicalRepoRoot),
+                    Path.GetFullPath(workspace.CanonicalRepoRoot),StringComparison.OrdinalIgnoreCase) ||
+                    policy.Mode is not ("manual" or "auto"))
+                    throw new UnauthorizedAccessException("Host export policy denies this repository");
+                return new(policy,auditHash!,auditHash);
+            }
+            if(!allowDefaultRescue || workspace.Role!="main")
+                throw new UnauthorizedAccessException("No applicable Host export policy");
+            var scope=AgentTaskRequest.Parse(TaskRequest(taskId)).AllowedFiles
+                .Where(file=>file.IndexOfAny(['*','?'])<0)
+                .Select(file=>HostEgress.NormalizePath(workspace.CanonicalRepoRoot,file))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var defaultPolicy=new Policy(workspace.RepositoryId,workspace.CanonicalRepoRoot,"auto",scope,
+                ["event_type:host_approved_export_input",..scope.Select(file=>"file:"+file)]);
+            var hash=Hash(JsonSerializer.SerializeToUtf8Bytes(new { version="default_rescue_v1",auditHash,
+                task.RequestHash,policy=defaultPolicy }));
+            return new(defaultPolicy,hash,auditHash,DefaultRescue:true);
         }
     }
-    private sealed class ExportLease(CanonicalStore owner,FileStream file):IDisposable {
-        public void Dispose(){lock(owner.gate){file.Dispose();owner.activeExportLeases--;}}
+    private sealed class ExportLease(CanonicalStore owner,FileStream? file):IDisposable {
+        public void Dispose(){lock(owner.gate){file?.Dispose();owner.activeExportLeases--;}}
     }
-    public IDisposable AcquireExportLease(string taskId,string expectedPolicyHash) {
+    public IDisposable AcquireExportLease(string taskId,string expectedPolicyHash,bool allowDefaultRescue=false) {
         lock(gate) {
-            if(RequireExportPolicy(taskId).Hash!=expectedPolicyHash)throw new UnauthorizedAccessException("Stale export policy");
+            var accepted=RequireExportPolicy(taskId,allowDefaultRescue);
+            if(accepted.Hash!=expectedPolicyHash)throw new UnauthorizedAccessException("Stale export policy");
+            if(accepted.AuditFileHash is null)
+            {
+                activeExportLeases++;
+                return new ExportLease(this,null);
+            }
             var path=Path.Combine(Root,"codex-egress-policies.json");GuardPath(path);
             var file=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
             try {
-                if(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(file)).ToLowerInvariant()!=expectedPolicyHash)
+                if(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(file)).ToLowerInvariant()!=accepted.AuditFileHash)
                     throw new UnauthorizedAccessException("Export policy bytes changed");
                 activeExportLeases++;return new ExportLease(this,file);
             } catch {file.Dispose();throw;}

@@ -12,9 +12,9 @@ internal static class AgentV2Commands
         if(command=="egress-set")
         {
             Slack.RestrictedExecution.DenyExternal();
-            if(args.Length<3 || args.Length>103 || args[2] is not ("deny" or "manual" or "auto") ||
-                (args[2]=="deny")!=(args.Length==3))
-                throw new ArgumentException("egress-set requires a registered workspace and deny, or manual/auto with exact relative files");
+            if(args.Length<3 || args.Length>103 || args[2] is not ("deny" or "default" or "manual" or "auto") ||
+                (args[2] is "deny" or "default")!=(args.Length==3))
+                throw new ArgumentException("egress-set requires a registered workspace and deny/default, or manual/auto with exact relative files");
             var root=allowlist.Resolve(args[1]);
             var scope=args.Skip(3).Select(path=>HostEgress.NormalizePath(root,path)).ToArray();
             if(scope.Any(path=>path.IndexOfAny(['*','?'])>=0) ||
@@ -23,7 +23,7 @@ internal static class AgentV2Commands
             var exports=scope.Length==0?[]:new[]{"task_evidence_only"}.Concat(scope.Select(path=>"file:"+path)).ToArray();
             using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var result=store.SetRepositoryExportPolicy(new(HostTaskJournal.RepositoryId(root),root,args[2],scope,exports),
-                Environment.UserDomainName+"\\"+Environment.UserName);
+                Environment.UserDomainName+"\\"+Environment.UserName,resetToDefault:args[2]=="default");
             Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
             return;
         }

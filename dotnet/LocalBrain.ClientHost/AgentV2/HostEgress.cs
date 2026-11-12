@@ -81,14 +81,18 @@ internal sealed class HostEgress(CanonicalStore store)
         if(!CanonicalStore.Within(root,path) || string.Equals(root,path,StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("Export path escaped repository");
         return Path.GetRelativePath(Path.GetFullPath(root),path).Replace('\\','/');
     }
-    public Prepared Prepare(string taskId,string[] eventIds,string[] sourceIds,FileRef[] fileRefs,string[] deviations,bool packetOnly=false) {
+    public Prepared Prepare(string taskId,string[] eventIds,string[] sourceIds,FileRef[] fileRefs,string[] deviations,
+        bool packetOnly=false,bool allowDefaultRescue=false) {
         Slack.RestrictedExecution.DenyExternal();
         if(eventIds.Length is <1 or >64 || eventIds.Distinct(StringComparer.Ordinal).Count()!=eventIds.Length || sourceIds.Length>64 || fileRefs.Length>100)
             throw new InvalidDataException("Invalid explicit export selection");
         var task=store.GetTask(taskId)??throw new InvalidDataException("Unknown export task");
         var workspace=store.GetWorkspace(task.WorkspaceId);CanonicalStore.GuardPath(workspace.CanonicalRepoRoot);CanonicalStore.GuardPath(workspace.WorkspaceRoot);
-        var accepted=store.RequireExportPolicy(taskId);var policy=accepted.Policy;
+        var accepted=store.RequireExportPolicy(taskId,allowDefaultRescue);var policy=accepted.Policy;
         var rows=eventIds.Select(id=>store.ReadTaskEvent(taskId,id)).OrderBy(e=>e.Sequence).ToArray();
+        if(accepted.DefaultRescue && (!packetOnly || sourceIds.Length!=0 || rows.Length!=1 ||
+            !rows[0].Input.Metadata.TryGetProperty("provider",out var provider) || provider.GetString()!="codex_protocol"))
+            throw new UnauthorizedAccessException("Default delegation admits only Host rescue packets without knowledge sources");
         var eligibleTypes=new[]{"host_prompt","provider_prompt","pi_tool_execution_start","pi_tool_execution_end","host_approved_export_input","validation_result","test_started","test_result","external_review_result","secondbrain_sources"};
         foreach(var row in rows) {
             if(row.Input.WorkspaceId!=task.WorkspaceId || row.Input.Producer!="windows_host" ||
@@ -130,7 +134,8 @@ internal sealed class HostEgress(CanonicalStore store)
             CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(export.Manifest))!=export.ManifestHash ||
             !store.ReadEvidence(export.Manifest.ExportHash).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(export.Payload)))
             throw new UnauthorizedAccessException("Export identity or immutable bytes changed");
-        var lease=store.AcquireExportLease(export.Manifest.TaskId,export.Manifest.PolicyHash);
+        var lease=store.AcquireExportLease(export.Manifest.TaskId,export.Manifest.PolicyHash,
+            allowDefaultRescue:provider=="codex_protocol");
         try {store.AuditDispatch(export.Manifest,export.ManifestHash,provider);return lease;}catch{lease.Dispose();throw;}
     }
 }

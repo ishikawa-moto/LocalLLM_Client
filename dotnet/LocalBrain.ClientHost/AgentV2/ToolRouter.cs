@@ -20,6 +20,15 @@ internal static class ToolRouter
         long ElapsedMs, int? ExecutedTests, string[] FailureCodes,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? FailedCasesSha256 = null);
 
+    internal static int? PassedNpmTestCount(byte[] stdout)
+    {
+        var output=Encoding.UTF8.GetString(stdout);
+        // Node's TAP summary is emitted by the actual npm test process, not the Actor.
+        var match=Regex.Match(output,@"(?m)^# tests [1-9][0-9]*\r?\n# suites [0-9]+\r?\n# pass ([1-9][0-9]*)\r?\n# fail 0\r?$",
+            RegexOptions.CultureInvariant|RegexOptions.RightToLeft);
+        return match.Success && int.TryParse(match.Groups[1].Value,out var count)?count:null;
+    }
+
     public static async Task<TestResult> RunAsync(string windowsRoot,string wslRoot,RequiredTest test,CancellationToken token=default) {
         Slack.RestrictedExecution.DenyAgentTools();
         using var ocrPriority=Ocr.OcrPriority.Enter("build_test");
