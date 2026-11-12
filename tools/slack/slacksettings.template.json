@@ -12,5 +12,6 @@
   "outputTokens": 1024,
   "inferenceSeconds": 30,
   "compressionThreshold": 8000,
-  "returnFileResults": false
+  "returnFileResults": false,
+  "remoteOcr": false
 }

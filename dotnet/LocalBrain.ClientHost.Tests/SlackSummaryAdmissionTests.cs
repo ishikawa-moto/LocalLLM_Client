@@ -28,7 +28,6 @@ internal static class SlackSummaryAdmissionTests
         var job=Accept("EV-WAITER",2);Ack();Check(store.ClaimNext()?.Id==job,"accepted original request claimed once");store.WaitForSummary(job);
         var original=store.GetJob(job);var session=store.GetSession(original.SessionId);var historyHash=store.HistoryHash(session.Id);
         Check(!store.HasPendingJobs()&&store.HasSummaryWaiter(session.Id),"summary waiter is not foreground deadlock");
-        Check(SlackProcessor.MaintenanceOrder(store)[0].Id==session.Id,"reply-blocking summary precedes optional candidate work");
         store.SummaryState(session.Id,"summary_started");store.SummaryState(session.Id,"summary_started");
         var progress=store.ClaimReply(now.AddMinutes(1));Check(progress is{Kind:"progress"}&&progress.JobId==job&&progress.Text.Contains("ローカルで要約"),"local summary progress targets original requester");store.ReplySent(progress!.Id,"1700000000.000002");
         Check(store.ClaimReply(now.AddMinutes(1)) is null,"progress notification does not duplicate across attempts");

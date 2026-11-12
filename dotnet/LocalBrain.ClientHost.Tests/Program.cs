@@ -2,6 +2,62 @@ using System.Text.Json;
 using LocalBrain.ClientHost;
 using LocalBrain.ClientHost.AgentV2;
 TestProcessPolicy.Configure();
+if(args.Length==2 && args[0]=="--review-child-policy-proof"){await ReviewerChildPolicyTests.RunAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--sol-egress-relay-proof"){await SolEgressRelayTests.RunAsync();return;}
+if(args.Length==2 && args[0]=="--sol-egress-relay-fixture-server"){await SolEgressRelayTests.RunAsync(args[1]);return;}
+if(args.Length is 2 or 3 && args[0]=="--review-file-isolation-proof" && OperatingSystem.IsWindows()){
+    if(args.Length==3 && args[2]!="registry-read")throw new ArgumentException("Unknown reviewer fixture capability");
+    await ReviewerFileIsolationTests.RunAsync(args[1],args.Length==3);return;
+}
+if(args.Length==6 && args[0]=="--review-file-isolation-child" && OperatingSystem.IsWindows()){await ReviewerFileIsolationTests.ChildAsync(args[1],args[2],args[3],int.Parse(args[4]),args[5]);return;}
+if(args.Length is 6 or 7 && args[0]=="--review-loopback-policy-host" && OperatingSystem.IsWindows()){
+    if(args.Length==7 && args[6]!="relay")throw new ArgumentException("Unexpected network fixture mode");
+    await ReviewerLoopbackPolicyTests.RunAsync(args[1],args[2],int.Parse(args[3]),int.Parse(args[4]),int.Parse(args[5]),args.Length==7);return;
+}
+if(args.Length==3 && args[0]=="--review-native-dns-host" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.NativeDnsHostAsync(args[1],args[2]);return;
+}
+if(args.Length==8 && args[0]=="--review-system-dns-host" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.SystemDnsHostAsync(args[1],args[2],int.Parse(args[3]),args[4],int.Parse(args[5]),args[6],int.Parse(args[7]));return;
+}
+if(args.Length==5 && args[0]=="--review-loopback-policy-child" && args[1]=="system-dns" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.SystemDnsChildAsync(args[2],int.Parse(args[3]),int.Parse(args[4]));return;
+}
+if(args.Length==4 && args[0]=="--review-loopback-policy-child" && args[1]=="native-dns" && OperatingSystem.IsWindows()){
+    await ReviewerLoopbackPolicyTests.NativeDnsChildAsync(int.Parse(args[2]),args[3]);return;
+}
+if(args.Length is 4 or 5 && args[0]=="--review-loopback-policy-child" && OperatingSystem.IsWindows()){
+    if(args.Length==5 && args[4]!="relay")throw new ArgumentException("Unexpected network fixture mode");
+    await ReviewerLoopbackPolicyTests.ChildAsync(int.Parse(args[1]),int.Parse(args[2]),int.Parse(args[3]),args.Length==5);return;
+}
+if(args.Length==3 && args[0]=="--review-child-policy-attempt"){await ReviewerChildPolicyTests.AttemptAsync(args[1],args[2]);return;}
+if(args.Length==2 && args[0]=="--review-child-policy-marker"){ReviewerChildPolicyTests.WriteMarker(args[1]);return;}
+if(args.Length>=3 && args[0]=="--review-child-policy-local-transport"){await ReviewerChildPolicyTests.LocalTransportAsync(args[1],args[2..]);return;}
+if(args.Length==4 && args[0]=="--review-copilot-model-metadata"){await ReviewerChildPolicyTests.CopilotMetadataAsync(args[1],args[2],args[3]);return;}
+if(args.Length==3 && args[0]=="--review-copilot-staged-proof"){await ReviewerChildPolicyTests.StagedCopilotAsync(args[1],args[2]);return;}
+if(args.Length==2 && args[0]=="--review-copilot-fail-closed"){await ReviewerAcpTests.RunAsync(args[1]);return;}
+if(args.Length==2 && args[0]=="--review-acp-os-scope"){await ReviewerAcpTests.VerifyJobScopeAsync(args[1]);return;}
+if(args.Length==3 && args[0]=="--acp" && args[1]=="--review-acp-fixture"){await ReviewerAcpTests.FixtureAsync(args[2]);return;}
+if(args.Length==1 && args[0]=="--review-acp-linger"){await Task.Delay(TimeSpan.FromSeconds(30));return;}
+if(args.Length==2 && args[0]=="--review-host-boundary-proof"){await ReviewerHostBoundaryTests.RunAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--review-permission-options-proof"){ReviewQualificationTests.RunPermissionOptionsProof();return;}
+if(args.Length==1 && args[0]=="--review-qualification-json-proof"){ReviewQualificationTests.RunJsonProof();return;}
+if(args.Length==2 && args[0]=="--review-qualification-proof"){await ReviewQualificationTests.RunAsync(args[1]);return;}
+if(args.Length==1 && args[0]=="--pi-canonical-proof"){await PiCanonicalTurnTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--host-sidefx-proof"){await SideEffectGateTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--pi-runtime-options-proof"){
+    new PiRuntimeOptions().Validate();
+    var expected=new PiRuntimeOptions("/home/worker/private-pi/bin/pi","/home/worker/private-pi/agent");
+    var roundtrip=JsonSerializer.Deserialize<ClientConfig>(JsonSerializer.Serialize(
+        new ClientConfig("https://localhost.invalid",18081,"fixture","projects.json","audit.jsonl",PiRuntime:expected),ClientConfig.JsonOptions),ClientConfig.JsonOptions)!;
+    if(roundtrip.PiRuntime!=expected)throw new Exception("Trusted runtime configuration was not preserved");
+    foreach(var path in new string?[]{null,"","/","relative","/x//pi","/x/./pi","/x/../pi","/x/pi/","/x/pi\n","/x/pi;cmd"}){
+        foreach(var options in new[]{new PiRuntimeOptions(path!,"/agent"),new PiRuntimeOptions("/bin/pi",path!)}){
+            try{options.Validate();throw new Exception("Invalid runtime path accepted");}catch(InvalidDataException){}
+        }
+    }
+    Console.WriteLine("Trusted Pi runtime path and configuration checks passed");return;
+}
 if(args.Length==6&&args[0]=="--chat-ocr-interop-preserved"){await ChatOcrInteropTests.RunAsync(args[1],args[2],args[3],args[4],args[5]);return;}
 if(args.Length==4&&args[0]=="--chat-ocr-interop"){await ChatOcrInteropTests.RunAsync(args[1],args[2],args[3]);return;}
 if(args.Length==1&&args[0]=="--chat-ocr-proof"){await ChatOcrTests.RunAsync();return;}
@@ -23,6 +79,7 @@ if(args.Length==0)await SlackArtifactDeliveryTests.RunAsync();
 if(args.Length==1&&args[0]=="--slack-adoption-proof"){await SlackAdoptionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-proof"){await SlackTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-https-proof"){await SlackApprovalTests.RunAsync();return;}
+if(args.Length==1&&args[0]=="--slack-root-proof"){await SlackRootFileTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--slack-process-proof"){await SlackProcessTests.RunAsync();await SlackConversationTests.RunAsync();await SlackReviewRegressionTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--memory-crash-proof"){await TaskMemoryEpochCrashTests.RunAsync();await TaskMemoryNativeTests.RunAsync();return;}
 if(args.Length==1&&args[0]=="--ocr-store-proof"){OcrStoreTests.Run();return;}
@@ -40,7 +97,24 @@ if(args.Length==1&&args[0] is "--task-command-proof" or "--task-command-wsl-proo
 if(args.Length==1&&args[0]=="--managed-agent-proof"){await ManagedAgentTests.RunAsync();return;}
 if(args.Length==2&&args[0]=="--managed-agent-native-prepare"){await ManagedAgentTests.NativePrepareAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--work-loop-proof"){await WorkLoopSupervisorTests.RunAsync();return;}
-if(args.Length==1 && args[0]=="--work-loop-native-proof"){await WorkLoopSupervisorTests.NativeAsync();return;}
+if(args.Length==1 && args[0]=="--supervisor-rules-proof"){await SupervisorRulesTests.RunAsync();return;}
+if(args.Length==1 && args[0]=="--external-review-availability-proof"){await ExternalReviewAvailabilityTests.RunAsync();return;}
+if(args.Length==2 && args[0]=="--external-rescue-proof"){await HostRescueTests.ExternalProofAsync(args[1]);return;}
+if(args.Length==2 && args[0]=="--public-rescue-prepare"){await PublicRescueFixture.PrepareAsync(args[1]);return;}
+if(args.Length==4 && args[0]=="--public-rescue-baseline"){await PublicRescueFixture.ValidateBaselineAsync(args[1],args[2],args[3]);return;}
+if(args.Length==4 && args[0] is "--public-rescue-export" or "--public-rescue-import"){
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0]);return;
+}
+if(args.Length==5 && args[0] is "--public-rescue-validate" or "--public-rescue-learn"){
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0],args[4]);return;
+}
+if(args.Length==5 && args[0]=="--public-rescue-solve"){
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0],codexExecutable:args[4]);return;
+}
+if(args.Length==6 && args[0]=="--public-rescue-solve" && args[5]=="terra"){
+    await PublicRescueFixture.HandoffAsync(args[1],args[2],args[3],args[0],codexExecutable:args[4],directProvider:args[5]);return;
+}
+if(args.Length==3 && args[0]=="--external-review-public-live"){await ExternalReviewAvailabilityTests.LiveAsync(args[1],args[2]);return;}
 if(args.Length==2 && args[0]=="--continue-memory-native-proof") {await ContinueContextMemoryTests.NativeAsync(args[1]);return;}
 if(args.Length==1 && args[0]=="--continue-memory-proof") {await ContinueContextMemoryTests.RunAsync();return;}
 if(args.Length==3 && args[0]=="--git-open-stdin-fixture") {await GitReadStdioTests.ChildAsync(args[1],args[2]);return;}
@@ -227,20 +301,6 @@ if (args.Length == 2 && args[0] == "--reviewer-e2e")
     return;
 }
 
-if (args.Contains("--astra-live", StringComparer.Ordinal))
-{
-    var comparison = await AstraMetaEvaluator.CompareAsync(
-        "Synthetic requirement: greeting.txt contains HELLO plus LF. " +
-        "Synthetic diff: new greeting.txt, bytes 48 45 4C 4C 4F 0A. " +
-        "Synthetic tests: content check PASS; git diff check PASS.",
-        new SolReviewer.Review("PASS", []),
-        new CopilotReviewer.Review("PASS", []), CancellationToken.None,
-        Console.WriteLine);
-    Console.WriteLine("astra_meta_status=" + (comparison is null ? "UNAVAILABLE" : "AVAILABLE"));
-    if (comparison is null) Environment.ExitCode = 2;
-    return;
-}
-
 if (args.Contains("--copilot-live", StringComparer.Ordinal))
 {
     var packet = """
@@ -263,24 +323,6 @@ static void Check(bool condition, string name)
 {
     if (!condition) throw new InvalidOperationException(name);
 }
-
-var settings = new ReviewerRoutingSettings(0.65, 6);
-var neutral = new ReviewerCalibration(0, 0, 0.5, 0.5);
-Check(ReviewerRouting.Decide("LOW", null, null, settings, neutral).Route == ReviewerRoute.None,
-    "LOW needs no external reviewer");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.4, settings, neutral).Route == ReviewerRoute.Both,
-    "Low confidence requires both reviewers");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.9, settings, neutral).Route == ReviewerRoute.Copilot,
-    "Confident NORMAL can use Copilot");
-Check(ReviewerRouting.Decide("HIGH", "copilot", 0.9, settings, neutral).Route == ReviewerRoute.Sol,
-    "HIGH cannot select Copilot alone");
-Check(ReviewerRouting.Decide("HIGH", "sol", 0.4, settings, neutral).Route == ReviewerRoute.Both,
-    "Uncertain HIGH requires both");
-var calibrated = new ReviewerCalibration(4, 3, 0.35, 0.65);
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.7, settings, calibrated).Route == ReviewerRoute.Sol,
-    "Bounded Astra calibration can change a borderline NORMAL route");
-Check(ReviewerRouting.Decide("NORMAL", "copilot", 0.9, settings, calibrated).Route == ReviewerRoute.Copilot,
-    "Astra calibration cannot override high confidence Laya");
 
 var legacy = JsonSerializer.Deserialize<LocalValidationV2>("""
     {"required_tests_passed":true,"acceptance_criteria_passed":true,

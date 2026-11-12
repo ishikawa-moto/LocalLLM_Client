@@ -31,6 +31,22 @@ internal static class TaskMemorySelectionTests
         var workspace=Path.Combine(parent,"repo");
         var request=AgentTaskRequest.Parse("""{"requirement":"Diagnose newline failure","acceptance_criteria":["same task"],"risk":"LOW","approved_high_risk":false,"allowed_files":["greeting.txt"],"required_tests":[{"kind":"git_diff_check"}]}""");
         using(var journal=new HostTaskJournal(store,workspace,"journal_memory",request,"baseline")) {
+            var deepHash=store.PutEvidence(Encoding.UTF8.GetBytes("distinctivefixtureterm original evidence"));
+            var deep=store.Append(new("journal_memory",HostTaskJournal.WorkspaceId(workspace),"fixture","deep","observation","fixture","unverified",[deepHash],JsonSerializer.SerializeToElement(new {})));
+            for(var i=0;i<12;i++)journal.Record("observation",new {index=i},"host_observed");
+            var initial=store.MemoryCandidates("journal_memory");
+            var initialIds=initial.Where(c=>c.EventId!=deep.EventId).Take(8).Select(c=>c.EventId).ToArray();
+            var initialSelection=TaskMemorySelection.Validate("journal_memory",initial,JsonSerializer.Serialize(new {event_ids=initialIds}));
+            if(initialIds.Length!=8 || initialSelection.EvidenceRefs.Contains(deepHash))throw new Exception("Initial eight unexpectedly include deep evidence");
+            var found=journal.SearchMemory("distinctivefixtureterm");
+            if(found.Length>8 || !found.Any(c=>c.EventId==deep.EventId && c.EvidenceRefs.Contains(deepHash) && c.CommittedAt is not null && c.Producer=="fixture"))throw new Exception("Deep canonical search lost source identity");
+            if(!journal.Recall(deepHash,0).Contains("original evidence"))throw new Exception("Search evidence recall failed");
+            var widthHash=store.PutEvidence(Encoding.UTF8.GetBytes(new string('x',500)+"日本語 ＡＢＣ ﬁ 原文"));
+            store.Append(new("journal_memory",HostTaskJournal.WorkspaceId(workspace),"fixture","width","observation","fixture","unverified",[widthHash],JsonSerializer.SerializeToElement(new {})));
+            var width=journal.SearchMemory("日本語 ABC fi").Single(c=>c.EvidenceRefs.Contains(widthHash));
+            if(!width.Preview.Contains("日本語 ＡＢＣ ﬁ 原文"))throw new Exception("Normalized search did not preserve original excerpt");
+            try { journal.Recall(hash,0); throw new Exception("Foreign task evidence recalled"); } catch(UnauthorizedAccessException) {}
+            for(var i=2;i<8;i++)journal.SearchMemory("distinctivefixtureterm");
             journal.Record("validation_result",new {passed=false,reason="greeting.txt has five bytes; expected six including LF"},"host_verified");
             using(var memoryLifetime=new MemoryFixture(journal.CreateMemory())) {
                 var before=journal.EvidenceRefs();
@@ -43,6 +59,9 @@ internal static class TaskMemorySelectionTests
             }
             var real=store.MemoryCandidates("journal_memory");
             if(!real.Any(c=>c.Preview.Contains("expected six including LF")))throw new InvalidOperationException("Real Host blob facts missing from memory preview");
+        }
+        using(var resumed=new HostTaskJournal(store,workspace,"journal_memory",request,"baseline")) {
+            try { resumed.SearchMemory("distinctivefixtureterm"); throw new Exception("Search budget did not survive journal restart"); } catch(InvalidOperationException e) when(e.Message.Contains("budget exhausted")) {}
         }
         var binary=store.PutEvidence(new byte[]{255,254,253,0});
         store.Append(new("memory_a","ws_memory","fixture","binary","observation","runtime_observed","unverified",[binary],JsonSerializer.SerializeToElement(new {})));

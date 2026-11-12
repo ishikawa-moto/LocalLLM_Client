@@ -367,7 +367,7 @@ internal sealed partial class CanonicalStore : IDisposable
             ON CONFLICT(worker_id) DO UPDATE SET capabilities_json=$caps,max_parallel_tasks=$max;
             """, null, ("$id", workerId), ("$caps", JsonSerializer.Serialize(capabilities)), ("$max", maxParallelTasks));
     }
-    public AssignmentReceipt ReserveAssignment(TaskSpec spec)
+    public AssignmentReceipt ReserveAssignment(TaskSpec spec, bool requireUnassigned = false)
     {
         ValidateId(spec.AssignmentId); ValidateId(spec.WorkerId);
         ValidateHash(spec.StartingStateHash); ValidateHash(spec.StartingDiffHash);
@@ -387,6 +387,8 @@ internal sealed partial class CanonicalStore : IDisposable
             // Reservation persists a protocol packet only. It never starts ServerPC or grants completion authority.
             var generation = Convert.ToInt32(Scalar("SELECT coalesce(max(generation),0)+1 FROM assignments WHERE task_id=$task;",
                 tx, ("$task", spec.TaskId)));
+            if (requireUnassigned && generation != 1)
+                throw new InvalidOperationException("A prior assignment must be reconciled before recovering a rescue reservation");
             Execute("UPDATE assignments SET status='STALE' WHERE task_id=$task AND status!='STALE';",tx,("$task",spec.TaskId));
             Execute("""
                 INSERT INTO assignments(assignment_id,task_id,worker_id,workspace_id,generation,status,task_spec_hash,task_spec_json)
@@ -448,16 +450,16 @@ internal sealed partial class CanonicalStore : IDisposable
         var result=new List<TaskMemorySelection.Candidate>();
         lock(gate) {
             if(GetTask(taskId) is null)throw new InvalidDataException("Unknown memory task");
-            var rows=new List<(string Id,long Sequence,string Type,string Status,string Payload)>();
+            var rows=new List<(string Id,long Sequence,string Type,string Status,string Payload,string CommittedAt,string Producer)>();
             var sourceFilter=sourceOnly?" AND event_type NOT GLOB 'taskmemory_*' AND event_type <> 'task_checkpoint'":"";
-            using(var cmd=Command("SELECT event_id,sequence,event_type,verification_status,json_extract(payload_json,'$.input.Metadata') FROM events WHERE task_id=$task"+sourceFilter+" ORDER BY sequence DESC LIMIT $limit;",null,("$task",taskId),("$limit",limit)))
-            using(var r=cmd.ExecuteReader())while(r.Read())rows.Add((r.GetString(0),r.GetInt64(1),r.GetString(2),r.GetString(3),r.GetString(4)));
+            using(var cmd=Command("SELECT event_id,sequence,event_type,verification_status,json_extract(payload_json,'$.input.Metadata'),committed_at,producer FROM events WHERE task_id=$task"+sourceFilter+" ORDER BY sequence DESC LIMIT $limit;",null,("$task",taskId),("$limit",limit)))
+            using(var r=cmd.ExecuteReader())while(r.Read())rows.Add((r.GetString(0),r.GetInt64(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6)));
             foreach(var row in rows.OrderBy(r=>r.Sequence)) {
                 var refs=new List<string>();
                 using(var cmd=Command("SELECT hash FROM event_evidence WHERE event_id=$id ORDER BY hash;",null,("$id",row.Id)))
                 using(var r=cmd.ExecuteReader())while(r.Read())refs.Add(r.GetString(0));
                 var text=row.Payload.Length<=256?row.Payload:row.Payload[..255]+"…";
-                result.Add(new(taskId,row.Id,row.Sequence,row.Type,row.Status,refs.ToArray(),text));
+                result.Add(new(taskId,row.Id,row.Sequence,row.Type,row.Status,refs.ToArray(),text,row.CommittedAt,row.Producer));
             }
         }
         return result;
@@ -501,6 +503,26 @@ internal sealed partial class CanonicalStore : IDisposable
             using var cmd=Command("SELECT x.hash FROM event_evidence x JOIN events e ON e.event_id=x.event_id WHERE e.task_id=$task GROUP BY x.hash ORDER BY MAX(e.sequence),x.hash;",null,("$task",taskId));
             using var reader=cmd.ExecuteReader();var result=new List<string>();
             while(reader.Read())result.Add(reader.GetString(0));return result.ToArray();
+        }
+    }
+    internal bool HasCandidateArchive(string taskId,string hash)
+    {
+        lock(gate) return Convert.ToInt64(Scalar("""
+            SELECT COUNT(*) FROM event_evidence x JOIN events e ON e.event_id=x.event_id
+            WHERE e.task_id=$task AND e.event_type='pi_v3_candidate_archive'
+              AND e.producer='pi_v3_host' AND x.hash=$hash;
+            """,null,("$task",taskId),("$hash",hash)))==1;
+    }
+    internal void ReserveMemoryAccess(EventInput input,int maximum)
+    {
+        if(maximum is <1 or >32)throw new InvalidDataException("Invalid memory access limit");
+        if(input.EventType is not ("taskmemory_search_access" or "taskmemory_recall_access"))throw new InvalidDataException("Invalid memory budget kind");
+        // The exclusive writer lease and sequencer gate cover count plus reservation.
+        lock(gate) {
+            if(GetTask(input.TaskId) is not {} task || task.WorkspaceId!=input.WorkspaceId)throw new UnauthorizedAccessException("Unknown task owner");
+            var count=Convert.ToInt64(Scalar("SELECT COUNT(*) FROM events WHERE task_id=$task AND event_type=$type;",null,("$task",input.TaskId),("$type",input.EventType)));
+            if(count>=maximum)throw new InvalidOperationException("Task memory access budget exhausted");
+            Append(input);
         }
     }
     public string Recall(string taskId,string hash,int offset)

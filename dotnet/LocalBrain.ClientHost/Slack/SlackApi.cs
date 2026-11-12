@@ -15,15 +15,20 @@ internal sealed class SlackApi : IDisposable
     internal SlackApi(HttpMessageHandler handler,string appToken,string botToken){http=new(handler){Timeout=TimeSpan.FromSeconds(20)};this.appToken=appToken;this.botToken=botToken;}
     internal async Task<JsonElement> Call(string method,object body,bool app,CancellationToken token)
     {
-        if(method is not("apps.connections.open" or "auth.test" or "conversations.info" or "files.info" or "chat.postMessage" or "files.getUploadURLExternal" or "files.completeUploadExternal"))throw new UnauthorizedAccessException("SLACK_METHOD_DENIED");
+        if(method is not("apps.connections.open" or "auth.test" or "conversations.info" or "conversations.replies" or "files.info" or "chat.postMessage" or "files.getUploadURLExternal" or "files.completeUploadExternal"))throw new UnauthorizedAccessException("SLACK_METHOD_DENIED");
         // Slack's read endpoints reject JSON POST arguments in the live API.
         // Tokens remain exclusively in the Authorization header, never the URL.
-        var read=method is "conversations.info" or "files.info";
+        var read=method is "conversations.info" or "conversations.replies" or "files.info";
         var url="https://slack.com/api/"+method;
         if(read){
-            var name=method=="conversations.info"?"channel":"file";
+            var name=method is "conversations.info" or "conversations.replies"?"channel":"file";
             var value=JsonSerializer.SerializeToElement(body).GetProperty(name).GetString()??throw new InvalidDataException("SLACK_READ_ARGUMENT_REQUIRED");
             url+="?"+name+"="+Uri.EscapeDataString(value);
+            if(method=="conversations.replies"){
+                var ts=JsonSerializer.SerializeToElement(body).GetProperty("ts").GetString();
+                if(ts is null||!SlackMention.ValidTs(ts))throw new InvalidDataException("SLACK_THREAD_INVALID");
+                url+="&ts="+Uri.EscapeDataString(ts)+"&limit=1";
+            }
         }
         using var request=new HttpRequestMessage(read?HttpMethod.Get:HttpMethod.Post,url);
         request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",app?appToken:botToken);
@@ -39,6 +44,19 @@ internal sealed class SlackApi : IDisposable
         var bytes=await Bounded(response.Content,1024*1024,token);var json=JsonSerializer.Deserialize<JsonElement>(bytes);
         if(!json.TryGetProperty("ok",out var ok)||!ok.GetBoolean())throw new SlackRejected(json.TryGetProperty("error",out var e)?e.GetString()??"unknown":"unknown");
         return json;
+    }
+    internal async Task<string[]> RootFiles(string channel,string thread,SlackOptions options,CancellationToken token)
+    {
+        if(channel!=options.ChannelId||!SlackMention.ValidTs(thread))throw new UnauthorizedAccessException("SLACK_THREAD_DENIED");
+        var response=await Call("conversations.replies",new{channel,ts=thread},false,token);
+        if(!response.TryGetProperty("messages",out var messages)||messages.ValueKind!=JsonValueKind.Array||messages.GetArrayLength()!=1)
+            throw new InvalidDataException("SLACK_ROOT_UNAVAILABLE");
+        var root=messages[0];
+        if(!root.TryGetProperty("ts",out var ts)||ts.GetString()!=thread)throw new InvalidDataException("SLACK_ROOT_MISMATCH");
+        if(!root.TryGetProperty("files",out var files)||files.ValueKind!=JsonValueKind.Array)return [];
+        var ids=files.EnumerateArray().Select(f=>f.TryGetProperty("id",out var id)&&id.ValueKind==JsonValueKind.String?id.GetString()!:"").ToArray();
+        if(ids.Length>options.MaxFiles||ids.Any(id=>!System.Text.RegularExpressions.Regex.IsMatch(id,"^F[A-Z0-9]{2,32}$")))throw new InvalidDataException("SLACK_ROOT_FILES_INVALID");
+        return ids;
     }
     internal async Task ValidateIdentity(SlackOptions o,CancellationToken token)
     {

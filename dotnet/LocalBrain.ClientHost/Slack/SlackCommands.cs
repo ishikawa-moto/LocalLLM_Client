@@ -32,10 +32,10 @@ internal static class SlackCommands
             await new SlackApprovalWeb(web,store).Run(stop.Token);return;
         }
         if(operation!="serve")throw new ArgumentException("SLACK_OPERATION_INVALID");
-        var ocr=OcrConfig.Read()!;using var api=new SlackApi(options);using var gateway=new GatewayClient(ClientConfig.Load());
-        var priority=new SlackPriority(ocr);var processor=new SlackProcessor(options,store,api,new SlackLocalInference(gateway,store),ocr,priority);
+        var ocr=options.RemoteOcr?null:OcrConfig.Read()!;using var api=new SlackApi(options);using var gateway=new GatewayClient(ClientConfig.Load());
+        var priority=ocr is null?null:new SlackPriority(ocr);var processor=new SlackProcessor(options,store,api,new SlackLocalInference(gateway,store),ocr,priority,options.RemoteOcr?new SlackRemoteOcr(gateway):null);
         store.Recover();
-        SlackStagingFiles.Reconcile(ocr,store);
+        if(ocr is not null)SlackStagingFiles.Reconcile(ocr,store);
         var tasks=new List<Task>{new SlackSocket(options,store,api).Run(stop.Token),SlackSocket.Replies(store,api,stop.Token),processor.Run(stop.Token),processor.Maintenance(stop.Token),new SlackApplicationWorker(store,gateway).Run(stop.Token),SlackFileDelivery.Run(store,api,stop.Token)};
         if(args.Contains("--web-config")){
             var web=JsonSerializer.Deserialize<SlackApprovalOptions>(File.ReadAllBytes(Option("--web-config")),SlackOptions.Json)??throw new InvalidDataException("SLACK_WEB_CONFIG_INVALID");

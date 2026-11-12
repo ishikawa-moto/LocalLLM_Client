@@ -14,8 +14,18 @@ export default function(pi) {
     async execute(_id,params,signal){const reply=await requestHost(operation,params,signal);if(!reply.ok)throw new Error("Host command rejected: "+reply.status);return {content:[{type:"text",text:JSON.stringify(reply.commandState)}],details:reply.commandState};}
   });
   pi.registerTool({
+    name:"host_memory_search",label:"Host Memory Search",
+    description:"Search this task's canonical events. Returns up to eight short untrusted excerpts with event identity, source, date, verification and evidence hashes. Use host_recall for needed evidence. Limited to eight searches per task across sessions.",
+    parameters:Type.Object({query:Type.String({minLength:1,maxLength:1024})},{additionalProperties:false}),
+    async execute(_id,params,signal) {
+      const result=await requestHost("memory_search",params,signal);
+      if(!result.ok)throw new Error("Host memory search rejected: "+result.status);
+      return {content:[{type:"text",text:result.text}],details:{scope:"current_task"}};
+    }
+  });
+  pi.registerTool({
     name:"host_recall",label:"Host Recall",
-    description:"Read immutable hash-verified evidence attached to the current Agent task across Pi sessions. Offset is a UTF-16 character index; pages contain at most 4096 characters.",
+    description:"Read immutable hash-verified evidence attached to the current Agent task across Pi sessions. Offset is a UTF-16 character index; pages contain at most 4096 characters. Limited to 32 calls per task across sessions.",
     parameters:Type.Object({evidenceHash:Type.String({pattern:"^[a-f0-9]{64}$"}),offset:Type.Optional(Type.Integer({minimum:0}))},{additionalProperties:false}),
     async execute(_id,params,signal) {
       const result=await requestHost("recall",params,signal);

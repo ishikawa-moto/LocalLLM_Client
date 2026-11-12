@@ -10,19 +10,19 @@ namespace LocalBrain.ClientHost.Chat;
 
 // Fixed, local-only mailbox contract. Images never select a command, path, URL or model.
 internal sealed record ChatOcrRequest(string Schema,string JobId,string ConversationId,string InputSha256,
-    string Extension,string[] Formats,string? Bytes,bool CancelRequested)
+    string Extension,string[] Formats,string? Bytes,bool CancelRequested,string? Origin=null)
 {
     internal const string Version="localbrain.chat-ocr.job.v1";
     internal const int MaxInputBytes=4*1024*1024;
     internal void Validate(){
         if(Schema!=Version||!Guid.TryParseExact(JobId,"N",out _)||JobId!=JobId.ToLowerInvariant()||
             !Guid.TryParseExact(ConversationId,"D",out _)||ConversationId!=ConversationId.ToLowerInvariant()||
-            InputSha256 is null||!Regex.IsMatch(InputSha256,@"\A[a-f0-9]{64}\z")||
+            InputSha256 is null||!Regex.IsMatch(InputSha256,@"\A[a-f0-9]{64}\z")||Origin is not (null or "slack")||
             Extension is not(".png" or ".jpg" or ".webp" or ".pdf")||Formats is null||Formats.Length is <1 or >4||
             !Formats.Contains("md",StringComparer.Ordinal)||Formats.Distinct(StringComparer.Ordinal).Count()!=Formats.Length||
             Formats.Any(f=>f is not("md" or "json" or "html" or "csv"))||Bytes is {Length:>5592408})throw new InvalidDataException("CHAT_OCR_ENVELOPE_INVALID");
     }
-    internal string Binding()=>CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(new{Schema,JobId,ConversationId,InputSha256,Extension,Formats=Formats.Order(StringComparer.Ordinal).ToArray()},ChatOcrProcessor.Json));
+    internal string Binding()=>CanonicalStore.Hash(Origin=="slack"?JsonSerializer.SerializeToUtf8Bytes(new{Schema,JobId,ConversationId,InputSha256,Extension,Formats=Formats.Order(StringComparer.Ordinal).ToArray(),Origin},ChatOcrProcessor.Json):JsonSerializer.SerializeToUtf8Bytes(new{Schema,JobId,ConversationId,InputSha256,Extension,Formats=Formats.Order(StringComparer.Ordinal).ToArray()},ChatOcrProcessor.Json));
     internal byte[] Decode(){
         Validate();if(Bytes is null)throw new InvalidDataException("CHAT_OCR_INPUT_REQUIRED");byte[] b;
         try{b=Convert.FromBase64String(Bytes);}catch(FormatException){throw new InvalidDataException("CHAT_OCR_INPUT_BASE64");}
@@ -66,7 +66,7 @@ internal sealed class ChatOcrProcessor
     private void Save<T>(string p,T value){var bytes=JsonSerializer.SerializeToUtf8Bytes(value,Json);if(bytes.Length>40*1024*1024||Directory.EnumerateFiles(options.Root).Sum(f=>new FileInfo(f).Length)+bytes.Length>256L*1024*1024)throw new IOException("CHAT_OCR_STORAGE_ADMISSION");OcrJobStore.Atomic(p,value);}
     private static string Wire(object value)=>JsonSerializer.Serialize(value,Json);
     private void DeleteKnownStaging(ChatOcrRequest job){
-        var input=Path.Combine(config.InputRoots[0],"chat-restricted",job.JobId+"-"+job.InputSha256+job.Extension);
+        var input=Path.Combine(config.InputRoots[0],job.Origin=="slack"?"slack-remote-restricted":"chat-restricted",job.JobId+"-"+job.InputSha256+job.Extension);
         foreach(var path in new[]{input,input+".incoming"}){CanonicalStore.GuardPath(path);if(File.Exists(path)&&OcrJobStore.HashFile(path)==job.InputSha256)File.Delete(path);}
     }
 
@@ -75,7 +75,7 @@ internal sealed class ChatOcrProcessor
         Save(FrozenPath(job.JobId),new Frozen(CanonicalStore.Hash(Encoding.UTF8.GetBytes(value)),value));return value;
     }
     internal string Step(ChatOcrRequest job){
-        job.Validate();using var restricted=RestrictedExecution.EnterChat();var path=ReceiptPath(job.JobId);Receipt receipt;
+        job.Validate();using var restricted=job.Origin=="slack"?RestrictedExecution.EnterSlack():RestrictedExecution.EnterChat();var origin=job.Origin??"chat";var path=ReceiptPath(job.JobId);Receipt receipt;
         if(File.Exists(path)){
             receipt=Read<Receipt>(path);if(receipt.JobId!=job.JobId||receipt.ConversationId!=job.ConversationId||receipt.InputSha256!=job.InputSha256||receipt.Binding!=job.Binding())throw new InvalidDataException("CHAT_OCR_IMMUTABLE_BINDING");
         }else{
@@ -83,7 +83,7 @@ internal sealed class ChatOcrProcessor
                 receipt=new(job.JobId,job.ConversationId,job.InputSha256,job.Binding(),"",DateTimeOffset.UtcNow);Save(path,receipt);DeleteKnownStaging(job);
                 return Freeze(job,Wire(new{schema="localbrain.chat-ocr.update.v1",job_id=job.JobId,input_sha256=job.InputSha256,state="cancelled"}));
             }
-            var bytes=job.Decode();var directory=Path.Combine(config.InputRoots[0],"chat-restricted");CanonicalStore.GuardPath(directory);Directory.CreateDirectory(directory);
+            var bytes=job.Decode();var directory=Path.Combine(config.InputRoots[0],origin=="slack"?"slack-remote-restricted":"chat-restricted");CanonicalStore.GuardPath(directory);Directory.CreateDirectory(directory);
             var input=Path.Combine(directory,job.JobId+"-"+job.InputSha256+job.Extension);CanonicalStore.GuardPath(input);
             // Publish an input atomically. Unknown/corrupt pre-existing files are kept for inspection.
             if(File.Exists(input)){if(OcrJobStore.HashFile(input)!=job.InputSha256)throw new InvalidDataException("CHAT_OCR_STAGED_INPUT_CHANGED");}
@@ -94,7 +94,7 @@ internal sealed class ChatOcrProcessor
                 else{using var f=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None);f.Write(bytes);f.Flush(true);}
                 File.Move(temp,input,false);
             }
-            var state=store.Submit(input,job.InputSha256,job.Extension==".pdf"?"PDF_DOCUMENT":"AUTO","chat_"+job.JobId,origin:"chat");
+            var state=store.Submit(input,job.InputSha256,job.Extension==".pdf"?"PDF_DOCUMENT":"AUTO",origin+"_"+job.JobId,origin:origin);
             receipt=new(job.JobId,job.ConversationId,job.InputSha256,job.Binding(),state.JobId,DateTimeOffset.UtcNow);Save(path,receipt);
             if(OcrJobStore.HashFile(input)==job.InputSha256)File.Delete(input);
         }
@@ -106,7 +106,7 @@ internal sealed class ChatOcrProcessor
         }
         if(receipt.OcrJobId.Length==0)return Freeze(job,Wire(new{schema="localbrain.chat-ocr.update.v1",job_id=job.JobId,input_sha256=job.InputSha256,state="cancelled"}));
         var current=store.GetState(receipt.OcrJobId);var manifest=store.GetManifest(receipt.OcrJobId);
-        if(manifest.Origin!="chat"||manifest.InputSha256!=job.InputSha256)throw new InvalidDataException("CHAT_OCR_SOURCE_BINDING");
+        if(manifest.Origin!=origin||manifest.InputSha256!=job.InputSha256)throw new InvalidDataException("CHAT_OCR_SOURCE_BINDING");
         if(job.CancelRequested){
             if(current.Status is not("complete" or "cancelled" or "failed" or "expired"))current=store.Cancel(receipt.OcrJobId);
             var cancellation=Wire(new{schema="localbrain.chat-ocr.update.v1",job_id=job.JobId,input_sha256=job.InputSha256,state=current.Status=="cancelling"?"cancelling":"cancelled"});

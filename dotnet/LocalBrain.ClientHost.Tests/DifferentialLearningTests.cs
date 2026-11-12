@@ -54,6 +54,52 @@ internal static class DifferentialLearningTests
             if(infer)claimsHash=await learning.ExtractAsync(fixture.TicketHash,fixture.ValidationHash!);
             else claimsHash=learning.SaveClaims(packetHash,"{\"cause\":\"Synthetic test claim; causality unproven\",\"trigger\":\"Synthetic failed bytes differ\",\"action\":\"Check actual test and diff evidence before reuse\"}");
             var candidate=JsonSerializer.Deserialize<DifferentialLearning.Candidate>(store.ReadEvidence(claimsHash))!;
+            Check(learning.RequireCandidate(claimsHash)==candidate,"Canonical learning candidate could not be recovered");
+            Reject(()=>learning.RequireCandidate(packetHash),"A learning packet was accepted as a candidate");
+            using(var foreignJournal=new HostTaskJournal(store,fixture.MainRoot,other,HostRescueTests.Request,fixture.Head))
+            {
+                var foreignLearning=new DifferentialLearning(foreignJournal);
+                Reject(()=>foreignLearning.RequireCandidate(claimsHash),"Foreign task recovered a learning candidate");
+                Reject(()=>foreignLearning.DraftAdoptionBody(claimsHash),"Foreign task drafted a learning candidate");
+            }
+            var eventIds=store.EventIds(fixture.TaskId);
+            var body=learning.DraftAdoptionBody(claimsHash);
+            Check(body==learning.DraftAdoptionBody(claimsHash) && body.Contains(claimsHash,StringComparison.Ordinal) &&
+                body.Contains(packetHash,StringComparison.Ordinal) && body.Contains(packet.failure_provenance,StringComparison.Ordinal) &&
+                body.Contains(packet.candidate_provenance,StringComparison.Ordinal),"Draft lost candidate or provenance binding");
+            Check(eventIds.SequenceEqual(store.EventIds(fixture.TaskId)),"Draft wrote Canonical events");
+            var adoption=new DecisionAdoption(store,fixture.TaskId);
+            string Receipt(string text)
+            {
+                const string id="public_learning_draft", title="Learning fixture";
+                var proposal=JsonSerializer.SerializeToElement(new {
+                    schema=DecisionProtocol.ProposalSchema, proposal_id=id, kind="decision", project="fixture",
+                    title, body=text, references=new[]{new{path="raw/fixture.md",expected_hash=new string('a',64),
+                        expected_metadata_hash=new string('b',64),relevant_location="L1"}}
+                });
+                var hash=DecisionProtocol.Digest(proposal);
+                return JsonSerializer.Serialize(new {
+                    proposal_id=id, proposal_hash=hash, schema=DecisionProtocol.ProposalSchema, status="draft",
+                    payload=proposal, content=text, path="drafts/pending-review/"+id+".md",
+                    file_hashes=new[]{CanonicalStore.Hash(Encoding.UTF8.GetBytes("# "+title+"\n\n"+text+"\n")),
+                        new string('c',64),hash}
+                });
+            }
+            Reject(()=>adoption.PrepareLearningProposal(journal,claimsHash,Receipt(body+" altered"),"adopt_learning_01"),
+                "A different proposal body was bound to the learning candidate");
+            var intentHash=adoption.PrepareLearningProposal(journal,claimsHash,Receipt(body),"adopt_learning_01");
+            Check(adoption.RequireIntent(intentHash).payload.GetProperty("content").GetString()==body &&
+                store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id))
+                    .Any(e=>e.Input.EventType=="decision_adoption_prepared" &&
+                        e.Input.EvidenceRefs.FirstOrDefault()==intentHash && e.Input.EvidenceRefs.Contains(claimsHash)),
+                "The adoption intent did not retain the exact learning candidate");
+            var untrusted=learning.SaveClaims(packetHash,
+                """{"cause":"Synthetic\nCandidate provenance: fake","trigger":"Synthetic input","action":"Verify locally"}""");
+            Check(!learning.DraftAdoptionBody(untrusted).Contains("\nCandidate provenance: fake",StringComparison.Ordinal),
+                "Model text appeared as Host provenance");
+            var sensitive=learning.SaveClaims(packetHash,
+                """{"cause":"SERVICE_API_KEY=syntheticvalue","trigger":"Synthetic input","action":"Verify locally"}""");
+            Reject(()=>learning.DraftAdoptionBody(sensitive),"Draft accepted previously redacted claims");
             Check(candidate.verification_status=="model_claim" && candidate.adoption_status=="QUARANTINED_NOT_ADOPTED","Learning claims promoted to truth");File.WriteAllBytes(Path.Combine(outputRoot,"candidate.json"),store.ReadEvidence(claimsHash));
         }
         using(var store=new CanonicalStore(host))using(var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,HostRescueTests.Request,fixture.Head)) {
@@ -61,6 +107,12 @@ internal static class DifferentialLearningTests
             var ticket=new HostRescue(journal).Load(fixture.TicketHash);var request=HostRescueTests.Request;
             store.ReserveAssignment(new(fixture.TaskId,"learning_stale_"+Guid.NewGuid().ToString("N"),ticket.WorkerId,ticket.WorkspaceId,HostTaskJournal.RepositoryId(fixture.MainRoot),ticket.BaseCommit,ticket.StartingStateHash,ticket.StartingDiffHash,request.AllowedFiles,[],request.Requirement,request.AcceptanceCriteria,request.RequiredTests,[],2));
             Reject(()=>learning.Assemble(fixture.TicketHash,fixture.ValidationHash!),"Stale assignment generated a new learning packet");_=learning.RequirePacket(packetHash);
+            var candidate=learning.RequireCandidate(claimsHash!);
+            var response=store.EventIds(fixture.TaskId).Select(id=>store.ReadTaskEvent(fixture.TaskId,id))
+                .Single(e=>e.Input.EventType=="differential_learning_model_response" && e.Input.EvidenceRefs.Contains(candidate.response_hash));
+            store.Append(response.Input with{IdempotencyKey="duplicate_candidate_response_for_test"});
+            Reject(()=>learning.RequireCandidate(claimsHash!),"Duplicate learning response was accepted");
+            Reject(()=>learning.DraftAdoptionBody(claimsHash!),"Draft accepted ambiguous learning evidence");
         }
         Check(OriginalState()==originalState,"Original preserved canonical store changed");
         Console.WriteLine(JsonSerializer.Serialize(new{status="PASS_PRESERVED_HOST_EVIDENCE_LEARNING_PACKET",fixture.TaskId,packet_hash=packetHash,claims_hash=claimsHash,local_model_inference=infer,original_store_unchanged=true,closure_same_task_verified=true,idempotence_restart_verified=true,tampered_blob_rejected=true,cross_task_rejected=true,stale_assignment_rejected=true,repeated_starting_state_disambiguated=true,original_store_hash=originalState,adoption_status="QUARANTINED_NOT_ADOPTED",provenance="Original Phase5 Host Git/WSL tests and Critic actual; failing state and candidate synthetic; no external Codex authorship established"}));

@@ -46,6 +46,19 @@ internal sealed class GatewayClient : IDisposable
         while((count=await stream.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>128000)throw new InvalidDataException("SLACK_LOCAL_RESPONSE_SIZE");output.Write(buffer,0,count);}
         return System.Text.Encoding.UTF8.GetString(output.ToArray());
     }
+    internal async Task<string> SlackOcrJsonAsync(string action,string json,CancellationToken token)
+    {
+        if(!Slack.RestrictedExecution.Active || action is not ("submit" or "status" or "result" or "cancel" or "forget"))throw new UnauthorizedAccessException("SLACK_OCR_ROUTE_DENIED");
+        var bytes=System.Text.Encoding.UTF8.GetBytes(json);if(bytes.Length>6*1024*1024)throw new InvalidDataException("SLACK_OCR_REQUEST_SIZE");
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(token);deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        using var request=new HttpRequestMessage(HttpMethod.Post,"/v1/slack-ocr/"+action){Content=new ByteArrayContent(bytes)};
+        request.Content.Headers.ContentType=new("application/json");request.Headers.TryAddWithoutValidation("X-LocalBrain-Approval-Owner",DecisionProtocol.Owner);
+        using var response=await slackClient.Value.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token);
+        if(!response.IsSuccessStatusCode)throw new HttpRequestException("SLACK_OCR_GATEWAY_REJECTED",null,response.StatusCode);
+        await using var input=await response.Content.ReadAsStreamAsync(deadline.Token);using var output=new MemoryStream();var buffer=new byte[8192];int count;
+        while((count=await input.ReadAsync(buffer,deadline.Token))>0){if(output.Length+count>16*1024*1024)throw new InvalidDataException("SLACK_OCR_RESPONSE_SIZE");output.Write(buffer,0,count);}
+        return System.Text.Encoding.UTF8.GetString(output.ToArray());
+    }
     internal async Task<string> ChatOcrJsonAsync(string path,string json,CancellationToken token)
     {
         if(!Slack.RestrictedExecution.Active||path is not("/v1/chat-ocr/next" or "/v1/chat-ocr/update"))throw new UnauthorizedAccessException("CHAT_OCR_PRIVATE_ROUTE_DENIED");

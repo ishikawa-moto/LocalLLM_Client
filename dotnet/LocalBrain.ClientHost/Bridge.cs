@@ -17,6 +17,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
         var heartbeat = HeartbeatAsync(cancellationToken);
         var ocr=Task.Run(()=>LocalBrain.ClientHost.Ocr.OcrScheduler.RunConfiguredAsync(cancellationToken),cancellationToken);
         var chatOcr=Task.Run(()=>Chat.ChatOcrRelay.RunConfiguredAsync(gateway,cancellationToken),cancellationToken);
+        var slackOcr=Task.Run(()=>Chat.SlackOcrWorker.RunConfiguredAsync(config,cancellationToken),cancellationToken);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -26,7 +27,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
             }
         }
         catch (OperationCanceledException) { }
-        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await ocr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await chatOcr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
+        finally { listener.Stop(); await TryShutdownAsync(); await heartbeat.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await ocr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await chatOcr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);await slackOcr.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing); }
     }
 
     private async Task ForwardAsync(HttpListenerContext context, CancellationToken cancellationToken)
@@ -50,7 +51,8 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
         try
         {
             Stream? preparedBody=null;long? preparedLength=null;
-            if(memory is not null && context.Request.HttpMethod=="POST" && context.Request.Url?.AbsolutePath=="/v1/chat/completions"){
+            var managedPermit=context.Request.Headers["X-LocalBrain-Managed-Permit"];
+            if((memory is not null || managedPermit is not null) && context.Request.HttpMethod=="POST" && context.Request.Url?.AbsolutePath=="/v1/chat/completions"){
                 preparingContext=true;
                 using var source=new MemoryStream();var chunk=new byte[8192];int count;
                 while((count=await ReadWithDeadlineAsync(context.Request.InputStream,chunk,cancellationToken))>0){
@@ -58,11 +60,11 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
                     source.Write(chunk,0,count);
                 }
                 var original=source.ToArray();
-                var managed=AgentV2.ManagedRelayPermit.Consume(context.Request.Headers["X-LocalBrain-Managed-Permit"],original);
+                var managed=AgentV2.ManagedRelayPermit.Consume(managedPermit,original);
                 if(!managed)await supervisor.CheckAsync(original,requestId!,audit,cancellationToken);
-                var prepared=managed?null:await memory.PrepareAsync(original,cancellationToken);
+                var prepared=managed?null:await (memory ?? throw new UnauthorizedAccessException("Managed relay capability required")).PrepareAsync(original,cancellationToken);
                 if(managed){preparedBody=new MemoryStream(original,false);preparedLength=original.LongLength;
-                    audit.Write("agent_v2_managed_context_admitted",new{requestId,owner="Agent v2 canonical Laya/TaskMemory/preflight; bridge keeps network deadlines"});
+                    audit.Write("host_managed_context_admitted",new{requestId,owner="Host task preflight and one-use body-bound permit; bridge keeps network deadlines"});
                 }else{
                 preparedBody=new MemoryStream(prepared!.Body,false);preparedLength=prepared.Body.LongLength;
                 audit.Write("continue_context_admitted",new{requestId,prompt_tokens=prepared.ForwardedTokens,

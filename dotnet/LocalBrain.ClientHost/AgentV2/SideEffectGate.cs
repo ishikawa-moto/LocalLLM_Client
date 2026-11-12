@@ -11,10 +11,12 @@ internal sealed class SideEffectGate : IAsyncDisposable
     internal sealed record Request(string Pipe, string Nonce, string Operation, string? Path = null,
         string? Content = null, string? OldText = null, string? NewText = null,
         int PayloadTokens = 0, int ContextLimit = 32768, string? PayloadJson = null,
-        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null,TaskCommandRequest? Command=null,string? OperationId=null);
+        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null,TaskCommandRequest? Command=null,string? OperationId=null,string? Query=null);
     internal sealed record Reply(bool Ok, string Status, string? ContentHash = null, bool Handoff = false,
         int Headroom = 0,string? Text=null,object? CommandState=null);
     internal sealed record Budget(bool Handoff, int Headroom);
+    internal static Budget EvaluateHostMeasuredBudget(int payloadTokens, int contextLimit = 32768) =>
+        EvaluateBudget(payloadTokens, contextLimit, nextTurn: 0, toolResult: 0, handoffPacket: 0);
     internal static Budget EvaluateBudget(int payloadTokens, int contextLimit = 32768,
         int outputReserve = 2048, int safetyReserve = 2048, int nextTurn = 1024,
         int toolResult = 4096, int handoffPacket = 4096)
@@ -28,6 +30,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
     public string PipeName { get; } = "localbrain-sidefx-" + Guid.NewGuid().ToString("N");
     public string Nonce { get; } = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     public bool HandoffRequested { get; private set; }
+    internal bool OwnsJournal(HostTaskJournal owner)=>ReferenceEquals(journal,owner);
     private readonly string root;
     private readonly string[] writeScope;
     private readonly string expectedHead;
@@ -50,7 +53,14 @@ internal sealed class SideEffectGate : IAsyncDisposable
         server=ServeAsync();
     }
 
-    internal async Task<Reply> HandleAsync(Request request, CancellationToken token = default)
+    internal Task<Reply> HandleAsync(Request request, CancellationToken token = default) => HandleCoreAsync(request,false,token);
+    internal Task<Reply> HandleHostMeasuredPreflightAsync(Request request, CancellationToken token = default)
+    {
+        if(request.Operation!="preflight" || request.SnapshotJson is not null)throw new InvalidDataException("Invalid Host measurement");
+        if(journal?.Commands is null || !journal.HasApproval)throw new UnauthorizedAccessException("Task command grant unavailable or expired");
+        return HandleCoreAsync(request,true,token);
+    }
+    private async Task<Reply> HandleCoreAsync(Request request,bool hostMeasured,CancellationToken token)
     {
         if(request.Pipe!=PipeName || request.Nonce is null || request.Nonce.Length!=Nonce.Length ||
             !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(request.Nonce),Encoding.UTF8.GetBytes(Nonce)))
@@ -70,7 +80,8 @@ internal sealed class SideEffectGate : IAsyncDisposable
             }
             if(request.Operation=="preflight") {
                 diagnosticStage="budget";
-                var budget=EvaluateBudget(request.PayloadTokens,request.ContextLimit);
+                var budget=hostMeasured?EvaluateHostMeasuredBudget(request.PayloadTokens,request.ContextLimit):
+                    EvaluateBudget(request.PayloadTokens,request.ContextLimit);
                 if(request.PayloadJson is null || Encoding.UTF8.GetByteCount(request.PayloadJson)>2*1024*1024)
                     throw new InvalidDataException("Provider payload evidence is unavailable");
                 diagnosticStage="payload_parse";
@@ -81,7 +92,10 @@ internal sealed class SideEffectGate : IAsyncDisposable
                 }
                 using var payload=payloadDocument;
                 diagnosticStage="context_record";
-                if(journal is not null)journal.RecordContext(request.SnapshotJson??throw new InvalidDataException("Context snapshot missing"),request.PayloadTokens);
+                if(journal is not null) {
+                    if(hostMeasured)journal.Record("context_measurement",new {context_limit=request.ContextLimit,estimated_prompt_tokens=request.PayloadTokens,measurement_scope="qualified_total_only",component_metrics_available=false},"runtime_observed");
+                    else journal.RecordContext(request.SnapshotJson??throw new InvalidDataException("Context snapshot missing"),request.PayloadTokens);
+                }
                 journal?.Record("provider_preflight_received",new {request.PayloadTokens,fields=payload.RootElement.EnumerateObject().Select(p=>p.Name).ToArray()},"runtime_observed");
                 diagnosticStage="output_reserve";
                 var hasLegacy=payload.RootElement.TryGetProperty("max_tokens",out var maximum);
@@ -102,6 +116,11 @@ internal sealed class SideEffectGate : IAsyncDisposable
                 if(!budget.Handoff)admittedPayloadHash=CanonicalStore.Hash(Encoding.UTF8.GetBytes(request.PayloadJson));
                 return budget.Handoff ? new(false,"fresh_context_exhausted",Headroom:budget.Headroom):
                     new(true,"context_budget_accepted",Headroom:budget.Headroom);
+            }
+            if(request.Operation=="memory_search") {
+                Slack.RestrictedExecution.DenyAgentTools();
+                if(journal is null || request.Query is null)throw new InvalidDataException("Task memory unavailable");
+                return new(true,"canonical_task_memory",Text:JsonSerializer.Serialize(journal.SearchMemory(request.Query),ClientConfig.JsonOptions));
             }
             if(request.Operation=="recall") {
                 if(journal is null || request.EvidenceHash is null)throw new InvalidDataException("Task evidence is unavailable");

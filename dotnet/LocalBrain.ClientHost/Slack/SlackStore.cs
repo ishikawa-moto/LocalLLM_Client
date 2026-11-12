@@ -68,6 +68,10 @@ internal sealed partial class SlackStore : IDisposable
     internal Session GetSession(string id,SqliteTransaction? tx=null){lock(gate){using var c=Command("SELECT * FROM sessions WHERE id=$id;",tx,("$id",id));using var r=c.ExecuteReader();return r.Read()?ReadSession(r):throw new KeyNotFoundException();}}
     private static Job ReadJob(SqliteDataReader r)=>new(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetString(4),JsonSerializer.Deserialize<string[]>(r.GetString(5))!,r.GetString(6),r.IsDBNull(7)?null:r.GetString(7),r.GetInt64(8));
     internal Job GetJob(string id,SqliteTransaction? tx=null){lock(gate){using var c=Command("SELECT * FROM jobs WHERE id=$id;",tx,("$id",id));using var r=c.ExecuteReader();return r.Read()?ReadJob(r):throw new KeyNotFoundException();}}
+    internal Job BindRootFiles(string id,string[] files){lock(gate){using var tx=db.BeginTransaction();var job=GetJob(id,tx);
+        if(job.Phase!="running"||job.FileIds.Length!=0||files.Length==0||files.Length>options.MaxFiles||files.Any(f=>!System.Text.RegularExpressions.Regex.IsMatch(f,"^F[A-Z0-9]{2,32}$")))throw new InvalidDataException("SLACK_ROOT_FILES_INVALID");
+        if(Execute("UPDATE jobs SET files=$files WHERE id=$id AND phase='running' AND files='[]';",tx,("$files",JsonSerializer.Serialize(files)),("$id",id))!=1)throw new InvalidDataException("SLACK_ROOT_FILES_CHANGED");
+        Audit("root_files_bound",id,DateTimeOffset.UtcNow,tx);tx.Commit();return GetJob(id);}}
     internal Job? ClaimNext(){lock(gate){using var tx=db.BeginTransaction();
         using var c=Command("SELECT j.* FROM jobs j WHERE j.phase='queued' AND EXISTS(SELECT 1 FROM replies r WHERE r.job_id=j.id AND r.kind='accepted' AND r.state='sent') AND NOT EXISTS(SELECT 1 FROM inference_progress ip WHERE ip.root_id=j.id AND (ip.state='legacy_hold' OR (ip.state IN('ready','probing','held') AND ip.next_check>$now) OR (ip.state='held' AND (ip.checks<$fast OR ip.checks>=$limit OR ip.cause NOT IN("+HeldProbeCauses+"))))) AND NOT EXISTS(SELECT 1 FROM jobs p WHERE p.session_id=j.session_id AND p.phase NOT IN('complete','failed') AND (p.created<j.created OR (p.created=j.created AND p.rowid<j.rowid))) ORDER BY CASE WHEN j.files='[]' THEN 4 ELSE 3 END,j.created,j.rowid LIMIT 1;",tx,("$now",Ms(DateTimeOffset.UtcNow)),("$fast",FastProbeLimit),("$limit",FastProbeLimit+HeldProbeLimit));
         Job? j;using(var r=c.ExecuteReader())j=r.Read()?ReadJob(r):null;
@@ -104,6 +108,7 @@ internal sealed partial class SlackStore : IDisposable
             return resumed;
         }
     }
+    internal void ReleaseSummaryWaiters(){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE phase='waiting_summary';",null);}
     internal void SummaryReady(string session){lock(gate)Execute("UPDATE jobs SET phase='queued' WHERE session_id=$id AND phase='waiting_summary';",null,("$id",session));}
     internal int FailWaitingSummary(string session){lock(gate){using var tx=db.BeginTransaction();var waiting=new List<Job>();using(var c=Command("SELECT * FROM jobs WHERE session_id=$id AND phase='waiting_summary';",tx,("$id",session)))using(var r=c.ExecuteReader())while(r.Read())waiting.Add(ReadJob(r));var failed=0;
         foreach(var job in waiting){if(Execute("UPDATE jobs SET phase='failed',result='LOCAL_COMPRESSION_UNAVAILABLE' WHERE id=$id AND phase='waiting_summary';",tx,("$id",job.Id))==0)continue;
@@ -119,7 +124,7 @@ internal sealed partial class SlackStore : IDisposable
         var s=GetSession(j.SessionId,tx);
         if(success&&options.ReturnFileResults&&(sensitive||SlackReplyFormat.ExplicitDocument(j.Text)))QueueSuccessfulFileResults(j,localResult,tx);
         else{
-            var text=success?(sensitive?$"<@{j.User}> 処理が完了しました。結果はローカルに保存しました。処理ID：{id}":$"<@{j.User}> "+SafeText(localResult)):$"<@{j.User}> 処理を完了できませんでした。処理ID：{id}。管理者に確認してください。";
+            var text=success?(sensitive?$"<@{j.User}> 処理が完了しました。結果はローカルに保存しました。処理ID：{id}":$"<@{j.User}> "+SafeText(localResult)):localResult=="SLACK_ROOT_FILE_REQUIRED"?$"<@{j.User}> スレッド先頭の画像・文書を取得できませんでした。対象ファイルを再添付してメンションしてください。":$"<@{j.User}> 処理を完了できませんでした。処理ID：{id}。管理者に確認してください。";
             QueueReply(id+"-completed",id,s.Channel,s.Thread,text,"completed",tx);
         }
         Audit(success?"completed":"failed",id,DateTimeOffset.UtcNow,tx);tx.Commit();

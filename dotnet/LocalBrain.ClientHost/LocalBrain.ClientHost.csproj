@@ -13,13 +13,16 @@
     <None Include="../../scripts/host-command-worker.py" Link="scripts/host-command-worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-request.mjs" Link="scripts/host-request.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/host-file-tools.mjs" Link="scripts/host-file-tools.mjs" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../scripts/laya_worker.py" Link="scripts/laya_worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-provider.js" Link="scripts/localbrain-provider.js" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/localbrain-policy.mjs" Link="scripts/localbrain-policy.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/localbrain-settings.json" Link="scripts/pi-settings.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-telemetry.mjs" Link="scripts/context-telemetry.mjs" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/context-tokenizer.py" Link="scripts/context-tokenizer.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../scripts/qwen-chat-template.jinja" Link="scripts/qwen-chat-template.jinja" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../reviewer-routing.json" Link="reviewer-routing.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/host-task-driver.py" Link="pi-v3/agent/host-task-driver.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/agent/run-isolated.py" Link="pi-v3/agent/run-isolated.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/bridge/seed_workspace.py" Link="pi-v3/bridge/seed_workspace.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../pi-v3/bridge/model_bridge.py" Link="pi-v3/bridge/model_bridge.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

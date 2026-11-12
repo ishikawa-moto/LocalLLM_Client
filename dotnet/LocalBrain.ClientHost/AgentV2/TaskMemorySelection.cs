@@ -6,7 +6,7 @@ namespace LocalBrain.ClientHost.AgentV2;
 internal static class TaskMemorySelection
 {
     internal sealed record Candidate(string TaskId,string EventId,long Sequence,string EventType,
-        string VerificationStatus,string[] EvidenceRefs,string Preview);
+        string VerificationStatus,string[] EvidenceRefs,string Preview,string? CommittedAt=null,string? Producer=null);
     internal sealed record Selection(string[] EventIds,string[] EvidenceRefs);
 
     public static Selection Validate(string taskId,IReadOnlyList<Candidate> candidates,string response)

@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-using LocalBrain.ClientHost.AgentV2;
 
 namespace LocalBrain.ClientHost;
 
@@ -11,14 +10,11 @@ internal sealed class WorkLoopBlockedException(string reason) : Exception(reason
 /// No tools, approvals, file changes or external reviewers are executed here.</summary>
 internal sealed class WorkLoopSupervisor : IAsyncDisposable
 {
-    private readonly LayaSupervisor laya = new();
-    private readonly Func<SupervisorState,CancellationToken,Task<SupervisorDecision>>? predict;
     internal TimeSpan IdleLimit { get; init; } = TimeSpan.FromMinutes(10);
     internal TimeSpan RequestLimit { get; init; } = TimeSpan.FromMinutes(30);
-    private long requests, active, inspected, predictions, blocked;
-    internal WorkLoopSupervisor(Func<SupervisorState,CancellationToken,Task<SupervisorDecision>>? predict = null) => this.predict=predict;
+    private long requests, active, inspected, blocked;
     internal object Status => new { enabled=true,scope="all HTTP requests through this Bridge; chat tool histories before context compaction",
-        requests=Interlocked.Read(ref requests),active_requests=Interlocked.Read(ref active),chat_histories=Interlocked.Read(ref inspected),laya_checks=Interlocked.Read(ref predictions),
+        requests=Interlocked.Read(ref requests),active_requests=Interlocked.Read(ref active),chat_histories=Interlocked.Read(ref inspected),
         blocked=Interlocked.Read(ref blocked),idle_seconds=IdleLimit.TotalSeconds,request_seconds=RequestLimit.TotalSeconds,
         external_continue_tools="results observed on next model request; external running process not owned or cancelled",
         agent_v2="existing Pi milestone supervisor and task budgets retained",automatic_replay=false };
@@ -73,40 +69,18 @@ internal sealed class WorkLoopSupervisor : IAsyncDisposable
         return new(signatures.Count,errors,repetitions,repeatedErrors,repeatedErrors>=3?"repeated_identical_error":repetitions>=4?"repeated_tool_result_cycle":null);
     }
 
-    internal async Task CheckAsync(byte[] original,string requestId,Audit audit,CancellationToken token)
+    internal Task CheckAsync(byte[] original,string requestId,Audit audit,CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         var observation=Inspect(original);Interlocked.Increment(ref inspected);
         audit.Write("work_loop_observed",new{requestId,observation.Tools,observation.Errors,observation.RepeatedResult,observation.RepeatedError,source="original_history_before_compaction"});
         if(observation.BlockReason is not null)Block(observation.BlockReason,requestId,audit);
-        // All histories get deterministic inspection. Laya sees compact numeric milestones,
-        // not source text. Avoid loading a CPU model for every ordinary short question.
-        if(observation.Tools==0 || (observation.Tools!=1 && observation.Tools%4!=0 && observation.Errors==0))return;
-        var state=new SupervisorState("implementation",observation.Tools,0,0,0,false,observation.RepeatedError,
-            Math.Max(0,observation.RepeatedResult-1),0,0,observation.RepeatedResult>1?"low":"medium",observation.RepeatedResult<=1,false,false,false,false);
-        SupervisorDecision decision;
-        using var budget=CancellationTokenSource.CreateLinkedTokenSource(token);budget.CancelAfter(TimeSpan.FromSeconds(45));
-        try{
-            Interlocked.Increment(ref predictions);
-            if(predict is not null)decision=await predict(state,budget.Token);
-            else{
-                var (action,confidence,latency)=await laya.PredictAsync(state.Compact,budget.Token);
-                decision=new(action,"laya",confidence>=0.55?"typed_decision":"low_confidence",confidence,latency,confidence<0.55);
-            }
-        }catch(Exception e) when(e is not OperationCanceledException || !token.IsCancellationRequested){
-            audit.Write("work_loop_laya_unavailable",new{requestId,error=e.GetType().Name,deterministic_monitoring=true});return;
-        }
-        if(decision.Confidence is {} confidenceValue && !double.IsFinite(confidenceValue))
-            decision=decision with{Confidence=null,Fallback=true,Reason="invalid_laya_confidence"};
-        audit.Write("work_loop_laya_decision",new{requestId,decision.Action,decision.Source,decision.Reason,decision.Confidence,decision.LatencyMs,decision.Fallback});
-        // Never convert a prediction into a tool call, approval, cloud review, compaction
-        // or a success claim. Only a confident replan/escalation can pause this request.
-        if(!decision.Fallback && decision.Confidence is {} c && double.IsFinite(c) && c>=0.55 && decision.Action is "REPLAN" or "ESCALATE_SOL")
-            Block("laya_requested_replan",requestId,audit);
+        return Task.CompletedTask;
     }
     private void Block(string reason,string requestId,Audit audit){Interlocked.Increment(ref blocked);audit.Write("work_loop_blocked",new{requestId,reason,forwarded=false,automatic_retry=false});throw new WorkLoopBlockedException(reason);}
     private static string Hash(string s)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
     private static string Canonical(JsonNode? node)=>node switch{
         JsonObject obj=>"{"+string.Join(',',obj.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>System.Text.Json.JsonSerializer.Serialize(p.Key)+":"+Canonical(p.Value)))+"}",
         JsonArray arr=>"["+string.Join(',',arr.Select(Canonical))+"]",_=>node?.ToJsonString()??"null"};
-    public ValueTask DisposeAsync()=>laya.DisposeAsync();
+    public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
 }

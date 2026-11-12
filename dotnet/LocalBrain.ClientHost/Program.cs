@@ -3,6 +3,22 @@ using LocalBrain.ClientHost.AgentV2;
 
 try
 {
+    if (args.FirstOrDefault() == "trial-agent-v2")
+    {
+        if (args.Length < 3) throw new ArgumentException("trial-agent-v2 requires an absolute trial directory and a command");
+        await RunnerMcpScope.RunTrialAgentAsync(args[1], args[2..]);
+        return;
+    }
+    if (args.FirstOrDefault() == "runner-mcp")
+    {
+        if (args.Length != 2) throw new ArgumentException("runner-mcp requires one absolute trial directory");
+        await RunnerMcpScope.StartAsync(args[1]);
+        return;
+    }
+    // Explicit administrative test command. Never loads production configuration or opens DefaultRoot.
+    if (args.FirstOrDefault() == "review-qualification") {
+        await ReviewQualification.RunAsync(args.Skip(1).ToArray()); return;
+    }
     if(args.FirstOrDefault()=="slack"){
         try{await LocalBrain.ClientHost.Slack.SlackCommands.Run(args.Skip(1).ToArray());}
         catch(OperationCanceledException){}

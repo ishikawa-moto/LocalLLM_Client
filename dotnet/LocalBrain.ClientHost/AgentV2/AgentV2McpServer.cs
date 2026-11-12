@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace LocalBrain.ClientHost.AgentV2;
 
 /// <summary>A separate Continue-facing entry point for the scoped Agent v2 pilot.</summary>
-internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig config,string? isolatedControlRoot=null,bool launchManaged=true)
+internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig config,string? isolatedControlRoot=null,bool launchManaged=true,RunnerMcpScope? runner=null)
 {
     private static readonly object[] Tools =
     [
@@ -21,7 +21,7 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
             annotations=new{readOnlyHint=false,destructiveHint=false,idempotentHint=true,openWorldHint=false}}
     ];
 
-    private static object Tool(string name, string description, bool readOnly) => new
+    private static object Tool(string name, string description, bool readOnly, bool runner = false) => new
     {
         name, description,
         inputSchema = new { type = "object", properties = new
@@ -46,7 +46,7 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                     max_command_seconds=new{type="integer",minimum=1,maximum=86400},
                     max_task_minutes=new{type="integer",minimum=1,maximum=1440},
                     max_actor_turns=new{type="integer",minimum=3,maximum=300},
-                    max_commands=new{type="integer",minimum=1,maximum=1024},
+                    max_commands=new{type="integer",minimum=runner?0:1,maximum=runner?0:1024},
                     max_output_bytes=new{type="integer",minimum=4096,maximum=8388608}
                 }, required=new[]{"environments","working_directories","output_directories"},additionalProperties=false }
             }, required = new[] { "requirement", "acceptance_criteria", "risk",
@@ -82,7 +82,8 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                         p.TryGetProperty("protocolVersion", out var v) ? v.GetString() : "2025-06-18",
                         capabilities = new { tools = new { } },
                         serverInfo = new { name = "LocalBrain Agent v2", version = "0.2.0" } },
-                    "tools/list" => new { tools = Tools },
+                    "tools/list" => new { tools = runner is null ? Tools :
+                        [Tool("localbrain_agent_v2_run", "Submit a bounded LOW file task in the dedicated Runner checkout. Set max_commands=0, output_directories=[], required_tests=[git_diff_check]. Native approval is required.", false, true), Tools[2], Tools[3]] },
                     "tools/call" => await CallAsync(request.GetProperty("params")),
                     _ => throw new InvalidDataException("Unknown MCP method")
                 };
@@ -105,14 +106,20 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
         var arguments = parameters.GetProperty("arguments");
         var selected = arguments.GetProperty("workspace").GetString()
             ?? throw new InvalidDataException("Workspace is required");
+        runner?.RequireWorkspace(selected);
         var root = allowlist.Resolve(selected);
+        runner?.RequireWorkspace(root);
         if (name == "localbrain_agent_v2_status")
-            return Content(TaskAgentCoordinator.CurrentDirectory(root,isolatedControlRoot) is null?ReadStatus(root):await TaskAgentCoordinator.StatusAsync(root,isolatedControlRoot));
-        if(name=="localbrain_agent_v2_cancel")return Content(await TaskAgentCoordinator.CancelAsync(root,arguments.GetProperty("task_id").GetString()??"",isolatedControlRoot));
+            return Content(isolatedControlRoot is null && TaskAgentCoordinator.CurrentDirectory(root) is null
+                ? ReadStatus(root) : await TaskAgentCoordinator.StatusAsync(root,isolatedControlRoot,runner is not null));
+        if(name=="localbrain_agent_v2_cancel")return Content(await TaskAgentCoordinator.CancelAsync(root,arguments.GetProperty("task_id").GetString()??"",isolatedControlRoot,runner is not null));
         if (name is not ("localbrain_agent_v2_run" or "localbrain_agent_v2_resume"))
             throw new InvalidDataException("Unknown Agent v2 tool");
+        if (runner is not null && name == "localbrain_agent_v2_resume")
+            throw new UnauthorizedAccessException("Runner resume is not exposed");
         var task = AgentTaskRequest.Parse(arguments.GetProperty("task").GetRawText());
-        return Content(await TaskAgentCoordinator.SubmitAsync(root,task,config,resume:name=="localbrain_agent_v2_resume",control:isolatedControlRoot,launch:launchManaged));
+        runner?.RequireTask(task);
+        return Content(await TaskAgentCoordinator.SubmitAsync(root,task,config,resume:name=="localbrain_agent_v2_resume",control:isolatedControlRoot,launch:launchManaged,runnerSummary:runner is not null));
     }
 
     private static object ReadStatus(string root)

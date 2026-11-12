@@ -9,13 +9,20 @@ internal static class TaskCommandAuthorization
     internal sealed record Grant(Pending Pending,string ReceiptHash);
     private static readonly AsyncLocal<Grant?> ambient=new();
     internal static Grant? Current=>ambient.Value;
+    private const string ReceiptFile = "authorization-result.json";
+    internal static void RequireNativeReceiptPath(string directory)
+    {
+        // The native Windows PowerShell dialog creates the receipt via .NET Framework File.Open.
+        if (Path.Combine(Path.GetFullPath(directory), ReceiptFile + ".pending").Length >= 260)
+            throw new InvalidDataException("Native approval receipt path is too long; use a shorter trial directory");
+    }
     private sealed class Scope(Grant? prior):IDisposable{public void Dispose()=>ambient.Value=prior;}
     internal static IDisposable Enter(Grant grant){Validate(grant);var prior=ambient.Value;ambient.Value=grant;return new Scope(prior);}
     internal static Pending Prepare(string directory,string root,string taskId,AgentTaskRequest request,string head)
     {
         if(request.CommandExecution is null)throw new InvalidDataException("Task command contract required");request.CommandExecution.Validate();
         CanonicalStore.GuardPath(directory);Directory.CreateDirectory(directory);
-        var input=Path.Combine(directory,"authorization-input.json");var output=Path.Combine(directory,"authorization-result.json");
+        var input=Path.Combine(directory,"authorization-input.json");var output=Path.Combine(directory,ReceiptFile);
         if(File.Exists(input)||File.Exists(output))throw new IOException("Authorization intent already exists; observe it");
         var nonce=Guid.NewGuid().ToString("N");var hash=AgentTaskRunner.RequestHash(request);
         var value=new{source="windows_task_command_grant_request",nonce,task_id=taskId,root=Path.GetFullPath(root),request_hash=hash,git_head=head,
@@ -49,7 +56,7 @@ internal static class TaskCommandAuthorization
             !string.Equals(grant.Pending.Root,journal.WindowsRoot,StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("Grant belongs to another task, request, HEAD or workspace");
         return grant;
     }
-    internal static void Launch(Pending pending)
+    internal static Process Launch(Pending pending)
     {
         if(!OperatingSystem.IsWindows()||!Environment.UserInteractive)throw new UnauthorizedAccessException("Task command grant needs the Windows desktop");
         var script=Path.Combine(AppContext.BaseDirectory,"Confirm-TaskCommands.ps1");CanonicalStore.GuardPath(script);
@@ -61,6 +68,6 @@ internal static class TaskCommandAuthorization
         var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe")){UseShellExecute=false,CreateNoWindow=true};
         using var self=Process.GetCurrentProcess();
         foreach(var a in new[]{"-NoProfile","-NonInteractive","-STA","-WindowStyle","Hidden","-ExecutionPolicy","Bypass","-File",script,"-InputPath",pending.Input,"-OwnerPid",self.Id.ToString(),"-OwnerBirth",self.StartTime.ToUniversalTime().Ticks.ToString()})start.ArgumentList.Add(a);
-        using var process=Process.Start(start)??throw new IOException("Task grant dialog did not start");
+        return Process.Start(start)??throw new IOException("Task grant dialog did not start");
     }
 }

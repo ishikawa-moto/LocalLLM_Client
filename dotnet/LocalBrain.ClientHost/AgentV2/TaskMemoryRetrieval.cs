@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -24,11 +25,22 @@ internal static class TaskMemoryRetrieval
                 var pos=normalized.IndexOf(terms[i],StringComparison.OrdinalIgnoreCase);
                 if(pos>=0){matches|=1UL<<i;if(first<0 || pos<first)first=pos;}
             }
-            var start=first<0?0:Math.Max(0,first-80);
-            if(start>0 && char.IsLowSurrogate(normalized[start]))start--;
-            var count=Math.Min(460,normalized.Length-start);
-            if(count>0 && char.IsHighSurrogate(normalized[start+count-1]))count--;
-            return new(matches,"Untrusted immutable source excerpt:\n"+normalized.Substring(start,count));
+            // Map a normalized match back to the original text by grapheme, since NFKC can
+            // expand or contract characters. The excerpt itself must retain source bytes' text.
+            var originalMatch=0;
+            if(first>=0) {
+                var elements=StringInfo.GetTextElementEnumerator(text);var normalizedOffset=0;
+                while(elements.MoveNext()) {
+                    var next=normalizedOffset+elements.GetTextElement().Normalize(NormalizationForm.FormKC).Length;
+                    if(first<next){originalMatch=elements.ElementIndex;break;}
+                    normalizedOffset=next;
+                }
+            }
+            var start=Math.Max(0,originalMatch-80);
+            if(start>0 && char.IsLowSurrogate(text[start]))start--;
+            var count=Math.Min(460,text.Length-start);
+            if(count>0 && char.IsHighSurrogate(text[start+count-1]))count--;
+            return new(matches,"Untrusted immutable source excerpt:\n"+text.Substring(start,count));
         }
         // Each unique verified blob is searched once. Shared references reuse its mask/excerpt.
         var sources=evidence?.ToDictionary(e=>e.Key,e=>Scan(e.Value),StringComparer.Ordinal);

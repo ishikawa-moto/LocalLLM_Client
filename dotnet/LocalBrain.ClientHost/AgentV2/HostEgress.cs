@@ -13,6 +13,15 @@ internal sealed class HostEgress(CanonicalStore store)
         string[] ExportedSourceIds,FileRef[] ExportedFileRefs,int RedactionCount,string[] RedactionClasses,
         string ExportHash,string[] ParityDeviation);
     internal sealed record Prepared(Manifest Manifest,string ManifestHash,string Payload);
+    internal void ApproveInteractive(Manifest manifest,string manifestHash,HostTaskJournal journal) {
+        if(manifest.TaskId!=journal.TaskId)throw new UnauthorizedAccessException("Approval task mismatch");
+        if(Console.IsInputRedirected || Console.IsOutputRedirected)throw new InvalidOperationException("Export approval requires an interactive human terminal");
+        Console.WriteLine(JsonSerializer.Serialize(manifest,ClientConfig.JsonOptions));
+        Console.WriteLine("Review the redacted export payload and exact scope. Type its complete manifest SHA-256 to authorize this export once: "+manifestHash);
+        if(Console.ReadLine()!=manifestHash)throw new UnauthorizedAccessException("Exact human export approval was not confirmed");
+        store.BindExportApproval(journal.TaskId,manifestHash,manifest.PolicyHash,DateTimeOffset.UtcNow.AddMinutes(15),Environment.UserName);
+        journal.Record("human_export_approval",new{manifest_hash=manifestHash,policy_hash=manifest.PolicyHash},"human_explicit");
+    }
     internal sealed record Redacted(string Text,int Count,string[] Classes);
     private static readonly Regex PrivateKey=new(@"-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----",RegexOptions.CultureInvariant);
     private static readonly Regex SensitiveIdentifiers=new("\\b(?<key>"+ReviewerEvidence.SensitiveKeyPattern+")\\b",RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);

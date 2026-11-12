@@ -4,6 +4,25 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal static class WslWorkspace
 {
+    // Read-only preflight of the existing runtime. Do not install, migrate old
+    // sessions or silently fall back to a different Pi from a model request.
+    internal static async Task RequirePi140Async(CancellationToken token, PiRuntimeOptions runtime)
+    {
+        runtime.Validate();
+        if ((await RunAsync(["-d", "Ubuntu", "--exec", runtime.PiExecutable, "--version"], token)).Trim() != "1.4.0")
+            throw new InvalidOperationException("The registered Pi runtime must be 1.4.0");
+        var settings = await RunAsync(["-d", "Ubuntu", "--exec", "/usr/bin/cat", runtime.AgentDirectory + "/settings.json"], token);
+        using var document = System.Text.Json.JsonDocument.Parse(settings);
+        var root = document.RootElement;
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Object || root.EnumerateObject().Count() != 1 ||
+            !root.TryGetProperty("compaction", out var compaction) ||
+            compaction.ValueKind != System.Text.Json.JsonValueKind.Object || compaction.EnumerateObject().Count() != 3 ||
+            !compaction.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != System.Text.Json.JsonValueKind.True ||
+            !compaction.TryGetProperty("reserveTokens", out var reserve) || !reserve.TryGetInt32(out var r) || r != 8192 ||
+            !compaction.TryGetProperty("keepRecentTokens", out var recent) || !recent.TryGetInt32(out var k) || k != 12000)
+            throw new InvalidDataException("Pi standard compaction settings are not provisioned for the 32K model");
+    }
+
     internal static async Task<string> MapPathAsync(string windowsPath,CancellationToken token)
     {
         var mapped=(await RunAsync(["-d","Ubuntu","--exec","wslpath","-a","-u",Path.GetFullPath(windowsPath)],token)).Trim();

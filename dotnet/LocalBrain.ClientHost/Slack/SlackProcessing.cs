@@ -171,28 +171,51 @@ internal static class SlackStagingFiles
     }
 }
 
-internal sealed class SlackProcessor(SlackOptions options,SlackStore store,SlackApi api,ISlackLocalInference inference,OcrConfig ocr,SlackPriority priority)
+internal sealed class SlackProcessor(SlackOptions options,SlackStore store,SlackApi api,ISlackLocalInference inference,OcrConfig? ocr,SlackPriority? priority,SlackRemoteOcr? remote=null)
 {
     internal async Task Run(CancellationToken token)
     {
         while(!token.IsCancellationRequested){
             store.FinishUnrecoverableChats(DateTimeOffset.UtcNow);
-            store.ResumeReadySummaryWaiters(options.CompressionThreshold);
+            store.ReleaseSummaryWaiters();
             SlackResultReturnRequests.Step(options,store);
             foreach(var waiting in store.WaitingForOcr()){
-                if(waiting.FileIds.All(f=>store.GetAttachment(waiting.Id,f) is {OcrJob: {} id} && new OcrJobStore(ocr).GetState(id).Status is "complete" or "failed" or "cancelled" or "expired"))store.OcrReady(waiting.Id);
+                if(remote is null){
+                    if(waiting.FileIds.All(f=>store.GetAttachment(waiting.Id,f) is {OcrJob: {} id} && new OcrJobStore(ocr??throw new InvalidOperationException("SLACK_LOCAL_OCR_REQUIRED")).GetState(id).Status is "complete" or "failed" or "cancelled" or "expired"))store.OcrReady(waiting.Id);
+                }else try {
+                    using var restricted=RestrictedExecution.EnterSlack();var done=true;
+                    foreach(var file in waiting.FileIds){var a=store.GetAttachment(waiting.Id,file);if(a?.OcrJob is null){done=false;break;}var state=await remote.State(waiting.Id,file,token);if(state is not ("complete" or "failed" or "cancelled" or "expired")){done=false;break;}}
+                    if(done)store.OcrReady(waiting.Id);
+                }catch(Exception e)when(e is SlackDeferred or HttpRequestException or IOException or JsonException or InvalidDataException or OperationCanceledException){if(token.IsCancellationRequested)throw;}
             }
-            if(priority.Admission()&&store.ClaimNext() is {} job){
+            if((remote is not null || (priority??throw new InvalidOperationException("SLACK_LOCAL_OCR_REQUIRED")).Admission())&&store.ClaimNext() is {} job){
                 using var restricted=RestrictedExecution.EnterSlack();
                 try{
+                    if(job.FileIds.Length==0){
+                        string[] files;
+                        try{var session=store.GetSession(job.SessionId);files=await api.RootFiles(session.Channel,session.Thread,options,token);}
+                        catch(Exception e)when(e is SlackRejected or UnauthorizedAccessException or InvalidDataException or HttpRequestException or IOException or JsonException){store.Finish(job.Id,"SLACK_ROOT_FILE_REQUIRED",false,true);continue;}
+                        if(files.Length==0){store.Finish(job.Id,"SLACK_ROOT_FILE_REQUIRED",false,true);continue;}
+                        job=store.BindRootFiles(job.Id,files);
+                    }
                     if(job.FileIds.Length>0){
                         var refs=new List<object>();var texts=new List<string>();var ready=true;
                         foreach(var file in job.FileIds){var a=store.GetAttachment(job.Id,file);
                             if(a is null){var downloaded=await api.Download(file,options,token);a=store.SaveAttachment(job.Id,file,downloaded.Extension,downloaded.Bytes);}
                             if(a.Result is null){
-                                var os=new OcrJobStore(ocr);
+                                if(remote is not null){
+                                    var expected=SlackRemoteOcr.JobId(job.Id,file);
+                                    if(a.OcrJob is null){await remote.Submit(job.Id,a,token);store.BindOcr(job.Id,file,expected);a=store.GetAttachment(job.Id,file)!;}
+                                    if(a.OcrJob!=expected)throw new InvalidDataException("SLACK_OCR_JOB_CHANGED");
+                                    var remoteState=await remote.State(job.Id,file,token);
+                                    if(remoteState is "failed" or "expired" or "cancelled")throw new InvalidDataException("SLACK_OCR_FAILED");
+                                    if(remoteState!="complete"){ready=false;continue;}
+                                    store.SaveOcrResult(job.Id,file,await remote.Result(job.Id,file,a.Hash,token));a=store.GetAttachment(job.Id,file)!;
+                                }else{
+                                var localOcr=ocr??throw new InvalidOperationException("SLACK_LOCAL_OCR_REQUIRED");
+                                var os=new OcrJobStore(localOcr);
                                 if(a.OcrJob is null){
-                                    var inbox=Path.Combine(ocr.InputRoots[0],"slack-restricted");CanonicalStore.GuardPath(inbox);Directory.CreateDirectory(inbox);
+                                    var inbox=Path.Combine(localOcr.InputRoots[0],"slack-restricted");CanonicalStore.GuardPath(inbox);Directory.CreateDirectory(inbox);
                                     var input=SlackStagingFiles.PathFor(inbox,job.Id,file,a.Hash,a.Extension);CanonicalStore.GuardPath(input);
                                     try{
                                         if(File.Exists(input)){if(OcrJobStore.HashFile(input)!=a.Hash)throw new InvalidDataException("SLACK_INPUT_CHANGED");}else{using var f=new FileStream(input,FileMode.CreateNew,FileAccess.Write,FileShare.None);f.Write(a.Bytes);f.Flush(true);}
@@ -203,6 +226,7 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                                 var state=os.GetState(a.OcrJob!);if(state.Status is "failed" or "expired" or "cancelled")throw new InvalidDataException("SLACK_OCR_FAILED");
                                 if(state.Status!="complete"){ready=false;continue;}
                                 store.SaveOcrResult(job.Id,file,os.Result(a.OcrJob!).GetRawText());a=store.GetAttachment(job.Id,file)!;
+                                }
                             }
                             refs.Add(new{file_id=file,input_hash=a.Hash,ocr_job=a.OcrJob,result_hash=SlackHash.Of(a.Result!),external_ai="deny"});
                             using var extracted=JsonDocument.Parse(a.Result!);texts.Add(extracted.RootElement.GetProperty("text").GetString()??"");
@@ -212,20 +236,15 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
                             if(SlackResultText.OcrOnly(job.Text))store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,output_kind="ocr_text",restriction=SlackRestriction.Instance}),true,true);
                             else{
                                 if(System.Text.Encoding.UTF8.GetByteCount(raw)>48000)throw new InvalidDataException("SLACK_PDF_ANALYSIS_REQUIRES_SMALLER_SECTION");
-                                var session=store.GetSession(job.SessionId);var history=store.History(job.SessionId).Where(x=>x.Id!=job.Id&&x.Phase=="complete").ToArray();
                                 var document=SlackConversation.CurrentDocument(store,job);
-                                var context=SlackConversation.Context(store,session,history,job.Text,options.CompressionThreshold,document);
-                                if(context is null){store.WaitForSummary(job.Id,SlackConversation.JobBudget(store,job));continue;}
-                                var interpreted=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,context,job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
+                                var context=JsonSerializer.Serialize(document);
+                                if(!SlackConversation.Fits(context,job.Text))throw new InvalidDataException("SLACK_INFERENCE_INPUT_BUDGET");
+                                using var inferenceDeadline=CancellationTokenSource.CreateLinkedTokenSource(token);
+                                inferenceDeadline.CancelAfter(TimeSpan.FromSeconds(options.InferenceSeconds+5));
+                                var interpreted=await inference.Chat(job.Id,job.SessionId,context,job.Text,options.OutputTokens,options.InferenceSeconds,inferenceDeadline.Token);
                                 store.Finish(job.Id,JsonSerializer.Serialize(new{ocr=refs,interpretation=interpreted,restriction=SlackRestriction.Instance}),true,true);
                             }
                         }
-                    }else{
-                        var session=store.GetSession(job.SessionId);var history=store.History(job.SessionId).Where(x=>x.Id!=job.Id&&x.Phase=="complete").ToArray();
-                        var context=SlackConversation.Context(store,session,history,job.Text,options.CompressionThreshold);
-                        if(context is null){store.WaitForSummary(job.Id,SlackConversation.Budget(job.Text));continue;}
-                        var result=await priority.Run(t=>inference.Chat(job.Id,job.SessionId,context,job.Text,options.OutputTokens,options.InferenceSeconds,t),options.InferenceSeconds+5,token);
-                        var sensitive=history.Any(x=>x.FileIds.Length>0);store.Finish(job.Id,result,true,sensitive);
                     }
                 }catch(SlackDeferred){store.Defer(job.Id);}
                 catch(SlackPriorityYield yielded)when(!token.IsCancellationRequested){store.SuspendChat(job.Id,yielded.Code);store.Defer(job.Id,yielded.Code);}
@@ -238,22 +257,6 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
             await Task.Delay(1000,token);
         }
     }
-    private async Task Compress(string sessionId,CancellationToken token)
-    {
-        if(!priority.Admission())return;
-        await using var memory=new TaskMemoryQ8(CanonicalStore.DefaultRoot,background:true);
-        if(!memory.Enabled){store.SummaryState(sessionId,"summary_unavailable");store.FailWaitingSummary(sessionId);return;}
-        try{
-            store.SummaryState(sessionId,"summary_started");
-            var completed=await SlackConversation.Compress(store,sessionId,store.WaitingSummaryBudget(sessionId),
-                (source,budget,t)=>priority.Run(ct=>memory.SummarizeSlackAsync(source,ct,budget),TaskMemoryQ8.SlackSummaryOperationSeconds,t,()=>store.HasPendingJobs()),
-                ()=>priority.Admission()&&!store.HasPendingJobs(),token);
-            store.SummaryState(sessionId,completed?"summary_ready":"summary_deferred");
-        }catch(IOException){store.SummaryState(sessionId,"summary_deferred");/* Preserve another owner and the existing checkpoint. */}
-        catch(OperationCanceledException)when(!token.IsCancellationRequested){store.SummaryState(sessionId,"summary_deferred");}
-        catch(Exception e)when(e is InvalidDataException or JsonException or UnauthorizedAccessException){store.SummaryState(sessionId,"summary_unavailable");store.FailWaitingSummary(sessionId);}
-    }
-    internal static SlackStore.Session[] MaintenanceOrder(SlackStore store)=>store.Sessions().OrderByDescending(s=>store.HasSummaryWaiter(s.Id)).ToArray();
     internal async Task Maintenance(CancellationToken token)
     {
         var nextCleanup=DateTimeOffset.MinValue;
@@ -263,27 +266,6 @@ internal sealed class SlackProcessor(SlackOptions options,SlackStore store,Slack
             if(now>=nextCleanup){store.Cleanup(now,false);nextCleanup=now.AddDays(1);}
             // Release derived cache before any early deletion. CPU load alone never deletes a session.
             if(store.StoredBytes()>384L*1024*1024){store.DropSummaryCache();store.Cleanup(now,true,()=>store.StoredBytes()>384L*1024*1024);}
-            if(!store.HasPendingJobs()&&priority.Admission()){
-                foreach(var s in MaintenanceOrder(store)){
-                    if(!priority.Admission()||store.HasPendingJobs())break;
-                    var history=store.History(s.Id).Where(x=>x.Phase=="complete").ToArray();
-                    try{
-                        if(SlackConversation.NeedsCompression(store,s,options.CompressionThreshold))await Compress(s.Id,token);
-                        if(store.HasPendingJobs())break;
-                        if(history.Length==0)continue; // Unacknowledged/uncertain intake is not review evidence.
-                        var source=JsonSerializer.Serialize(history.Select(x=>new{message_id=x.EventId,user=x.Text,result=x.Result}));
-                        var sourceHash=SlackHash.Of(source);if(System.Text.Encoding.UTF8.GetByteCount(source)>16000||store.ExtractionDone(s.Id,sourceHash))continue;
-                        var candidate=await priority.Run(t=>inference.Candidate(s.Id,source,t),65,token);
-                        if(candidate is not null){
-                            var registered=await inference.RegisterProposal(SlackHash.Of(s.Id+sourceHash)[..32],candidate.RequestId,s.Id,token);
-                            store.BindServerProposal(s.Id,registered,candidate.ReviewJson,now);
-                            OcrJobStore.Atomic(Path.Combine(options.Root,"notification.json"),new{pending_count=store.Proposals().Count(p=>p.State=="pending"),revision=SlackHash.Of(registered)});
-                        }
-                        store.ExtractionComplete(s.Id,sourceHash);
-                    }catch(SlackInterrupted){store.ExtractionComplete(s.Id,SlackHash.Of(JsonSerializer.Serialize(history.Select(x=>new{message_id=x.EventId,user=x.Text,result=x.Result}))));}
-                    catch(Exception e)when(e is SlackDeferred or IOException or HttpRequestException or JsonException or InvalidDataException or OperationCanceledException or UnauthorizedAccessException){if(token.IsCancellationRequested)throw new OperationCanceledException(token);}
-                }
-            }
             await Task.Delay(TimeSpan.FromSeconds(60),token);
         }
     }

@@ -140,7 +140,20 @@ internal static class HostValidationIsolation
         CanonicalStore.GuardPath(run);if(Directory.Exists(run))throw new IOException("Fresh validation run required");
         var box=Path.Combine(run,"box");var scratch=Path.Combine(box,"scratch");Directory.CreateDirectory(scratch);CanonicalStore.GuardPath(scratch);
         var sdk=Under(plan.InputRoot,plan.SdkDirectory);var exe=Path.Combine(sdk,"dotnet.exe");
-        var feed=Under(plan.InputRoot,plan.FeedDirectory);var packages=Under(plan.InputRoot,plan.PackageDirectory);
+        var feed=Under(plan.InputRoot,plan.FeedDirectory);
+        var packages=Path.Combine(scratch,"packages");
+        Directory.CreateDirectory(packages);
+        // NuGet can update package metadata or extract missing dependencies during restore.
+        // Keep the admitted cache immutable and give restore a run-local copy.
+        var packagePrefix=Relative(plan.PackageDirectory)+"/";
+        foreach(var file in plan.Files) {
+            token.ThrowIfCancellationRequested();
+            var relative=Relative(file.Path);
+            if(!relative.StartsWith(packagePrefix,StringComparison.Ordinal))continue;
+            var destination=Under(packages,relative[packagePrefix.Length..]);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.WriteAllBytes(destination,lease.Read(Under(plan.InputRoot,relative)));
+        }
         Directory.CreateDirectory(Path.Combine(scratch,"artifacts"));
         File.WriteAllText(Path.Combine(box,"global.json"),JsonSerializer.Serialize(new{sdk=new{version=plan.SdkVersion,rollForward="disable",allowPrerelease=false,paths=new[]{"$host$"}}}));
         var nuget=Path.Combine(box,"NuGet.Config");File.WriteAllText(nuget,"<configuration><packageSources><clear/><add key=\"host-offline\" value=\""+System.Security.SecurityElement.Escape(feed)+"\"/></packageSources></configuration>");
@@ -168,6 +181,7 @@ internal static class HostValidationIsolation
             var project=Under(plan.InputRoot,plan.ProjectPath);var artifacts=Path.Combine(scratch,"artifacts");
             var restore=new[]{"restore",project,"--configfile",nuget,"--packages",packages,"--artifacts-path",artifacts,"--disable-build-servers","-p:NuGetAudit=false","-p:RestoreIgnoreFailedSources=false","-p:UseSharedCompilation=false","-v:minimal"};
             var command=new[]{test.Kind=="dotnet_build"?"build":"test",project,"-c","Release","--no-restore","--artifacts-path",artifacts,"--disable-build-servers","-p:UseSharedCompilation=false","-v:minimal"};
+            if(test.Kind=="dotnet_test")command=[..command,"--results-directory",Path.Combine(scratch,"test-results")];
             foreach(var (name,args) in new[]{("restore",restore),("validate",command)}){
                 token.ThrowIfCancellationRequested();var captureRoot=Path.Combine(run,name);Directory.CreateDirectory(captureRoot);
                 var remaining=CombinedLimit-(int)output.Length-(int)error.Length;if(remaining<=0){reason="output_limit";exit=129;break;}

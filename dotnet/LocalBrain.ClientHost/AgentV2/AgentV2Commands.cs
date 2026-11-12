@@ -5,13 +5,23 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal static class AgentV2Commands
 {
-    public static async Task RunAsync(string[] args, ProjectAllowlist allowlist, ClientConfig config)
+    public static async Task RunAsync(string[] args, ProjectAllowlist allowlist, ClientConfig config,
+        string? controlRoot = null)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "health";
+        if (command == "resume-advice-after-runtime-fault")
+        {
+            if (controlRoot is null || args.Length != 3)
+                throw new ArgumentException("Corrected advice resume requires the dedicated trial and exact task ID");
+            var report = await TaskAgentCoordinator.ResumeAdviceAfterRuntimeFaultAsync(allowlist.Resolve(args[1]),controlRoot,args[2]);
+            Console.WriteLine(JsonSerializer.Serialize(report,ClientConfig.JsonOptions));
+            if (!report.EligibleForCompletion) Environment.ExitCode = 2;
+            return;
+        }
         if(command is "managed-status" or "managed-cancel"){
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
-            Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root):
-                await TaskAgentCoordinator.CancelAsync(root,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact task ID required")),ClientConfig.JsonOptions));return;
+            Console.WriteLine(JsonSerializer.Serialize(command=="managed-status"?await TaskAgentCoordinator.StatusAsync(root,controlRoot):
+                await TaskAgentCoordinator.CancelAsync(root,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact task ID required"),controlRoot),ClientConfig.JsonOptions));return;
         }
         if(command=="reference-learning-export"){
             if(args.Length!=3)throw new ArgumentException("reference-learning-export requires registered workspace and existing local candidate hash");
@@ -57,7 +67,7 @@ internal static class AgentV2Commands
             var root=allowlist.Resolve(args[1]);var path=Path.GetFullPath(args[2]);CanonicalStore.GuardPath(path);
             if(new FileInfo(path).Length>2_000_000)throw new InvalidDataException("Publisher policy exceeds Host input budget");
             var policy=JsonSerializer.Deserialize<HostValidationPolicy.Policy>(await File.ReadAllTextAsync(path),ClientConfig.JsonOptions)??throw new InvalidDataException("Missing Host publisher policy");
-            using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
+            using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             Console.WriteLine(JsonSerializer.Serialize(await HostValidationRegistration.RegisterAsync(store,root,policy),ClientConfig.JsonOptions));return;
         }
         if(command=="adoption-review") {
@@ -93,17 +103,32 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { local_manifest_hash = hash, adoption_status = "LOCAL_ONLY_NOT_ADOPTED" }));
             return;
         }
-        if(command is "egress-pending" or "approve-export" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+        if(command is "egress-pending" or "approve-export" or "rescue-reserve-stopped" or "rescue-preview" or "rescue-run" or "rescue-advice-prepare" or "rescue-advice-run" or "rescue-edit-prepare" or "rescue-edit-run" or "rescue-export" or "rescue-import" or "rescue-validate" or "rescue-promote" or "learning-extract" or "learning-preview" or "learning-adoption-preview" or "learning-adoption-prepare" or "adoption-prepare" or "adoption-prepare-human" or "adoption-confirm" or "adoption-dispatch") {
+            if (command == "rescue-reserve-stopped" && (controlRoot is null || args.Length != 3))
+                throw new ArgumentException("Stopped rescue reservation requires the dedicated trial and exact task ID");
             var root=allowlist.Resolve(args.ElementAtOrDefault(1)??Environment.CurrentDirectory);
-            using var store=new CanonicalStore(CanonicalStore.DefaultRoot);
+            using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
             var canonicalWorkspaceId=HostTaskJournal.WorkspaceId(root);
             var task=command is "adoption-confirm" or "adoption-dispatch"
                 ?store.ResolveAdoptionOwner(canonicalWorkspaceId,args.ElementAtOrDefault(2)??throw new ArgumentException("Exact intent/approval identity required"),command=="adoption-dispatch")
                 :store.LatestTask(canonicalWorkspaceId)??throw new InvalidDataException("No canonical task");
             var request=AgentTaskRequest.Parse(store.TaskRequest(task.TaskId));var state=JsonDocument.Parse(task.StateJson);
+            if (command == "rescue-reserve-stopped" && task.TaskId != args[2])
+                throw new UnauthorizedAccessException("Stopped rescue task is not the current workspace task");
             var head=state.RootElement.GetProperty("git_head").GetString()??throw new InvalidDataException("No canonical HEAD");
+            var submissionLock=Path.Combine(TaskAgentCoordinator.WorkspaceDirectory(root,controlRoot),"submission.lock");
+            if(request.CommandExecution is not null)CanonicalStore.GuardPath(submissionLock);
+            using var managedLease=request.CommandExecution is null?null:
+                new FileStream(submissionLock,FileMode.Open,FileAccess.ReadWrite,FileShare.None);
+            using var managedGrant=request.CommandExecution is null?null:
+                TaskAgentCoordinator.EnterStoppedTaskGrant(root,task.TaskId,controlRoot);
             using var journal=new HostTaskJournal(store,root,task.TaskId,request,head);
             if(config.PersonalValidation)journal.EnablePersonalValidation();
+            if (command == "rescue-reserve-stopped") {
+                var ticketHash = await new HostRescue(journal).ReserveStoppedTrialAsync(task);
+                Console.WriteLine(JsonSerializer.Serialize(new { ticket_hash = ticketHash, status = "RESERVED_PROTOCOL_ONLY" }));
+                return;
+            }
             if(command=="egress-pending") {
                 var manifestEvents=store.EventIds(task.TaskId).Select(id=>store.ReadTaskEvent(task.TaskId,id)).Where(e=>e.Input.EventType=="external_export_prepared");
                 Console.WriteLine(JsonSerializer.Serialize(manifestEvents.Select(e=>new{e.EventId,e.Input.Metadata}),ClientConfig.JsonOptions));return;
@@ -115,6 +140,30 @@ internal static class AgentV2Commands
                 Console.WriteLine(JsonSerializer.Serialize(new{intent_hash=new DecisionAdoption(store,task.TaskId).PrepareProposal(receipt,requestId),adoption_status="PENDING_EXPLICIT_KNOWLEDGE_ADOPTION_CONFIRMATION"}));return;
             }
             var boundHash=args.ElementAtOrDefault(2)??throw new ArgumentException("Exact manifest/ticket/intent/approval identity required");
+            if(command=="learning-preview") {
+                var candidate=new DifferentialLearning(journal).RequireCandidate(boundHash);
+                Console.WriteLine(JsonSerializer.Serialize(candidate,ClientConfig.JsonOptions));
+                return;
+            }
+            if(command=="learning-adoption-preview") {
+                var learning=new DifferentialLearning(journal);
+                var body=learning.DraftAdoptionBody(boundHash);
+                var compact=learning.DraftAdoptionBody(boundHash,compact:true);
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    candidate_hash=boundHash, body, compact_body=compact, adoption_status="QUARANTINED_NOT_ADOPTED"
+                },ClientConfig.JsonOptions));
+                return;
+            }
+            if(command=="learning-adoption-prepare") {
+                var requestId=args.ElementAtOrDefault(3)??throw new ArgumentException("Exact adoption request ID required");
+                var receipt=await RescueInput.ReadAsync(Console.OpenStandardInput(),250_000);
+                var intent=new DecisionAdoption(store,task.TaskId).PrepareLearningProposal(journal,boundHash,receipt,requestId);
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    candidate_hash=boundHash, intent_hash=intent,
+                    adoption_status="PENDING_EXPLICIT_KNOWLEDGE_ADOPTION_CONFIRMATION"
+                },ClientConfig.JsonOptions));
+                return;
+            }
             if(command=="adoption-prepare-human"){
                 var references=await RescueInput.ReadAsync(Console.OpenStandardInput());
                 var requestId=args.ElementAtOrDefault(3)??throw new ArgumentException("Exact adoption request ID required");
@@ -133,15 +182,56 @@ internal static class AgentV2Commands
             if(command=="approve-export") {
                 // Host administrative command, never a model/MCP operation.
                 var manifest=JsonSerializer.Deserialize<HostEgress.Manifest>(store.ReadEvidence(boundHash))??throw new InvalidDataException("Manifest missing");
-                if(manifest.TaskId!=task.TaskId)throw new UnauthorizedAccessException("Approval task mismatch");
-                if(Console.IsInputRedirected || Console.IsOutputRedirected)throw new InvalidOperationException("Export approval requires an interactive human terminal");
-                Console.WriteLine(JsonSerializer.Serialize(manifest,ClientConfig.JsonOptions));
-                Console.WriteLine("Review the redacted export payload and exact scope. Type its complete manifest SHA-256 to authorize this export once: "+boundHash);
-                if(Console.ReadLine()!=boundHash)throw new UnauthorizedAccessException("Exact human export approval was not confirmed");
-                store.BindExportApproval(task.TaskId,boundHash,manifest.PolicyHash,DateTimeOffset.UtcNow.AddMinutes(15),Environment.UserName);
-                journal.Record("human_export_approval",new{manifest_hash=boundHash,policy_hash=manifest.PolicyHash},"human_explicit");return;
+                new HostEgress(store).ApproveInteractive(manifest,boundHash,journal);
+                return;
             }
             var rescue=new HostRescue(journal);var ticket=rescue.Load(boundHash);
+            if(command is "rescue-run" or "rescue-edit-run") {
+                var direct=command=="rescue-edit-run";
+                if(direct ? args.Length!=5 : args.Length!=3 && (args.Length!=5 || args[3]!="--development-codex"))
+                    throw new ArgumentException(direct
+                        ?"rescue-edit-run requires workspace, ticket hash, approved manifest hash and absolute codex.exe"
+                        :"rescue-run requires workspace and ticket hash, optionally --development-codex <absolute codex.exe>");
+                var result=await rescue.RunExternalAsync(boundHash,developmentCodex:args.ElementAtOrDefault(4),
+                    editManifestHash:direct?args[3]:null);
+                Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
+                if(result.Status!="VALIDATED_IN_RESCUE")Environment.ExitCode=2;
+                return;
+            }
+            if(command is "rescue-preview" or "rescue-advice-prepare" or "rescue-edit-prepare") {
+                var flags=args.Skip(3).ToArray();
+                var approve=flags.Contains("--approve",StringComparer.Ordinal);
+                var retry=flags.Contains("--retry-format",StringComparer.Ordinal);
+                var providerIndex=Array.IndexOf(flags,"--provider");
+                var provider=providerIndex<0?"sol":flags.ElementAtOrDefault(providerIndex+1);
+                if(provider is not ("sol" or "terra") ||
+                    flags.Length!=(approve?1:0)+(retry?1:0)+(providerIndex<0?0:2) ||
+                    ((retry || providerIndex>=0) && command=="rescue-preview") || Console.IsOutputRedirected ||
+                    (approve && Console.IsInputRedirected))
+                    throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
+                var export=command switch {
+                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash,retry,provider),
+                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash,retry,provider),
+                    _=>rescue.PreparedExport(ticket)
+                };
+                if (approve)
+                {
+                    Console.WriteLine(export.Payload);
+                    new HostEgress(store).ApproveInteractive(export.Manifest,export.ManifestHash,journal);
+                    return;
+                }
+                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.RescueTarget(export).Model,manifest_hash=export.ManifestHash,
+                    manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
+                return;
+            }
+            if(command=="rescue-advice-run") {
+                if(args.Length!=4 && (args.Length!=6 || args[4]!="--development-codex"))
+                    throw new ArgumentException("rescue-advice-run requires a ticket and approved manifest hash");
+                var advice=await rescue.RunAdviceAsync(boundHash,args[3],args.ElementAtOrDefault(5));
+                Console.WriteLine(JsonSerializer.Serialize(advice,ClientConfig.JsonOptions));
+                if(advice.Verdict!="GUIDANCE")Environment.ExitCode=2;
+                return;
+            }
             if(command=="rescue-export") {
                 var export=rescue.PreparedExport(ticket);using var lease=new HostEgress(store).AuthorizeDispatch(export,"codex_protocol");Console.Write(export.Payload);return;
             }
@@ -162,27 +252,6 @@ internal static class AgentV2Commands
             Console.WriteLine(JsonSerializer.Serialize(new { workspace = root, eligible_for_completion = validation.IsComplete,
                 validation }, ClientConfig.JsonOptions));
             if (!validation.IsComplete) Environment.ExitCode = 2;
-            return;
-        }
-        if (command == "laya-health")
-        {
-            await LayaHealthAsync();
-            return;
-        }
-        if (command == "reviewer-route-health")
-        {
-            await using var supervisor = new LayaSupervisor();
-            var sample = new { risk = "normal", files_changed = 2, diff_lines = 40,
-                tests_passed = true, languages = ".cs", task_kind = "bug_fix",
-                public_api = false, security = false, concurrency = false };
-            var prediction = await supervisor.PredictReviewRouteAsync(sample);
-            if (prediction.Route is not ("copilot" or "sol" or "both") ||
-                !double.IsFinite(prediction.Confidence) ||
-                prediction.Confidence is < 0 or > 1)
-                throw new InvalidDataException("Laya reviewer route response is invalid");
-            Console.WriteLine(JsonSerializer.Serialize(new { laya_reviewer_route = "ready",
-                route = prediction.Route, confidence = prediction.Confidence,
-                latency_ms = prediction.LatencyMs }, ClientConfig.JsonOptions));
             return;
         }
         if (command == "sol-health")
@@ -219,11 +288,10 @@ internal static class AgentV2Commands
         }
         if (command == "decide-batch")
         {
-            await using var supervisor = new LayaSupervisor();
             while (await Console.In.ReadLineAsync() is { } line)
             {
                 var state = ParseSupervisorState(line);
-                Console.WriteLine(JsonSerializer.Serialize(await SupervisorDecider.DecideAsync(state, supervisor),
+                Console.WriteLine(JsonSerializer.Serialize(await SupervisorDecider.DecideAsync(state),
                     ClientConfig.JsonOptions));
             }
             return;
@@ -267,10 +335,10 @@ internal static class AgentV2Commands
             var root = allowlist.Resolve(args.ElementAtOrDefault(1) ?? Environment.CurrentDirectory);
             if(request.CommandExecution is not null){
                 if(command=="recover")throw new InvalidOperationException("Managed command tasks use their existing Host owner and durable task identity");
-                Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume"),ClientConfig.JsonOptions));return;
+                Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume",control:controlRoot),ClientConfig.JsonOptions));return;
             }
             var result = await AgentTaskRunner.RunAsync(root, workspace, request, config,
-                resume: command != "run", recover: command == "recover");
+                resume: command != "run", recover: command == "recover", controlPlaneRoot:controlRoot);
             Console.WriteLine(JsonSerializer.Serialize(result, ClientConfig.JsonOptions));
             if (!result.EligibleForCompletion) Environment.ExitCode = 2;
             return;
@@ -287,7 +355,7 @@ internal static class AgentV2Commands
             if (result.ToolErrors > 0 || string.IsNullOrWhiteSpace(result.Text)) Environment.ExitCode = 2;
             return;
         }
-        throw new ArgumentException("agent-v2 commands: path, pi-health, laya-health, reviewer-route-health, sol-health, approve-high, knowledge-health, ask, critic, decide, decide-batch, test, run, resume, recover, validation");
+        throw new ArgumentException("agent-v2 commands: path, pi-health, sol-health, approve-high, knowledge-health, ask, critic, decide, decide-batch, test, run, resume, recover, validation");
     }
 
     private static SupervisorState ParseSupervisorState(string input)
@@ -331,33 +399,6 @@ internal static class AgentV2Commands
             provider = "localbrain",
             session_id = data.GetProperty("sessionId").GetString(), stderr_lines = worker.StderrLineCount },
             ClientConfig.JsonOptions));
-    }
-
-    private static async Task LayaHealthAsync()
-    {
-        var script = Path.Combine(AppContext.BaseDirectory, "scripts", "laya_worker.py");
-        if (!File.Exists(script)) throw new FileNotFoundException("Laya worker script is not deployed", script);
-        var wslScript = await WslPathAsync(script);
-        var start = new ProcessStartInfo("wsl.exe");
-        foreach (var arg in new[] { "-d", "Ubuntu", "--exec",
-            "/home/worker/localbrain-v2/laya-venv/bin/python", "-u", wslScript, "--threads", "2" })
-            start.ArgumentList.Add(arg);
-        var ready = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var worker = JsonlWorker.Start(start, message =>
-        {
-            if (message.TryGetProperty("type", out var kind) && kind.GetString() == "ready")
-                ready.TrySetResult(message);
-        });
-        var startup = await ready.Task.WaitAsync(TimeSpan.FromMinutes(5));
-        var state = new { phase = "debugging", tool_calls = 4, files_read = 2, files_changed = 1,
-            tests_run = 1, tests_passed = false, same_error_count = 0, same_command_count = 0,
-            replans = 0, context_usage = 0.2, progress = "medium", last_action_changed_state = true };
-        var answer = await worker.SendAsync(new() { ["state"] = state }, TimeSpan.FromSeconds(60));
-        if (answer.TryGetProperty("error", out _)) throw new InvalidOperationException("Laya inference failed");
-        Console.WriteLine(JsonSerializer.Serialize(new { laya = "ready", startup,
-            action = answer.GetProperty("action").GetString(),
-            confidence = answer.GetProperty("confidence").GetDouble(),
-            latency_ms = answer.GetProperty("latency_ms").GetInt32() }, ClientConfig.JsonOptions));
     }
 
     private static async Task<string> WslPathAsync(string windowsPath)
