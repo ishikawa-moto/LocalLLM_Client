@@ -9,6 +9,24 @@ internal static class AgentV2Commands
         string? controlRoot = null)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "health";
+        if(command=="egress-set")
+        {
+            Slack.RestrictedExecution.DenyExternal();
+            if(args.Length<3 || args.Length>103 || args[2] is not ("deny" or "manual" or "auto") ||
+                (args[2]=="deny")!=(args.Length==3))
+                throw new ArgumentException("egress-set requires a registered workspace and deny, or manual/auto with exact relative files");
+            var root=allowlist.Resolve(args[1]);
+            var scope=args.Skip(3).Select(path=>HostEgress.NormalizePath(root,path)).ToArray();
+            if(scope.Any(path=>path.IndexOfAny(['*','?'])>=0) ||
+                scope.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=scope.Length)
+                throw new UnauthorizedAccessException("Egress must name distinct exact files");
+            var exports=scope.Length==0?[]:new[]{"task_evidence_only"}.Concat(scope.Select(path=>"file:"+path)).ToArray();
+            using var store=new CanonicalStore(controlRoot??CanonicalStore.DefaultRoot);
+            var result=store.SetRepositoryExportPolicy(new(HostTaskJournal.RepositoryId(root),root,args[2],scope,exports),
+                Environment.UserDomainName+"\\"+Environment.UserName);
+            Console.WriteLine(JsonSerializer.Serialize(result,ClientConfig.JsonOptions));
+            return;
+        }
         if (command == "resume-advice-after-runtime-fault")
         {
             if (controlRoot is null || args.Length != 3)

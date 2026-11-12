@@ -26,7 +26,11 @@ The Host can automatically delegate a stalled Qwen task when the repository has
 an audited `auto` HostEgress policy, explicit export scope for each permitted
 file, and a registered .NET validation publisher. Keep the policy and
 `reviewers.json` in the Host control root. A project cannot enable either from
-its checkout. A `manual` policy still requires its exact export approval.
+its checkout. From the Host administration CLI, use
+`localbrain agent-v2 egress-set <registered-workspace> auto <relative-file>...`
+to audit a specific file scope for that repository. A `manual` policy requires
+its exact export approval. Use `deny` without files to revoke the repository's
+permission. Local verified .NET completion does not need export permission.
 
 Set `fullRescueRouting` to enable the four-model order. Each enabled endpoint
 uses `rescueEnabled`, an absolute CLI path, its SHA-256, and a model in the

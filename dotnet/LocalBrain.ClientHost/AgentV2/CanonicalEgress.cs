@@ -5,6 +5,26 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal sealed partial class CanonicalStore
 {
+    internal PolicyStatus SetRepositoryExportPolicy(Policy policy,string operatorName)
+    {
+        lock(gate)
+        {
+            var path=Path.Combine(Root,"codex-egress-policies.json");
+            GuardPath(path);
+            var expected=Scalar("SELECT new_hash FROM egress_policy_audit ORDER BY audit_sequence DESC LIMIT 1;") as string;
+            Policy[] current=[];
+            if(File.Exists(path))
+            {
+                if(new FileInfo(path).Length>128*1024)throw new InvalidDataException("Host export policy exceeds its budget");
+                var bytes=File.ReadAllBytes(path);
+                if(Hash(bytes)!=expected)throw new UnauthorizedAccessException("Existing export policy does not match its audit");
+                current=JsonSerializer.Deserialize<Policy[]>(bytes)??throw new InvalidDataException("Invalid Host export policy");
+            }
+            else if(expected is not null)throw new UnauthorizedAccessException("Existing audited export policy file is missing");
+            ChangePolicies(current.Where(entry=>entry.RepositoryId!=policy.RepositoryId).Append(policy).ToArray(),operatorName);
+            return ReadPolicy(policy.RepositoryId,policy.CanonicalRepoRoot);
+        }
+    }
     internal sealed record StoredEvent(string EventId, long Sequence, EventInput Input);
     internal sealed record AcceptedPolicy(Policy Policy, string Hash);
     private int activeExportLeases;

@@ -103,8 +103,10 @@ internal static class AgentTaskRunner
         var fileOnly = request.CommandExecution?.MaxCommands == 0 &&
             request.RequiredTests.All(test => test.Kind == "git_diff_check");
         var rescue=new HostRescue(journal);
-        var automaticSettings=fileOnly?null:rescue.AutomaticSettings();
-        var fullRescueRouting=automaticSettings?.FullRescueRouting==true;
+        var settings=fileOnly?null:ReviewerCli.Load(canonical.Root);
+        var canDispatch=settings is not null && rescue.CanDispatchAutomatically();
+        var fullRescueRouting=settings?.FullRescueRouting==true &&
+            request.RequiredTests.Any(test=>test.Kind=="dotnet_test");
         var freshLowRepair=fullRescueRouting && request.EffectiveRisk=="LOW";
         if (request.EffectiveRisk == "HIGH" && checkpoint?.Phase is not
             ("awaiting_sol_review" or "awaiting_external_review"))
@@ -375,12 +377,12 @@ internal static class AgentTaskRunner
             rescueStarting=rescue.InitialStartingState();
         var rescueEligible=!fileOnly && (noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
             after.UnexpectedFiles.Length==0 && !testMutatedWorktree && !changedVerificationInputs && decision.Action!="STOP";
-        var difficulty=rescueEligible && fullRescueRouting
+        var difficulty=rescueEligible && fullRescueRouting && canDispatch
             ? await RescueRouting.ClassifyAsync(journal,wslRoot,request,after,tests,
-                automaticSettings!.DifficultyConfidenceThreshold,token)
+                settings!.DifficultyConfidenceThreshold,token)
             : null;
-        var automaticProviders=rescueEligible && automaticSettings is not null
-            ? HostRescue.AutomaticProviders(difficulty?.Level??request.EffectiveRisk,automaticSettings) : [];
+        var automaticProviders=rescueEligible && canDispatch
+            ? HostRescue.AutomaticProviders(difficulty?.Level??request.EffectiveRisk,settings!) : [];
         var solRescue = checkpoint?.Advice is {} usedAdvice
             ? new SolReviewer.Rescue("GUIDANCE", usedAdvice.Steps, 1)
             : new SolReviewer.Rescue("NOT_RUN", [], 0);
@@ -412,10 +414,10 @@ internal static class AgentTaskRunner
             }
             if(fullRescueRouting) noProgress=true;
             try {
-                if (automaticProviders.Length==0 && !fullRescueRouting)
+                if (automaticProviders.Length==0 && (!fullRescueRouting || HasManualRescuePolicy(canonical,windowsRoot)))
                     await rescue.ReserveAsync(rescueStarting,token,failure);
                 if(automaticProviders.Length==0 && fullRescueRouting)
-                    journal.Record("codex_rescue_automatic_unresolved",new{reason="NO_ENABLED_PROVIDER",difficulty=difficulty?.Level},"host_verified");
+                    journal.Record("codex_rescue_automatic_unresolved",new{reason=canDispatch?"NO_ENABLED_PROVIDER":"AUTOMATIC_EGRESS_NOT_AUTHORIZED",difficulty=difficulty?.Level},"host_verified");
             }
             catch(Exception error)when(error is IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
                 journal.Record("codex_rescue_unavailable",new{reason=error.GetType().Name,scope="Optional rescue unavailable; task state retained"},"host_verified");
