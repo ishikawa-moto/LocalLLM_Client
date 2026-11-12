@@ -247,8 +247,16 @@ internal static class AgentTaskRunner
             if (tests.Count > 0)
             {
                 var failedTests = StableTestFailures(tests);
-                testsWithoutImprovement = failedTests.Length != 0 && !changedThisTurn &&
-                    failedTests == previousFailedTests ? testsWithoutImprovement + 1 : 0;
+                var repeatedFailures = failedTests.Length != 0 && failedTests == previousFailedTests;
+                // Repeated generic errors are insufficient when the diff changed. Reserve a turn
+                // for authorized advice only when the Host observed the same failing .NET cases.
+                var canOfferAdvice = repeatedFailures && changedThisTurn && activeAdvice is null &&
+                    request.EffectiveRisk == "LOW" && request.CommandExecution is { } contract &&
+                    turn < contract.MaxActorTurns && !testMutatedWorktree &&
+                    tests.Where(test => !test.Passed).All(test => test.FailedCasesSha256 is not null) &&
+                    HasManualRescuePolicy(canonical, windowsRoot);
+                testsWithoutImprovement = repeatedFailures && (!changedThisTurn || canOfferAdvice)
+                    ? testsWithoutImprovement + 1 : 0;
                 previousFailedTests = failedTests;
                 decision = await SupervisorDecider.DecideAsync(new SupervisorState("validation",
                     (int)Math.Min(int.MaxValue,journal.CumulativeTools), actor.FilesRead, after.ChangedFiles.Length, tests.Count,
@@ -482,6 +490,19 @@ internal static class AgentTaskRunner
             externalReview?.AstraStatus ?? "NOT_RUN", externalReview?.Passed ?? false);
     }
 
+    private static bool HasManualRescuePolicy(CanonicalStore canonical, string root)
+    {
+        try
+        {
+            return canonical.ReadPolicy(HostTaskJournal.RepositoryId(root), root)
+                is { AuditMatched: true, Mode: "manual" };
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     internal static string StableTestFailures(IReadOnlyList<ToolRouter.TestResult> tests)
     {
         var failures = tests.Where(test => !test.Passed).ToArray();
@@ -491,7 +512,7 @@ internal static class AgentTaskRunner
         // but compare the stable outcome of the same ordered required operations for retry decisions.
         if (failures.Length == 0) return "";
         return string.Join("|", tests.Select(test => test.Passed ? "passed" :
-            $"{test.Kind}:{test.Route}:{test.ExitCode}:{test.ExecutedTests}:{string.Join(",", test.FailureCodes.Order(StringComparer.Ordinal))}"));
+            $"{test.Kind}:{test.Route}:{test.ExitCode}:{test.ExecutedTests}:{string.Join(",", test.FailureCodes.Order(StringComparer.Ordinal))}:{test.FailedCasesSha256}"));
     }
 
     private static string BuildActorPrompt(AgentTaskRequest request, SecondBrainEvidence.Packet knowledge)

@@ -32,6 +32,25 @@ internal static class SupervisorRulesTests
             AgentTaskRunner.StableTestFailures([passed, failure]) == AgentTaskRunner.StableTestFailures([failure, passed]))
             throw new Exception("Test stall evidence must track stable failures without treating cancellation as a failed test");
 
+        ToolRouter.TestResult Capture(string stdout, string reason = "completed")
+        {
+            var output = Encoding.UTF8.GetBytes(stdout);
+            return ToolRouter.IsolationResult(new("dotnet_test", "Fixture.csproj"), "windows",
+                reason, 1, output, [], 400, output);
+        }
+
+        const string summary = "Failed!  - Failed:     2, Passed:     1, Skipped:     0, Total:     3";
+        var twoCases = Capture("  Failed FoldOrdersByInstant [13 ms]\r\n  Failed SkipsGap [13 ms]\r\n" + summary);
+        var reordered = Capture("  Failed SkipsGap [1 ms]\n  Failed FoldOrdersByInstant [5 ms]\n" + summary);
+        var different = Capture("  Failed SkipsGap [1 ms]\n  Failed TargetZoneDate [5 ms]\n" + summary);
+        if (twoCases.FailedCasesSha256 is null ||
+            AgentTaskRunner.StableTestFailures([twoCases]) != AgentTaskRunner.StableTestFailures([reordered]) ||
+            AgentTaskRunner.StableTestFailures([twoCases]) == AgentTaskRunner.StableTestFailures([different]) ||
+            Capture("  Failed SkipsGap [1 ms]\n" + summary).FailedCasesSha256 is not null ||
+            Capture("  Failed SkipsGap [1 ms]\n  Failed FoldOrdersByInstant [5 ms]\n" + summary,
+                "cancelled").FailedCasesSha256 is not null)
+            throw new Exception("Failed case identity must survive ordering and timing changes, and require complete test evidence");
+
         var task = AgentTaskRequest.Parse("""
             {"requirement":"Fix the public fixture","acceptance_criteria":["Tests pass"],"risk":"LOW","approved_high_risk":false,"allowed_files":["Fixture.cs"],"required_tests":[{"kind":"dotnet_test","target":"Fixture.csproj"}]}
             """);
