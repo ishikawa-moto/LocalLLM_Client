@@ -204,7 +204,7 @@ internal static class AgentV2Commands
                 var retry=flags.Contains("--retry-format",StringComparer.Ordinal);
                 var providerIndex=Array.IndexOf(flags,"--provider");
                 var provider=providerIndex<0?"sol":flags.ElementAtOrDefault(providerIndex+1);
-                if(provider is not ("sol" or "terra") ||
+                if((provider is not ("sol" or "terra") && !(command=="rescue-advice-prepare" && provider is ("haiku" or "opus"))) ||
                     flags.Length!=(approve?1:0)+(retry?1:0)+(providerIndex<0?0:2) ||
                     ((retry || providerIndex>=0) && command=="rescue-preview") || Console.IsOutputRedirected ||
                     (approve && Console.IsInputRedirected))

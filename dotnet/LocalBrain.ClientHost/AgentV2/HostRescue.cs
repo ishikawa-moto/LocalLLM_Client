@@ -90,7 +90,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             base_commit=starting.State.Head,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,
             requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=Request.AllowedFiles,required_tests=Request.RequiredTests,
             failed_diff=snapshot.ReviewDiff,failure_observation=observation,parity_deviation=starting.State.ParityDeviation,
-            response_schema="Candidate{TaskId,AssignmentId,Generation,BaseCommit,StartingStateHash,StartingDiffHash,Changes[{Path,BeforeHash,Content}],Summary}. Return proposed full UTF8 file contents only; no shell commands. BeforeHash must equal the starting file hash, or null for a new file.",
+            response_schema="Return one JSON object only, without markdown. Candidate{TaskId,AssignmentId,Generation,BaseCommit,StartingStateHash,StartingDiffHash,Changes[{Path,BeforeHash,Content}],Summary}. Return proposed full UTF8 file contents; no shell commands. BeforeHash must equal the starting file hash, or null for a new file.",
             starting_write_files=startingFiles.Select(f=>new{f.Path,f.Hash}),starting_source=sources,
             locally_verified_tests_required=true,candidate_is_untrusted=true});
         var export=journal.PrepareExternalPacket(packet,"codex_protocol",files:Request.AllowedFiles);
@@ -196,7 +196,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
 
     internal static bool AutomaticFallback(ExternalResult result) => result.Status=="VERIFIED_TEST_FAILURE" ||
         result.Status=="UNAVAILABLE" && result.Reason is
-            ("AUTHENTICATION" or "CHATGPT_LOGIN_REQUIRED" or "USAGE_LIMIT" or "CODEX_CLI_NOT_INSTALLED" or
+            ("AUTHENTICATION" or "CHATGPT_LOGIN_REQUIRED" or "USAGE_LIMIT" or "RESCUE_CLI_NOT_INSTALLED" or
              "CLI_HASH_CHANGED" or "RESCUE_MODEL_CHANGED" or "AUTOMATIC_RESCUE_NOT_ENABLED");
 
     internal HostEgress.Prepared PrepareAdvice(string ticketHash, bool formatRetry=false, string provider="sol") => PrepareRescueMode(ticketHash,"advice",
@@ -208,7 +208,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     private HostEgress.Prepared PrepareRescueMode(string ticketHash,string mode,string instructions,bool formatRetry,string provider)
     {
         Slack.RestrictedExecution.DenyExternal();
-        if (provider is not ("sol" or "terra")) throw new ArgumentException("Unsupported rescue provider",nameof(provider));
+        if (provider is not ("sol" or "terra") && !(mode=="advice" && provider is ("haiku" or "opus")))
+            throw new ArgumentException("Unsupported rescue provider for this mode",nameof(provider));
         var model=ReviewerCli.ConfiguredRescueModel(ReviewerCli.Load(Store.Root),provider);
         var ticket=Load(ticketHash);
         journal.RequireMutationApproval();
@@ -453,7 +454,13 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
                     reason=error.Message},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
                 return new("INVALID",Reason:error.Message);
             }
-            candidate=ParseExternalCandidate(candidateText);
+            try { candidate=ParseExternalCandidate(candidateText); }
+            catch(Exception error) when(error is JsonException or InvalidDataException or InvalidOperationException) {
+                Record("codex_rescue_candidate_invalid",new {ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
+                    provider,requested_model=model,response_sha256=CanonicalStore.Hash(Encoding.UTF8.GetBytes(candidateText)),
+                    reason=error.GetType().Name},[ticketHash,export.ManifestHash],workspace:ticket.WorkspaceId);
+                return new("INVALID",Reason:"CANDIDATE_PROTOCOL_INVALID");
+            }
             candidateResponseHash=Store.PutEvidence(Encoding.UTF8.GetBytes(candidateText));
             Record("codex_rescue_external_response",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
                 response_hash=candidateResponseHash,provider,requested_model=model,response.ExitCode,
