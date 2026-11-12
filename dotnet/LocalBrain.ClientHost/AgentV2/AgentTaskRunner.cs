@@ -311,10 +311,17 @@ internal static class AgentTaskRunner
                 testMutatedWorktree, falseVerified, recoveryCount, token);
         }
         noProgress |= testsWithoutImprovement > 0;
+        var failedRequiredTests = tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray();
+        var actorTurnLimit = request.CommandExecution?.MaxActorTurns ?? (recoveryCount == 1 ? 9 : 6);
+        var actorBudgetEndedWithFailures = actorTurns >= actorTurnLimit && failedRequiredTests.Length != 0;
+        var rescueEligible=!fileOnly && (noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
+            after.UnexpectedFiles.Length==0 && !testMutatedWorktree && decision.Action!="STOP";
+        var rescue=new HostRescue(journal);
+        var automaticProviders=rescueEligible?rescue.AutomaticProviders():[];
         var solRescue = checkpoint?.Advice is {} usedAdvice
             ? new SolReviewer.Rescue("GUIDANCE", usedAdvice.Steps, 1)
             : new SolReviewer.Rescue("NOT_RUN", [], 0);
-        if (checkpoint?.Advice is null && request.CommandExecution?.MaxCommands != 0 && noProgress &&
+        if (automaticProviders.Length==0 && checkpoint?.Advice is null && request.CommandExecution?.MaxCommands != 0 && noProgress &&
             after.UnexpectedFiles.Length == 0 && !testMutatedWorktree)
         {
             try
@@ -329,14 +336,21 @@ internal static class AgentTaskRunner
                 solRescue = new("UNAVAILABLE", [], 0);
             }
         }
-        var failedRequiredTests = tests.Where(test=>!test.Passed).Select(test=>test.Kind).ToArray();
-        var actorTurnLimit = request.CommandExecution?.MaxActorTurns ?? (recoveryCount == 1 ? 9 : 6);
-        var actorBudgetEndedWithFailures = actorTurns >= actorTurnLimit && failedRequiredTests.Length != 0;
-        if(!fileOnly && (noProgress || actorBudgetEndedWithFailures) && rescueStarting is not null &&
-            after.UnexpectedFiles.Length==0 && !testMutatedWorktree && decision.Action!="STOP") {
-            try {await new HostRescue(journal).ReserveAsync(rescueStarting,token,
-                new(actorTurns,actor?.NoProgress==true,testsWithoutImprovement,decision.Action,
-                    failedRequiredTests,noProgress?"qwen_stalled":"actor_turn_budget_with_failed_tests"));}
+        if(rescueEligible && rescueStarting is not null) {
+            var failure=new HostRescue.FailureObservation(actorTurns,actor?.NoProgress==true,testsWithoutImprovement,
+                decision.Action,failedRequiredTests,noProgress?"qwen_stalled":"actor_turn_budget_with_failed_tests");
+            if (automaticProviders.Length!=0 && !falseVerified &&
+                await rescue.TryAutomaticAsync(automaticProviders,rescueStarting,failure,token))
+            {
+                var promoted=await GitEvidence.CaptureAsync(windowsRoot,request.AllowedFiles,token);
+                return await FinishCheckpointReviewAsync(windowsRoot,wslRoot,request,promoted,knowledge,
+                    taskId,actorSessionId,actorTurns,requestHash,recoveryCount,null,token,
+                    falseVerified,replans,testsWithoutImprovement);
+            }
+            try {
+                if (automaticProviders.Length==0)
+                    await rescue.ReserveAsync(rescueStarting,token,failure);
+            }
             catch(Exception error)when(error is IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {
                 journal.Record("codex_rescue_unavailable",new{reason=error.GetType().Name,scope="Optional rescue unavailable; task state retained"},"host_verified");
             }

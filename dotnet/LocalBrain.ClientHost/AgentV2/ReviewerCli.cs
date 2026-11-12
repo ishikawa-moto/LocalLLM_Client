@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
@@ -10,20 +11,52 @@ namespace LocalBrain.ClientHost.AgentV2;
 internal static class ReviewerCli
 {
     internal sealed record Endpoint(string Path, string Sha256, bool SubscriptionVerified = false,
-        bool PacketBoundaryVerified = false);
-    internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null);
+        bool PacketBoundaryVerified = false, string? Model = null, bool RescueEnabled = false);
+    internal sealed record Settings(Endpoint? Sol = null, Endpoint? Opus = null, Endpoint? Terra = null);
     internal sealed record Reply(string Status, string Answer = "", string Reason = "", int? ExitCode = null,
         string Diagnostic = "", int EditEvents = 0, int CommandEvents = 0, bool CodeModeUnavailable = false);
     internal static string Model(string provider) => provider switch {
-        "sol" => "gpt-6.1-sol", "copilot" => "claude-opus-5.5",
+        "sol" => "gpt-6.1-sol", "terra" => "gpt-6.1-terra", "copilot" => "claude-opus-5.5",
         _ => throw new InvalidDataException("Unknown reviewer")
     };
+    private static bool IsCodexProvider(string provider) => provider is "sol" or "terra";
+
+    private static readonly Regex RescueModelPattern = new(
+        @"\Agpt-[0-9]+(?:\.[0-9]+)?-(?<provider>sol|terra)(?:-[0-9]{4}-[0-9]{2}-[0-9]{2})?\z",
+        RegexOptions.CultureInvariant);
+
+    internal static (string Provider, string Model) RescueTarget(HostEgress.Prepared export)
+    {
+        using var packet = JsonDocument.Parse(export.Payload);
+        return ParseRescueTarget(packet.RootElement.GetProperty("requested_model").GetString());
+    }
+
+    private static (string Provider, string Model) ParseRescueTarget(string? model)
+    {
+        var match = RescueModelPattern.Match(model ?? "");
+        if (!match.Success) throw new InvalidDataException("Unsupported model in the approved rescue packet");
+        return (match.Groups["provider"].Value, model!);
+    }
+
+    internal static Endpoint? RescueEndpoint(Settings settings, string provider) =>
+        provider switch { "sol" => settings.Sol, "terra" => settings.Terra,
+            _ => throw new ArgumentException("Unsupported rescue provider", nameof(provider)) };
+
+    internal static string ConfiguredRescueModel(Settings settings, string provider)
+    {
+        var endpoint = RescueEndpoint(settings,provider);
+        var model = endpoint?.Model ?? Model(provider);
+        if (ParseRescueTarget(model).Provider != provider)
+            throw new InvalidDataException("Configured model does not match the rescue provider");
+        return model;
+    }
     private static readonly HashSet<string> EnvironmentKeys = new(StringComparer.OrdinalIgnoreCase) {
         "SystemRoot", "WINDIR", "SystemDrive", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
         "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ProgramFiles", "ProgramFiles(x86)",
         "HOMEDRIVE", "HOMEPATH"
     };
-    internal static ProcessStartInfo StartInfo(string binary, string work, string provider, string effort)
+    internal static ProcessStartInfo StartInfo(string binary, string work, string provider, string effort,
+        string? requestedModel = null)
     {
         var start = new ProcessStartInfo(binary) { WorkingDirectory = work, UseShellExecute = false,
             CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true,
@@ -31,9 +64,9 @@ internal static class ReviewerCli
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
         foreach (var key in start.Environment.Keys.ToArray()) if (!EnvironmentKeys.Contains(key)) start.Environment.Remove(key);
         // No inherited API keys, BYOK endpoints, provider overrides, tracing or Host capabilities.
-        if (provider == "sol") {
+        if (IsCodexProvider(provider)) {
             foreach (var arg in new[] { "exec", "--ignore-user-config", "--strict-config", "--ephemeral",
-                "--skip-git-repo-check", "--json", "--model", Model(provider), "--cd", work }) start.ArgumentList.Add(arg);
+                "--skip-git-repo-check", "--json", "--model", requestedModel ?? Model(provider), "--cd", work }) start.ArgumentList.Add(arg);
             foreach (var config in new[] { "forced_login_method=\"chatgpt\"", "model_provider=\"openai\"",
                 "approval_policy=\"never\"", "default_permissions=\"review_packet\"",
                 "permissions.review_packet.filesystem={\":root\"=\"deny\",\":minimal\"=\"read\"}",
@@ -115,24 +148,55 @@ internal static class ReviewerCli
     {
         Slack.RestrictedExecution.DenyExternal();
         token.ThrowIfCancellationRequested();
-        if (export.Manifest.TaskId != journal.TaskId || export.Manifest.PolicyMode != "manual" ||
+        if (export.Manifest.TaskId != journal.TaskId || export.Manifest.PolicyMode is not ("manual" or "auto") ||
             export.Manifest.RedactionCount != 0 || Encoding.UTF8.GetByteCount(export.Payload) > 64_000 ||
             ReviewerEvidence.ContainsSecret(export.Payload))
-            throw new UnauthorizedAccessException("Rescue requires an exact, bounded, manually approved export");
+            throw new UnauthorizedAccessException("Rescue requires an exact, bounded Host export");
+        var (provider, model) = RescueTarget(export);
         if (developmentCodex is not null)
         {
+            if (export.Manifest.PolicyMode != "manual")
+                throw new UnauthorizedAccessException("Development rescue requires exact manual export approval");
             HostValidationPolicy.RequireRegisteredPublisher(journal);
             return RunApprovedDevelopmentRescueAsync(journal, export, developmentCodex, token, editRoot,
                 developmentPrompt, adviceSchema);
         }
         if (editRoot is not null)
             throw new InvalidOperationException("Direct editing requires the explicit development Codex CLI");
-        var endpoint = Load(journal.Canonical.Root).Sol;
+        var settings = Load(journal.Canonical.Root);
+        var endpoint = RescueEndpoint(settings,provider);
+        if (model != ConfiguredRescueModel(settings,provider))
+            return Task.FromResult(new Reply("UNAVAILABLE", Reason: "RESCUE_MODEL_CHANGED"));
+        if (endpoint?.RescueEnabled == true)
+        {
+            HostValidationPolicy.RequireRegisteredPublisher(journal);
+            return RunConfiguredRescueAsync(journal,export,endpoint,token);
+        }
+        if (export.Manifest.PolicyMode != "manual")
+            return Task.FromResult(new Reply("UNAVAILABLE", Reason: "AUTOMATIC_RESCUE_NOT_ENABLED"));
         if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
             return Task.FromResult(new Reply("UNAVAILABLE", Reason: "HOST_ROUTE_NOT_QUALIFIED"));
         HostValidationPolicy.RequireRegisteredPublisher(journal);
-        return DispatchAsync(journal, endpoint, "sol", export.Payload, "high", null, null, false, token,
+        return DispatchAsync(journal, endpoint, provider, export.Payload, "high", null, null, false, token,
             rescueExport: export);
+    }
+
+    private static async Task<Reply> RunConfiguredRescueAsync(HostTaskJournal journal,HostEgress.Prepared export,
+        Endpoint endpoint,CancellationToken token)
+    {
+        try { RequireDevelopmentExecutable(endpoint.Path); }
+        catch (ArgumentException) { return new("UNAVAILABLE",Reason:"CODEX_CLI_NOT_INSTALLED"); }
+        // Keep the configured executable immutable from identity check through exit.
+        using var binary = new FileStream(endpoint.Path,FileMode.Open,FileAccess.Read,FileShare.Read);
+        if (!string.Equals(Convert.ToHexStringLower(SHA256.HashData(binary)),endpoint.Sha256,StringComparison.Ordinal))
+            return new("UNAVAILABLE",Reason:"CLI_HASH_CHANGED");
+        var work = Directory.CreateTempSubdirectory("localbrain-rescue-packet-");
+        try
+        {
+            using var dispatch = new HostEgress(journal.Canonical).AuthorizeDispatch(export,"codex_protocol");
+            return await RunDevelopmentRescueCliAsync(journal,export,endpoint.Path,token,packetRoot:work.FullName);
+        }
+        finally { work.Delete(recursive:true); }
     }
 
     private static async Task<Reply> RunApprovedDevelopmentRescueAsync(HostTaskJournal journal,
@@ -157,11 +221,12 @@ internal static class ReviewerCli
     // Used by the administrative development route and the public fixture after HostEgress authorization.
     internal static async Task<Reply> RunDevelopmentRescueCliAsync(HostTaskJournal journal,
         HostEgress.Prepared export, string executable, CancellationToken token = default, string? editRoot = null,
-        string? developmentPrompt = null, bool adviceSchema = false)
+        string? developmentPrompt = null, bool adviceSchema = false, string? packetRoot = null)
     {
         Slack.RestrictedExecution.DenyExternal();
         RequireDevelopmentExecutable(executable);
-        var work = editRoot ?? Path.GetDirectoryName(executable)!;
+        var (_, model) = RescueTarget(export);
+        var work = editRoot ?? packetRoot ?? Path.GetDirectoryName(executable)!;
         CanonicalStore.GuardPath(work);
         var start = new ProcessStartInfo(executable) {
             WorkingDirectory = work, UseShellExecute = false, CreateNoWindow = true,
@@ -170,11 +235,12 @@ internal static class ReviewerCli
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
         };
         foreach (var key in start.Environment.Keys.ToArray())
-            if (!EnvironmentKeys.Contains(key) && !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase))
+            if (!EnvironmentKeys.Contains(key) &&
+                (packetRoot is not null || !key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase)))
                 start.Environment.Remove(key);
         foreach (var arg in new[] { "--ask-for-approval", "never", "exec", "--ignore-user-config",
             "--skip-git-repo-check", "--json", "--ephemeral", "--sandbox",
-            editRoot is null ? "read-only" : "workspace-write", "--cd", work, "--model", Model("sol"),
+            editRoot is null ? "read-only" : "workspace-write", "--cd", work, "--model", model,
             "-c", "forced_login_method=\"chatgpt\"", "-c", "model_provider=\"openai\"",
             "-c", "project_doc_max_bytes=0", "-c", "mcp_servers={}", "-c", "web_search=\"disabled\"" })
             start.ArgumentList.Add(arg);
@@ -209,7 +275,7 @@ internal static class ReviewerCli
             {
                 journal.Record("development_rescue_cli_started", new {
                     manifest_hash = export.ManifestHash, packet_hash = export.Manifest.ExportHash,
-                    pid = process.Id, requested_model = Model("sol"), sha256, direct_edit = editRoot is not null,
+                    pid = process.Id, requested_model = model, sha256, direct_edit = editRoot is not null,
                     windows_sandbox = editRoot is null ? null : "mxc"
                 }, "host_observed");
                 var stdout = ReadBoundedAsync(process.StandardOutput, 96_000, timeout.Token);
@@ -225,7 +291,7 @@ internal static class ReviewerCli
                 }
                 var reply = process.ExitCode == 0 ? DecodeCodex(await stdout, 48_000, allowEditEvents: editRoot is not null) :
                     new Reply("UNAVAILABLE", Reason: FailureReason(await stdout + await stderr));
-                if (editRoot is not null || developmentPrompt is not null)
+                if (editRoot is not null || developmentPrompt is not null || packetRoot is not null)
                     journal.Record("development_rescue_cli_completed", new {
                         manifest_hash = export.ManifestHash, process.ExitCode, reply.Status, reply.Reason,
                         reply.EditEvents, reply.CommandEvents, reply.CodeModeUnavailable,
@@ -263,7 +329,8 @@ internal static class ReviewerCli
         Reply result;
         try {
             var settings = Load(journal.Canonical.Root);
-            var endpoint = provider == "sol" ? settings.Sol : settings.Opus;
+            var endpoint = provider switch { "sol" => settings.Sol, "terra" => settings.Terra, "copilot" => settings.Opus,
+                _ => throw new InvalidDataException("Unknown reviewer") };
             if (endpoint is null || !endpoint.SubscriptionVerified || !endpoint.PacketBoundaryVerified)
                 result = new("UNAVAILABLE", Reason:"HOST_ROUTE_NOT_QUALIFIED");
             else result = await DispatchAsync(journal, endpoint, provider, packet, effort, sources, files, plan, token);
@@ -291,9 +358,10 @@ internal static class ReviewerCli
         var work = Directory.CreateTempSubdirectory("localbrain-packet-review-");
         try {
             CanonicalStore.GuardPath(work.FullName);
-            var start = StartInfo(endpoint.Path, work.FullName, provider, effort);
+            var model = rescueExport is null ? Model(provider) : RescueTarget(rescueExport).Model;
+            var start = StartInfo(endpoint.Path, work.FullName, provider, effort, model);
             // Preflight has no task data and cannot consume a model request.
-            if (provider == "sol") {
+            if (IsCodexProvider(provider)) {
                 var auth = new ProcessStartInfo(endpoint.Path) { UseShellExecute=false,CreateNoWindow=true,
                     RedirectStandardOutput=true,RedirectStandardError=true,WorkingDirectory=work.FullName };
                 auth.Environment.Clear(); foreach(var pair in start.Environment) auth.Environment[pair.Key]=pair.Value;
@@ -340,7 +408,7 @@ internal static class ReviewerCli
                 return response with {Answer="",Diagnostic=""};
             }
             if(response.Status!="OK" || response.ExitCode!=0)return response with{Answer=""};
-            return provider=="sol" ? DecodeCodex(response.Answer,rescueExport is null?8_000:48_000) with {ExitCode=response.ExitCode} : response;
+            return IsCodexProvider(provider) ? DecodeCodex(response.Answer,rescueExport is null?8_000:48_000) with {ExitCode=response.ExitCode} : response;
         } finally { work.Delete(recursive:true); }
     }
 
@@ -454,7 +522,7 @@ internal static class ReviewerCli
                 pid=process.Id,parent_pid=Environment.ProcessId,user=Environment.UserDomainName+"\\"+Environment.UserName,
                 arguments=start.ArgumentList.ToArray(),environment_names=start.Environment.Keys.Order().ToArray(),
                 requested_model=provider is null?null:Model(provider),
-                authentication_policy=provider=="sol"?"ChatGPT (login status preflight required)":"existing Copilot credential store; no token/BYOK environment inherited",
+                authentication_policy=provider is not null && IsCodexProvider(provider)?"ChatGPT (login status preflight required)":"existing Copilot credential store; no token/BYOK environment inherited",
                 actual_model_verified=false,windows_child_creation_blocked=true},"host_observed");
             var output=ReadBoundedAsync(job.Output,96_000,timeout.Token);
             var diagnostic=ReadBoundedAsync(job.Error,16_000,timeout.Token);

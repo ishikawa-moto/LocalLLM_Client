@@ -202,12 +202,16 @@ internal static class AgentV2Commands
                 var flags=args.Skip(3).ToArray();
                 var approve=flags.Contains("--approve",StringComparer.Ordinal);
                 var retry=flags.Contains("--retry-format",StringComparer.Ordinal);
-                if(flags.Length!=(approve?1:0)+(retry?1:0) || (retry && command=="rescue-preview") || Console.IsOutputRedirected ||
+                var providerIndex=Array.IndexOf(flags,"--provider");
+                var provider=providerIndex<0?"sol":flags.ElementAtOrDefault(providerIndex+1);
+                if(provider is not ("sol" or "terra") ||
+                    flags.Length!=(approve?1:0)+(retry?1:0)+(providerIndex<0?0:2) ||
+                    ((retry || providerIndex>=0) && command=="rescue-preview") || Console.IsOutputRedirected ||
                     (approve && Console.IsInputRedirected))
                     throw new InvalidOperationException("Rescue preview requires a ticket and an interactive terminal");
                 var export=command switch {
-                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash,retry),
-                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash,retry),
+                    "rescue-edit-prepare"=>rescue.PrepareDirectEdit(boundHash,retry,provider),
+                    "rescue-advice-prepare"=>rescue.PrepareAdvice(boundHash,retry,provider),
                     _=>rescue.PreparedExport(ticket)
                 };
                 if (approve)
@@ -216,7 +220,7 @@ internal static class AgentV2Commands
                     new HostEgress(store).ApproveInteractive(export.Manifest,export.ManifestHash,journal);
                     return;
                 }
-                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.Model("sol"),manifest_hash=export.ManifestHash,
+                Console.WriteLine(JsonSerializer.Serialize(new{provider=ReviewerCli.RescueTarget(export).Model,manifest_hash=export.ManifestHash,
                     manifest=export.Manifest,packet=export.Payload},ClientConfig.JsonOptions));
                 return;
             }

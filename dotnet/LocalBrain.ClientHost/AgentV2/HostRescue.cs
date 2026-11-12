@@ -17,6 +17,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         ToolRouter.TestResult[] Tests,string CriticVerdict,bool ExternalPassed);
     internal sealed record FailureObservation(int ActorTurns,bool ActorReportedNoProgress,int TestsWithoutImprovement,
         string SupervisorAction,string[] FailedRequiredTests,string Reason);
+    private sealed class VerifiedTestFailureException() : InvalidOperationException("The isolated tests rejected the rescue candidate");
     private CanonicalStore Store=>journal.Canonical;
     private AgentTaskRequest Request=>AgentTaskRequest.Parse(Store.TaskRequest(journal.TaskId));
     private CanonicalStore.EventReceipt Record(string type,object data,string[] refs,string verification="host_verified",string? workspace=null,string? key=null) =>
@@ -47,9 +48,13 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var ticket=JsonSerializer.Deserialize<Ticket>(Store.ReadEvidence(hash))??throw new InvalidDataException("Invalid rescue ticket");RequireTicket(ticket,hash);return ticket;
     }
     internal async Task<string> ReserveAsync(AttemptStartingState.Saved starting,CancellationToken token=default,
-        FailureObservation? observation=null, string? expectedFailureDiffHash=null) {
+        FailureObservation? observation=null, string? expectedFailureDiffHash=null, string provider="sol") {
         Slack.RestrictedExecution.DenyExternal();
         var exportPolicy=Store.RequireExportPolicy(journal.TaskId).Policy;journal.RequireMutationApproval();
+        var model=ReviewerCli.ConfiguredRescueModel(ReviewerCli.Load(Store.Root),provider);
+        if (exportPolicy.Mode=="auto" && (!exportPolicy.ExportScope.Contains("task_evidence_only",StringComparer.Ordinal) ||
+            Request.AllowedFiles.Any(path=>!exportPolicy.ExportScope.Contains("file:"+path,StringComparer.OrdinalIgnoreCase))))
+            throw new UnauthorizedAccessException("Automatic rescue requires explicit file export scopes");
         var source=Store.ReadTaskEvent(journal.TaskId,starting.EventId);
         if(source.Input.EventType!="attempt_starting_state" || source.Input.Producer!="windows_host" || !source.Input.EvidenceRefs.Contains(starting.StateHash) ||
             AttemptStartingState.Hash(starting.State)!=starting.StateHash || starting.State.Head!=journal.ExpectedHead)
@@ -64,7 +69,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var sources=new List<object>();
         var sourceBytes=0;
         foreach(var file in startingFiles) {
-            if(file.Hash is null || exportPolicy.Mode!="manual" ||
+            if(file.Hash is null ||
                 !exportPolicy.ExportScope.Contains("file:"+file.Path,StringComparer.OrdinalIgnoreCase))continue;
             var bytes=Store.ReadEvidence(file.Hash);
             if(bytes.Length>24_000-sourceBytes)throw new InvalidDataException("Rescue source selection exceeds budget");
@@ -80,7 +85,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             Request.AllowedFiles,[],Request.Requirement,Request.AcceptanceCriteria,Request.RequiredTests,[],1);
         var reserved=Store.ReserveAssignment(spec,requireUnassigned:expectedFailureDiffHash is not null);
         // Only an explicit file export scope adds complete starting source.
-        var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",requested_model=ReviewerCli.Model("sol"),
+        var packet=JsonSerializer.Serialize(new {protocol="localbrain-rescue-v1",requested_model=model,
             task_id=journal.TaskId,assignment_id=assignment,generation=reserved.Generation,
             base_commit=starting.State.Head,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,
             requirement=Request.Requirement,acceptance_criteria=Request.AcceptanceCriteria,write_scope=Request.AllowedFiles,required_tests=Request.RequiredTests,
@@ -92,7 +97,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         var ticket=new Ticket(journal.TaskId,assignment,reserved.Generation,worker,workspace,journal.WindowsRoot,root,starting.State.Head,starting.StateHash,starting.State.StartingDiffHash,
             starting.EventId,failureHash,export.ManifestHash,export.Manifest.ExportHash);
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(ticket));
-        Record("codex_rescue_reserved",new{ticket_hash=hash,assignment,generation=reserved.Generation,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,export_manifest_hash=export.ManifestHash,status="RESERVED_PROTOCOL_ONLY"},[hash,starting.StateHash,failureHash,export.ManifestHash,export.Manifest.ExportHash],workspace:workspace);
+        Record("codex_rescue_reserved",new{ticket_hash=hash,assignment,generation=reserved.Generation,starting_state_hash=starting.StateHash,starting_diff_hash=starting.State.StartingDiffHash,export_manifest_hash=export.ManifestHash,provider,requested_model=model,status="RESERVED_PROTOCOL_ONLY"},[hash,starting.StateHash,failureHash,export.ManifestHash,export.Manifest.ExportHash],workspace:workspace);
         if(observation is not null)
             Record("codex_rescue_qwen_stalled",new{ticket_hash=hash,observation},
                 [hash,starting.StateHash,failureHash],key:assignment+"_qwen_stalled");
@@ -121,7 +126,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if (current.Head != journal.ExpectedHead || current.UnexpectedFiles.Length != 0 ||
             AgentTaskRunner.HashTextForHost(current.ReviewDiff) != failureDiffHash)
             throw new UnauthorizedAccessException("Stopped worktree differs from the Canonical checkpoint");
-        var existing = Events("codex_rescue_reserved").SingleOrDefault();
+        var existing = Events("codex_rescue_reserved").LastOrDefault();
         if (existing is not null)
         {
             var hash = existing.Input.Metadata.GetProperty("ticket_hash").GetString()!;
@@ -145,15 +150,66 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
     internal sealed record ExternalResult(string Status,string? CandidateHash=null,string? ValidationHash=null,string? Reason=null);
 
-    internal HostEgress.Prepared PrepareAdvice(string ticketHash, bool formatRetry=false) => PrepareRescueMode(ticketHash,"advice",
-        "Review the approved task data on stdin. Return structured advice with verdict GUIDANCE and one to three actionable steps, each at most 240 characters, or verdict UNRESOLVED and no steps. Use only the supplied data. Do not call tools, run commands, or edit files.", formatRetry);
+    internal static string[] AutomaticProviders(string risk,ReviewerCli.Settings settings)
+    {
+        string[] order = risk switch { "LOW"=>["terra"], "NORMAL"=>["terra","sol"], _=>[] };
+        return order.Where(provider=>ReviewerCli.RescueEndpoint(settings,provider)?.RescueEnabled==true).ToArray();
+    }
 
-    internal HostEgress.Prepared PrepareDirectEdit(string ticketHash, bool formatRetry=false) => PrepareRescueMode(ticketHash,"edit",
-        "Complete this coding task by editing the actual file in your current working directory. Use your file editing tools before giving a final response. Read the approved task data on stdin and modify only its write_scope. Do not access other directories or run the project's tests. The Host independently tests the edit. After the file is saved, return a short plain-text summary.", formatRetry);
+    internal string[] AutomaticProviders()
+    {
+        if (Request.RequiredTests.Length==0 || !Request.RequiredTests.Any(test=>test.Kind=="dotnet_test") ||
+            Request.RequiredTests.Any(test=>test.Kind is not ("dotnet_test" or "dotnet_build")) ||
+            Store.ReadPolicy(HostTaskJournal.RepositoryId(journal.WindowsRoot),journal.WindowsRoot) is not
+                { AuditMatched:true, Mode:"auto" })
+            return [];
+        return AutomaticProviders(Request.EffectiveRisk,ReviewerCli.Load(Store.Root));
+    }
 
-    private HostEgress.Prepared PrepareRescueMode(string ticketHash,string mode,string instructions,bool formatRetry)
+    internal async Task<bool> TryAutomaticAsync(string[] providers,AttemptStartingState.Saved starting,
+        FailureObservation observation,CancellationToken token)
+    {
+        if (providers.Length==0 || Events("codex_rescue_automatic_started").Length!=0)
+            return false;
+        HostValidationPolicy.RequireRegisteredPublisher(journal);
+        Record("codex_rescue_automatic_started",new{providers,observation},[starting.StateHash]);
+        var failedState = AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(journal.WindowsRoot,null,token));
+        foreach(var provider in providers)
+        {
+            // Every provider gets the same verified starting state in its own workspace.
+            // No unsuccessful candidate is promoted into the task workspace.
+            if (AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(journal.WindowsRoot,null,token))!=failedState)
+                throw new UnauthorizedAccessException("Task worktree changed between rescue attempts");
+            var ticket = await ReserveAsync(starting,token,observation,provider:provider);
+            var result = await RunExternalAsync(ticket,token,automatic:true);
+            Record("codex_rescue_automatic_result",new{provider,result.Status,result.Reason},[ticket]);
+            if (result is {Status:"VALIDATED_IN_RESCUE",ValidationHash:{} validation})
+            {
+                await PromoteAsync(ticket,validation,token);
+                return true;
+            }
+            if (!AutomaticFallback(result)) break;
+        }
+        Record("codex_rescue_automatic_unresolved",new{reason="No authorized candidate passed Host verification"},[starting.StateHash]);
+        return false;
+    }
+
+    internal static bool AutomaticFallback(ExternalResult result) => result.Status=="VERIFIED_TEST_FAILURE" ||
+        result.Status=="UNAVAILABLE" && result.Reason is
+            ("AUTHENTICATION" or "CHATGPT_LOGIN_REQUIRED" or "USAGE_LIMIT" or "CODEX_CLI_NOT_INSTALLED" or
+             "CLI_HASH_CHANGED" or "RESCUE_MODEL_CHANGED" or "AUTOMATIC_RESCUE_NOT_ENABLED");
+
+    internal HostEgress.Prepared PrepareAdvice(string ticketHash, bool formatRetry=false, string provider="sol") => PrepareRescueMode(ticketHash,"advice",
+        "Review the approved task data on stdin. Return structured advice with verdict GUIDANCE and one to three actionable steps, each at most 240 characters, or verdict UNRESOLVED and no steps. Use only the supplied data. Do not call tools, run commands, or edit files.", formatRetry,provider);
+
+    internal HostEgress.Prepared PrepareDirectEdit(string ticketHash, bool formatRetry=false, string provider="sol") => PrepareRescueMode(ticketHash,"edit",
+        "Complete this coding task by editing the actual file in your current working directory. Use your file editing tools before giving a final response. Read the approved task data on stdin and modify only its write_scope. Do not access other directories or run the project's tests. The Host independently tests the edit. After the file is saved, return a short plain-text summary.", formatRetry,provider);
+
+    private HostEgress.Prepared PrepareRescueMode(string ticketHash,string mode,string instructions,bool formatRetry,string provider)
     {
         Slack.RestrictedExecution.DenyExternal();
+        if (provider is not ("sol" or "terra")) throw new ArgumentException("Unsupported rescue provider",nameof(provider));
+        var model=ReviewerCli.ConfiguredRescueModel(ReviewerCli.Load(Store.Root),provider);
         var ticket=Load(ticketHash);
         journal.RequireMutationApproval();
         var eventType="codex_rescue_"+mode+(formatRetry?"_format_retry":"")+"_prepared";
@@ -163,7 +219,10 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             if (existing.Input.EvidenceRefs[0]!=ticketHash)
                 throw new UnauthorizedAccessException("Sol packet was prepared for another rescue assignment");
             var existingHash=existing.Input.EvidenceRefs[1];
-            return ReadPrepared(existingHash);
+            var preparedForModel=ReadPrepared(existingHash);
+            if (ReviewerCli.RescueTarget(preparedForModel)!=(provider,model))
+                throw new UnauthorizedAccessException("Packet was prepared for another rescue provider");
+            return preparedForModel;
         }
         if (formatRetry)
         {
@@ -172,6 +231,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             var field = mode=="advice"?"status":"reason";
             var expected = mode=="advice"?"INVALID":"Sol left all approved files unchanged";
             if (original is null || original.Input.EvidenceRefs[0]!=ticketHash ||
+                ReviewerCli.RescueTarget(ReadPrepared(original.Input.EvidenceRefs[1]))!=(provider,model) ||
                 !Events(resultType).Any(e=>e.Input.Metadata.GetProperty("manifest_hash").GetString()==original.Input.EvidenceRefs[1] &&
                     e.Input.Metadata.GetProperty(field).GetString()==expected))
                 throw new InvalidOperationException("One corrected export is allowed only after a recorded format or unchanged-edit result");
@@ -180,6 +240,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if (packet.Manifest.PolicyMode!="manual" || packet.Manifest.RedactionCount!=0)
             throw new UnauthorizedAccessException("Sol requires an exact manual export");
         var input=System.Text.Json.Nodes.JsonNode.Parse(packet.Payload)!.AsObject();
+        input["requested_model"]=model;
         input["response_schema"]=instructions;
         input["explicit_development_prompt"]=true;
         if (formatRetry) input["format_retry"]=true;
@@ -216,6 +277,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     {
         var ticket=Load(ticketHash);
         var export=ApprovedMode(ticketHash,manifestHash,"advice");
+        var (provider,model)=ReviewerCli.RescueTarget(export);
         if (Events("external_dispatch_authorized").Any(e=>e.Input.EvidenceRefs.Contains(manifestHash)))
             throw new InvalidOperationException("Sol advice was already dispatched for this task");
         if (AttemptStartingState.Hash(await AttemptStartingState.CaptureAsync(ticket.MainRoot,null,token))!=ticket.FailureStateHash)
@@ -228,7 +290,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if (reply.Status!="OK") return advice;
         var hash=Store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(advice));
         Record("codex_rescue_advice",new{ticket_hash=ticketHash,manifest_hash=manifestHash,
-            diff_hash=AgentTaskRunner.HashTextForHost(diff.ReviewDiff),status=advice.Verdict,reply.ExitCode},
+            diff_hash=AgentTaskRunner.HashTextForHost(diff.ReviewDiff),status=advice.Verdict,reply.ExitCode,
+            provider,requested_model=model},
             [ticketHash,manifestHash,hash],"untrusted_candidate",key:ticket.AssignmentId+"_advice_"+manifestHash);
         return advice;
     }
@@ -326,7 +389,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
     }
 
     internal async Task<ExternalResult> RunExternalAsync(string ticketHash,CancellationToken token=default,
-        string? developmentCodex=null,string? editManifestHash=null)
+        string? developmentCodex=null,string? editManifestHash=null,bool automatic=false)
     {
         Slack.RestrictedExecution.DenyExternal();
         var ticket=Load(ticketHash);
@@ -337,6 +400,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             !required.Any(test=>test.Kind=="dotnet_test"))
             throw new UnauthorizedAccessException("External code rescue requires isolated dotnet_test validation");
         var export=editManifestHash is null?PreparedExport(ticket):ApprovedMode(ticketHash,editManifestHash,"edit");
+        var (provider,model)=ReviewerCli.RescueTarget(export);
         if(editManifestHash is not null && developmentCodex is null)
             throw new UnauthorizedAccessException("Direct Sol editing requires its exact manual export and development CLI");
         var received=Events("codex_rescue_external_response").SingleOrDefault(e=>e.Input.Metadata.GetProperty("ticket_hash").GetString()==ticketHash);
@@ -392,13 +456,17 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
             candidate=ParseExternalCandidate(candidateText);
             candidateResponseHash=Store.PutEvidence(Encoding.UTF8.GetBytes(candidateText));
             Record("codex_rescue_external_response",new{ticket_hash=ticketHash,manifest_hash=export.ManifestHash,
-                response_hash=candidateResponseHash,provider="sol",requested_model=ReviewerCli.Model("sol"),response.ExitCode,
+                response_hash=candidateResponseHash,provider,requested_model=model,response.ExitCode,
                 direct_edit=edit is not null},
                 [ticketHash,export.ManifestHash,candidateResponseHash],"untrusted_candidate",ticket.WorkspaceId,
                 key:ticket.AssignmentId+"_external_candidate");
         }
         var candidateHash=await ImportAsync(ticketHash,candidate,token);
-        var validationHash=await ValidateAsync(ticketHash,candidateHash,token);
+        string validationHash;
+        try { validationHash=await ValidateAsync(ticketHash,candidateHash,token,automatic); }
+        catch (VerifiedTestFailureException) when (automatic) {
+            return new("VERIFIED_TEST_FAILURE",candidateHash,Reason:"REQUIRED_TEST_CASES_FAILED");
+        }
         RecordExternalValidation(ticketHash,ticket,export.ManifestHash,candidateResponseHash,candidateHash,validationHash);
         return new("VALIDATED_IN_RESCUE",candidateHash,validationHash);
     }
@@ -502,13 +570,20 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         RequireTicket(ticket,ticketHash);
         return new(ticket,candidateHash,stateHash,actualDiffHash);
     }
-    internal async Task<string> ValidateAsync(string ticketHash,string candidateHash,CancellationToken token=default) {
+    internal async Task<string> ValidateAsync(string ticketHash,string candidateHash,CancellationToken token=default,
+        bool distinguishTestFailure=false) {
         var source=await RequireValidationSourceAsync(ticketHash,candidateHash,Load(ticketHash).RescueRoot,token);var ticket=source.Ticket;var request=Request;
         var stateHash=source.StateHash;var diff=await GitEvidence.CaptureAsync(ticket.RescueRoot,request.AllowedFiles,token);
         var wsl=await WslWorkspace.ResolveRegisteredRescueAsync(Store,ticket.WorkspaceId,token);var tests=new List<ToolRouter.TestResult>();
         foreach(var required in request.RequiredTests)tests.Add(await HostValidationPolicy.RunRescueAsync(journal,ticketHash,candidateHash,ticket.RescueRoot,wsl,required,token));
         var afterTests=await AttemptStartingState.CaptureAsync(ticket.RescueRoot,null,token);
-        if(AttemptStartingState.Hash(afterTests)!=stateHash || !tests.All(t=>t.Passed))throw new InvalidDataException("Rescue required tests failed or mutated source");
+        if(AttemptStartingState.Hash(afterTests)!=stateHash)throw new InvalidDataException("Rescue tests mutated source");
+        var failed=tests.Where(test=>!test.Passed).ToArray();
+        if(failed.Length!=0) {
+            if(distinguishTestFailure && failed.All(test=>test.FailedCasesSha256 is not null))
+                throw new VerifiedTestFailureException();
+            throw new InvalidDataException("Rescue required tests did not pass");
+        }
         var prompt=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]))+"\nYou are a fresh independent local Critic. Assess every acceptance criterion and test evidence. Return exactly JSON {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Do not modify files.";
         var critic=await PiRpcRunner.RunAsync(wsl,prompt,true,windowsRoot:ticket.RescueRoot,taskId:ticket.TaskId,token:token);
         var parsed=CopilotReviewer.Parse(critic.Text);var criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(critic.Text));

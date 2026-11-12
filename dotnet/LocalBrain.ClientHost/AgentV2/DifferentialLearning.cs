@@ -80,25 +80,29 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         {
             var responseHash=Field(response,"response_hash");
             var supplied=HostRescue.ParseExternalCandidate(new UTF8Encoding(false,true).GetString(Store.ReadEvidence(responseHash)));
-            if(Field(response,"ticket_hash")!=ticketHash || Field(response,"provider")!="sol" ||
-                Field(response,"requested_model")!=ReviewerCli.Model("sol") ||
+            var packet=new HostEgress.Prepared(export,exportHash,new UTF8Encoding(false,true).GetString(Store.ReadEvidence(export.ExportHash)));
+            var (provider,model)=ReviewerCli.RescueTarget(packet);
+            if(Field(response,"ticket_hash")!=ticketHash || Field(response,"provider")!=provider ||
+                Field(response,"requested_model")!=model ||
                 !response.Input.EvidenceRefs.SequenceEqual([ticketHash,exportHash,responseHash],StringComparer.Ordinal) ||
                 CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(supplied))!=originalHash)
-                throw new UnauthorizedAccessException("Sol response is not the source of the validated candidate");
+                throw new UnauthorizedAccessException("External response is not the source of the validated candidate");
             var dispatch=Single(events,"external_dispatch_authorized",exportHash,workspace);
             if(Field(dispatch,"provider")!="codex_protocol" ||
                 !dispatch.Input.EvidenceRefs.SequenceEqual([exportHash,export.ExportHash],StringComparer.Ordinal) ||
                 dispatch.Sequence>=response.Sequence || response.Sequence>=received.Sequence)
-                throw new UnauthorizedAccessException("Sol response has no preceding exact dispatch");
+                throw new UnauthorizedAccessException("External response has no preceding exact dispatch");
             if(exportHash!=ticket.ExportManifestHash)
             {
                 var direct=Single(events,"codex_rescue_edit_prepared",exportHash,workspace);
                 if(!direct.Input.EvidenceRefs.SequenceEqual([ticketHash,exportHash],StringComparer.Ordinal))
-                    throw new UnauthorizedAccessException("Direct Sol export is not bound to the rescue ticket");
+                    throw new UnauthorizedAccessException("Direct edit export is not bound to the rescue ticket");
                 externalSources.Add(direct);
             }
             externalSources.AddRange([dispatch,response]);
-            candidateProvenance="Host-observed Codex CLI dispatch and response bound to the validated candidate; requested Sol model and approval recorded, model claims remain untrusted";
+            candidateProvenance=provider=="sol"
+                ? "Host-observed Codex CLI dispatch and response bound to the validated candidate; requested Sol model and approval recorded, model claims remain untrusted"
+                : $"Host-observed Codex CLI dispatch and response bound to the validated candidate; requested {model} and approval recorded, model claims remain untrusted";
         }
         var initial=Read<AttemptStartingState.Snapshot>(ticket.StartingStateHash);var failed=Read<AttemptStartingState.Snapshot>(ticket.FailureStateHash);var result=Read<AttemptStartingState.Snapshot>(validation.ResultStateHash);
         if(initial.Head!=ticket.BaseCommit || failed.Head!=ticket.BaseCommit || result.Head!=ticket.BaseCommit || initial.IndexTree!=result.IndexTree ||

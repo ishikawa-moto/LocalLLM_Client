@@ -153,7 +153,7 @@ internal static class PublicRescueFixture
     }
 
     internal static async Task HandoffAsync(string root, string ticketHash, string manifestHash,
-        string operation, string? evidenceHash = null, string? codexExecutable = null)
+        string operation, string? evidenceHash = null, string? codexExecutable = null, string directProvider = "sol")
     {
         root = Path.GetFullPath(root);
         ReviewQualification.GuardRoot(root);
@@ -179,6 +179,8 @@ internal static class PublicRescueFixture
         var rescue = new HostRescue(journal);
         var export = rescue.PreparedExport(rescue.Load(ticketHash));
         var direct = operation == "--public-rescue-solve" && manifestHash.StartsWith("direct:", StringComparison.Ordinal);
+        if (directProvider != "sol" && !direct)
+            throw new ArgumentException("A separate provider is supported only for direct public repair");
         if (direct) manifestHash = manifestHash["direct:".Length..];
         using var packet = JsonDocument.Parse(export.Payload);
         var source = packet.RootElement.GetProperty("starting_source");
@@ -197,8 +199,8 @@ internal static class PublicRescueFixture
             RequirePublicValidationConfig(root);
             journal.EnablePersonalValidation();
             HostValidationPolicy.RequireRegisteredPublisher(journal);
-            var edit = rescue.PrepareDirectEdit(ticketHash);
-            Console.WriteLine("Public fixture only. Sol edits the scoped Arithmetic.cs copy and the Host runs the required tests.");
+            var edit = rescue.PrepareDirectEdit(ticketHash, provider: directProvider);
+            Console.WriteLine($"Public fixture only. {ReviewerCli.RescueTarget(edit).Model} edits the scoped Arithmetic.cs copy and the Host runs the required tests.");
             Console.WriteLine(edit.Payload);
             new HostEgress(store).ApproveInteractive(edit.Manifest, edit.ManifestHash, journal);
             var result = await rescue.RunExternalAsync(ticketHash, developmentCodex:codexExecutable,

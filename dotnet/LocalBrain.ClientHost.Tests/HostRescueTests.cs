@@ -58,7 +58,17 @@ internal static class HostRescueTests
         }),"Candidate changed a file outside the task scope");
         await Reject(()=>ReviewerCli.GenerateRescueAsync(journal,prepared with {
             Manifest=prepared.Manifest with {PolicyMode="auto"}
-        },CancellationToken.None),"Automatic external export policy was accepted");
+        },CancellationToken.None,developmentCodex:"codex.exe"),"Development transport accepted a non-manual export");
+        var enabled=new ReviewerCli.Endpoint("codex.exe","",RescueEnabled:true);
+        Check(HostRescue.AutomaticProviders("NORMAL",new(Sol:enabled,Terra:enabled)).SequenceEqual(["terra","sol"]) &&
+            HostRescue.AutomaticProviders("LOW",new(Sol:enabled,Terra:enabled)).SequenceEqual(["terra"]) &&
+            HostRescue.AutomaticProviders("LOW",new(Sol:enabled)).Length==0,
+            "Terra staging must keep LOW bounded and prefer Terra for NORMAL");
+        Check(HostRescue.AutomaticFallback(new("UNAVAILABLE",Reason:"USAGE_LIMIT")) &&
+            HostRescue.AutomaticFallback(new("VERIFIED_TEST_FAILURE")) &&
+            !HostRescue.AutomaticFallback(new("UNAVAILABLE",Reason:"CONNECTION")) &&
+            !HostRescue.AutomaticFallback(new("INVALID")),
+            "Only a provider-specific outage or a verified failing candidate can advance fallback");
         await Reject(()=>{
             using var lease=new HostEgress(store).AuthorizeDispatch(prepared,"codex_protocol");
             return Task.CompletedTask;
@@ -69,6 +79,8 @@ internal static class HostRescueTests
         Check(advice.ManifestHash!=prepared.ManifestHash && advice.Payload.Contains("GUIDANCE") &&
             rescue.PrepareAdvice(fixture.TicketHash).ManifestHash==advice.ManifestHash,
             "Advice must have its own stable, human-approvable manifest");
+        await Reject(()=>Task.FromResult(rescue.PrepareAdvice(fixture.TicketHash,provider:"terra")),
+            "A Sol manifest was reused for Terra");
         await Reject(()=>rescue.RunAdviceAsync(fixture.TicketHash,prepared.ManifestHash,null),
             "Code-candidate approval was accepted for advice");
         Check(SolReviewer.ParseRescue("""{"verdict":"GUIDANCE","steps":["Use the approved file and run the required test."]}""",1).Verdict=="GUIDANCE" &&
@@ -99,6 +111,18 @@ internal static class HostRescueTests
         using var editStore=new CanonicalStore(editFixture.HostRoot);
         using var editJournal=new HostTaskJournal(editStore,editFixture.MainRoot,editFixture.TaskId,request,editFixture.Head);
         var editing=new HostRescue(editJournal);
+        var terraAdvice=editing.PrepareAdvice(editFixture.TicketHash,provider:"terra");
+        Check(ReviewerCli.RescueTarget(terraAdvice)==("terra","gpt-6.1-terra") &&
+            ReviewerCli.StartInfo("codex.exe",editFixture.MainRoot,"terra","high").ArgumentList.Contains("gpt-6.1-terra"),
+            "Terra must be bound in the packet and selected by the Codex transport");
+        var snapshotModel = "gpt-6.1-terra-2026-10-20";
+        Check(ReviewerCli.ConfiguredRescueModel(new(Terra:new("codex.exe","",Model:snapshotModel)),"terra")==snapshotModel,
+            "Terra model snapshots must be configurable");
+        await Reject(()=>Task.FromResult(ReviewerCli.ConfiguredRescueModel(
+            new(Terra:new("codex.exe","",Model:"gpt-6.1-sol")),"terra")),"Terra configuration accepted a different model family");
+        var terraUnavailable=await ReviewerCli.GenerateRescueAsync(editJournal,terraAdvice,CancellationToken.None);
+        Check(terraUnavailable is { Status:"UNAVAILABLE",Reason:"HOST_ROUTE_NOT_QUALIFIED" },
+            "Unqualified Terra must fail closed independently of Sol");
         var editTicket=editing.Load(editFixture.TicketHash);
         var edit=editing.PrepareEditDirectory(editTicket,editing.PrepareDirectEdit(editFixture.TicketHash));
         Check(Directory.GetFiles(edit.Root).Length==2 && !File.Exists(Path.Combine(edit.Root,"test.cjs")),
@@ -132,7 +156,7 @@ internal static class HostRescueTests
                 response_hash=responseHash,provider="sol",requested_model=ReviewerCli.Model("sol")})));
         await Reject(()=>Task.FromResult(new DifferentialLearning(editJournal).Assemble(editFixture.TicketHash,validationHash)),
             "Learning accepted a late Sol response without the exact prior dispatch");
-        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=23,actual_model_requests=0,task_id=fixture.TaskId,
+        Console.WriteLine(JsonSerializer.Serialize(new {status="PASS",checks=30,actual_model_requests=0,task_id=fixture.TaskId,
             ticket_hash=fixture.TicketHash,manifest_hash=prepared.ManifestHash,events=events.Select(e=>new{e.EventId,e.Input.EventType})}));
     }
     internal static async Task CrashAsync(string root,string boundary) {
