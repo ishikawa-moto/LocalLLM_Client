@@ -27,8 +27,12 @@ internal static class AgentTaskRunner
         HostRescue.PendingAdvice? Advice=null);
 
     private static readonly Regex SuccessClaim = new(
-        @"\b(?:done|completed|all tests pass(?:ed)?)\b|\bverified\b(?![ \t]+(?:the[ \t]+)?(?:\.NET[ \t]+)?API[ \t]+(?:usage|signatures?)\b)|完了しました|検証済み",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        @"^[ \t]*(?:status[ \t]*:[ \t]*)?(?:done|completed|verified)[.!]?[ \t]*\r?$" +
+        @"|\ball (?:required )?tests (?:have )?pass(?:ed)?\b" +
+        @"|\b(?:task|work|implementation|fix|tests|validation) (?:is |was |are |were |has been |have been )?(?:done|completed|verified)\b" +
+        @"|\b(?:I|we)(?:(?:'ve| have))? (?:completed|verified)\b(?![ \t]+(?:the[ \t]+)?(?:\.NET[ \t]+)?API[ \t]+(?:usage|signatures?)\b)" +
+        @"|完了しました|検証済み",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled | RegexOptions.Multiline);
 
     internal static bool ClaimsCompletion(string text) => SuccessClaim.IsMatch(text);
 

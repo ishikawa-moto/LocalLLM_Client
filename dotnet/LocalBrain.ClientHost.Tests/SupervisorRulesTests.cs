@@ -21,8 +21,11 @@ internal static class SupervisorRulesTests
 
         const string apiObservation = "I've verified the .NET API usage (instance IsInvalidTime). The Host reruns and owns validation.";
         if (AgentTaskRunner.ClaimsCompletion(apiObservation) ||
+            AgentTaskRunner.ClaimsCompletion("Let me search for additional evidence about what the verified solution looks like.") ||
             !AgentTaskRunner.ClaimsCompletion(apiObservation + " All tests passed.") ||
             !AgentTaskRunner.ClaimsCompletion("I verified the complete result.") ||
+            !AgentTaskRunner.ClaimsCompletion("The task is completed.") ||
+            !AgentTaskRunner.ClaimsCompletion("Status: Done.") ||
             !AgentTaskRunner.ClaimsCompletion("検証済み"))
             throw new Exception("An API observation must not count as a claim that validation or the task is complete");
 
