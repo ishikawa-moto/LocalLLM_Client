@@ -19,6 +19,13 @@ internal static class SupervisorRulesTests
         await Check(state with {SameErrorCount=3},"ESCALATE_SOL");
         await Check(state with {CompletionCandidate=true},"RUN_TEST");
 
+        const string apiObservation = "I've verified the .NET API usage (instance IsInvalidTime). The Host reruns and owns validation.";
+        if (AgentTaskRunner.ClaimsCompletion(apiObservation) ||
+            !AgentTaskRunner.ClaimsCompletion(apiObservation + " All tests passed.") ||
+            !AgentTaskRunner.ClaimsCompletion("I verified the complete result.") ||
+            !AgentTaskRunner.ClaimsCompletion("検証済み"))
+            throw new Exception("An API observation must not count as a claim that validation or the task is complete");
+
         var failure = new ToolRouter.TestResult("dotnet_test", "windows", false, 1, 123, 4,
             "first-run-output", "first-run-errors", 400, null, ["CS1234", "test_failed_or_no_summary"]);
         var repeated = failure with { StdoutSha256 = "different-run-output", StderrSha256 = "different-run-errors",

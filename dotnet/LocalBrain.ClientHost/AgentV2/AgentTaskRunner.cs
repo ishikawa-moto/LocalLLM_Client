@@ -27,8 +27,10 @@ internal static class AgentTaskRunner
         HostRescue.PendingAdvice? Advice=null);
 
     private static readonly Regex SuccessClaim = new(
-        @"\b(?:done|completed|verified|all tests pass)\b|完了しました|検証済み",
+        @"\b(?:done|completed|all tests pass(?:ed)?)\b|\bverified\b(?![ \t]+(?:the[ \t]+)?(?:\.NET[ \t]+)?API[ \t]+(?:usage|signatures?)\b)|完了しました|検証済み",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    internal static bool ClaimsCompletion(string text) => SuccessClaim.IsMatch(text);
 
     public static async Task<Result> RunAsync(string windowsRoot, string wslRoot,
         AgentTaskRequest request, ClientConfig config, bool resume = false,
@@ -194,7 +196,7 @@ internal static class AgentTaskRunner
             if (after.Head != before.Head)
                 throw new InvalidOperationException("Git HEAD changed during Agent task");
             if(actor.ContextHandoffRequested) {
-                falseVerified|=SuccessClaim.IsMatch(actor.Text);
+                falseVerified|=ClaimsCompletion(actor.Text);
                 await WriteTaskStateAsync(windowsRoot,taskId,"handoff_pending",actorSessionId,
                     before.Head,after.ChangedFiles,after.ReviewDiff,tests,actor,actorTurns,replans,
                     testsWithoutImprovement,totalToolCalls,totalToolErrors,requestHash,
@@ -285,7 +287,7 @@ internal static class AgentTaskRunner
                     review = ParseCriticReview(retry.Text);
                 }
             }
-            falseVerified |= SuccessClaim.IsMatch(actor.Text) &&
+            falseVerified |= ClaimsCompletion(actor.Text) &&
                 (!testsPassed || review.Verdict != "PASS" || !hasWork ||
                     actor.ToolErrors > 0);
             if (review.Verdict == "PASS" && testsPassed && !falseVerified) break;
