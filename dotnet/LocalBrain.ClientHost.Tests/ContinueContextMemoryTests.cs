@@ -3,6 +3,8 @@ using System.Text.Json.Nodes;
 using System.Text.Json;
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
+using LocalBrain.ClientHost.AgentV2;
 using LocalBrain.ClientHost;
 
 internal static class ContinueContextMemoryTests
@@ -22,15 +24,16 @@ internal static class ContinueContextMemoryTests
         for(var i=0;i<40;i++)messages.Add(Message(i%2==0?"user":"assistant",string.Join(' ',Enumerable.Range(0,250).Select(j=>$"public_record_{i}_{j}"))));
         messages.Add(Message("user","What is the acceptance code in the earlier VOLTA_PUBLIC_CONTEXT_73 version manager observation? Reply only with that code."));
         var payload=new JsonObject{["model"]="local-qwen38",["max_tokens"]=512,["stream"]=false,["messages"]=messages,["temperature"]=0};
-        using var stop=new CancellationTokenSource(TimeSpan.FromMinutes(18));
+        using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(100));
         await using var memory=new ContinueContextMemory(root);
-        var prepared=await memory.PrepareAsync(Bytes(payload),stop.Token);
+        var trace=new ContextAdmissionTrace((name,metadata)=>File.AppendAllText(Path.Combine(root,"admission-stages.jsonl"),JsonSerializer.Serialize(new{name,metadata})+Environment.NewLine));
+        var prepared=await memory.PrepareAsync(Bytes(payload),stop.Token,trace);
         Check(prepared.OriginalTokens>32768 && prepared.ForwardedTokens<=24576,"Native test must actually cross32K and return under physical admission");
         Check(Encoding.UTF8.GetString(prepared.Body).Contains("BLUE_LANTERN_731"),"Native memory must retrieve the old public observation");
         File.WriteAllBytes(Path.Combine(root,"public-prepared-request.json"),prepared.Body);
         var receipt=JsonNode.Parse(File.ReadAllText(Directory.GetFiles(Path.Combine(root,"continue-memory"),"*.receipt.json").Single()))!;
-        Check(receipt["native_diagnostics"]?["model_sha256"]?.GetValue<string>()?.Equals("4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb",StringComparison.OrdinalIgnoreCase)==true,"Actual native model identity required");
-        var proof=new{status="PASS_ACTUAL_QWEN_MEASUREMENT_AND_NATIVE_SALUKI_RECALL",prepared.OriginalTokens,prepared.ForwardedTokens,prepared.SourceHash,
+        Check(prepared.FallbackUsed || receipt["native_diagnostics"]?["model_sha256"]?.GetValue<string>()?.Equals("4a673518b11b1c4445f9b9a9d3c40356f5ba39f6a6260dcb25f3fbfd475d9efb",StringComparison.OrdinalIgnoreCase)==true,"Actual native model identity or explicit bounded fallback required");
+        var proof=new{status="PASS_ACTUAL_TOKENIZER_AND_BOUNDED_NATIVE_ADMISSION",prepared.OriginalTokens,prepared.ForwardedTokens,prepared.SourceHash,prepared.FallbackUsed,prepared.SelectionFailure,
             native=receipt["native_diagnostics"],public_fixture_only=true,pc70_inference_calls=0,knowledge_adoption=0};
         File.WriteAllText(Path.Combine(root,"native-proof.json"),JsonSerializer.Serialize(proof));Console.WriteLine(JsonSerializer.Serialize(proof));
     }
@@ -77,13 +80,13 @@ internal static class ContinueContextMemoryTests
         Check(calls==1&&repeat.SelectionCacheHit&&repeat.Body.SequenceEqual(prepared.Body),"Identical input/profile may reuse validated IDs without repeating slow CPU inference");
         var firstSource=prepared.SourceHash;
         await using var bad=new ContinueContextMemory(root+"-invalid",Count,(_,_,_,_)=>Task.FromResult("{\"event_ids\":[\"invented_other_task\"]}"));
-        var rejected=false;try{await bad.PrepareAsync(original);}catch(InvalidDataException){rejected=true;}
-        Check(rejected,"Foreign memory IDs cannot manufacture history");
+        var safe=await bad.PrepareAsync(original);
+        Check(safe.FallbackUsed&&safe.SelectionFailure=="history_retrieval_failed"&&!Encoding.UTF8.GetString(safe.Body).Contains("invented_other_task"),"Foreign IDs must be discarded before deterministic fallback");
         await using var unavailable=new ContinueContextMemory(root+"-unavailable",Count,(_,_,_,_)=>throw new IOException("fixture unavailable"));
-        rejected=false;try{await unavailable.PrepareAsync(original);}catch(IOException){rejected=true;}
-        Check(rejected&&Directory.EnumerateFiles(root+"-unavailable","*.json").Count()==1,"Memory failure must retain source and produce no prepared result");
+        safe=await unavailable.PrepareAsync(original);
+        Check(safe.FallbackUsed&&safe.ForwardedTokens<=24576&&!Directory.EnumerateFiles(root+"-unavailable","*.selection.json").Any(),"Failed selection must retain source, remeasure fallback and never cache a model result");
         var enormous=(JsonObject)shortRequest.DeepClone();enormous["messages"]=new JsonArray(Message("system",new string('x',33000)),Message("user","still required"));
-        rejected=false;try{await memory.PrepareAsync(Bytes(enormous));}catch(InvalidDataException){rejected=true;}
+        var rejected=false;try{await memory.PrepareAsync(Bytes(enormous));}catch(InvalidDataException){rejected=true;}
         Check(rejected,"Pinned instructions must never be truncated to force admission");
         full["max_tokens"]=32768;rejected=false;try{await memory.PrepareAsync(Bytes(full));}catch(InvalidDataException){rejected=true;}
         Check(rejected,"Output cannot expand the physical actor context");
@@ -97,7 +100,82 @@ internal static class ContinueContextMemoryTests
             Check(cancelled,"Cancellation must bound an unavailable measurement before selection/forwarding");
         }
         await TransportAsync(false);await TransportAsync(true);await TransportAsync(false,true);await TransportAsync(false,false,true);
+        await IsolationAsync(original,shortBytes);await ConcurrentTransportAsync(original,shortBytes);
+        await TimeoutChildAsync(original);await LateResultAsync(original,shortBytes);
         Console.WriteLine("Continue >32K history recall, exact latest request/system/tool pairs, physical32K admission, immutable source and failure isolation PASS; public fixtures, model0, production0.");
+    }
+
+    private static async Task IsolationAsync(byte[] original,byte[] small)
+    {
+        var root=Path.Combine(Path.GetTempPath(),"continue-isolation-"+Guid.NewGuid().ToString("N"));
+        var started=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);var calls=0;
+        await using var memory=new ContinueContextMemory(root,Count,async(_,_,_,t)=>{Interlocked.Increment(ref calls);started.SetResult();return await release.Task.WaitAsync(t);});
+        var longRequest=memory.PrepareAsync(original);await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        try{
+            var shortRequest=await memory.PrepareAsync(small).WaitAsync(TimeSpan.FromSeconds(1));
+            Check(shortRequest.Body.SequenceEqual(small)&&!longRequest.IsCompleted,"Short admission must complete while native selection holds its resource slot");
+            var concurrent=await memory.PrepareAsync(original).WaitAsync(TimeSpan.FromSeconds(2));
+            Check(concurrent.FallbackUsed&&concurrent.SelectionFailure=="history_selection_busy"&&calls==1,"Concurrent history must use bounded fallback without launching a second native process");
+        }finally{release.TrySetResult("{\"event_ids\":[]}");}
+        Check(!(await longRequest).FallbackUsed,"Original selector must still finish normally");
+        var reuse=await memory.PrepareAsync(original);
+        Check(reuse.SelectionCacheHit&&calls==1,"Successful selection cache remains immutable after concurrent fallback");
+    }
+
+    private static async Task TimeoutChildAsync(byte[] original)
+    {
+        var root=Path.Combine(Path.GetTempPath(),"continue-timeout-"+Guid.NewGuid().ToString("N"));
+        int pid=0;bool cancelled=false,exited=false;
+        await using var memory=new ContinueContextMemory(root,Count,async(_,_,_,token)=>{
+            var start=new ProcessStartInfo(Environment.ProcessPath!);start.ArgumentList.Add("--memory-job-target");
+            using var child=WindowsChildJob.Start(start);pid=child.Process.Id;
+            try{await Task.Delay(Timeout.Infinite,token);return "{\"event_ids\":[]}";}
+            catch(OperationCanceledException){cancelled=true;throw;}
+            finally{child.Terminate();await child.Process.WaitForExitAsync();exited=child.Process.HasExited;}
+        }){SelectionTimeout=TimeSpan.FromMilliseconds(150)};
+        var trace=new ContextAdmissionTrace();var prepared=await memory.PrepareAsync(original,trace:trace);
+        Check(pid>0&&cancelled&&exited&&prepared.FallbackUsed&&prepared.SelectionFailure=="history_retrieval_timeout","Selection deadline must cancel and reap its owned child before safe fallback");
+        Check(!Directory.EnumerateFiles(root,"*.selection.json").Any()&&!Directory.EnumerateFiles(root,"*.tmp").Any(),"Timeout must leave no partial cache/archive writes");
+        ContinueContextMemory.ValidateToolPairs(JsonNode.Parse(prepared.Body)!["messages"]!.AsArray());
+        Check(trace.FinalTokens<=24576&&File.ReadAllBytes(Path.Combine(root,prepared.SourceHash+".json")).SequenceEqual(original),"Fallback must preserve original archive, pinned instructions and budget");
+    }
+
+    private static async Task ConcurrentTransportAsync(byte[] original,byte[] small)
+    {
+        var root=Path.Combine(Path.GetTempPath(),"continue-http-isolation-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        var started=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var memory=new ContinueContextMemory(Path.Combine(root,"archive"),Count,async(_,_,_,t)=>{started.SetResult();return await release.Task.WaitAsync(t);});
+        var reserve=new TcpListener(IPAddress.Loopback,0);reserve.Start();var port=((IPEndPoint)reserve.LocalEndpoint).Port;reserve.Stop();
+        var peer=new Peer();using var gateway=new GatewayClient(new Uri("http://public-fixture.invalid"),peer);
+        var config=new ClientConfig("https://public-fixture.invalid",port,"unused",Path.Combine(root,"projects.json"),Path.Combine(root,"audit.jsonl"));
+        using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var serving=new Bridge(config,gateway,new Audit(config),memory).RunAsync(stop.Token);
+        using var client=new HttpClient{Timeout=TimeSpan.FromSeconds(8)};
+        var url=$"http://127.0.0.1:{port}/v1/chat/completions";
+        var longRequest=client.PostAsync(url,new ByteArrayContent(original));
+        try{
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            using var shortResponse=await client.PostAsync(url,new ByteArrayContent(small)).WaitAsync(TimeSpan.FromSeconds(2));
+            Check(shortResponse.IsSuccessStatusCode&&peer.Forwarded==1&&!longRequest.IsCompleted,"Short HTTP request must reach upstream while long history is selecting");
+            release.TrySetResult("{\"event_ids\":[]}");using var longResponse=await longRequest;
+            Check(longResponse.IsSuccessStatusCode&&peer.Forwarded==2,"Both HTTP requests must dispatch exactly once");
+        }finally{release.TrySetResult("{\"event_ids\":[]}");stop.Cancel();await serving;}
+    }
+
+    private static async Task LateResultAsync(byte[] original,byte[] small)
+    {
+        var root=Path.Combine(Path.GetTempPath(),"continue-late-"+Guid.NewGuid().ToString("N"));
+        var release=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);var calls=0;
+        await using var memory=new ContinueContextMemory(root,Count,(_,_,_,_)=>{calls++;return release.Task;}){SelectionTimeout=TimeSpan.FromMilliseconds(30)};
+        var first=await memory.PrepareAsync(original);
+        Check(first.SelectionFailure=="history_retrieval_timeout","Uncooperative selector must still have an admission deadline");
+        var second=await memory.PrepareAsync(original);
+        Check(second.SelectionFailure=="history_selection_busy"&&calls==1,"Timed-out native owner must retain the resource slot until it actually exits");
+        Check((await memory.PrepareAsync(small)).Body.SequenceEqual(small),"Uncooperative selector must not block short admission");
+        release.SetResult("{\"event_ids\":[]}");await Task.Delay(30);
+        Check(!Directory.EnumerateFiles(root,"*.selection.json").Any(),"Late results must never be persisted");
     }
 
     private sealed class Peer:HttpMessageHandler
@@ -123,7 +201,7 @@ internal static class ContinueContextMemoryTests
     {
         var root=Path.Combine(Path.GetTempPath(),"continue-transport-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
         var reserve=new TcpListener(IPAddress.Loopback,0);reserve.Start();var port=((IPEndPoint)reserve.LocalEndpoint).Port;reserve.Stop();
-        var memory=new ContinueContextMemory(Path.Combine(root,"archive"),(p,t)=>Task.FromResult(p["messages"]!.AsArray().Count>10?40000:1000),
+        var memory=new ContinueContextMemory(Path.Combine(root,"archive"),(p,t)=>p["messages"]!.AsArray().Count>10?Task.FromResult(40000):unavailable?throw new IOException("public fixture measurement unavailable"):Task.FromResult(1000),
             (_,_,_,_)=>unavailable?throw new IOException("public fixture unavailable"):Task.FromResult("{\"event_ids\":[]}"));
         var peer=new Peer{ReplyLost=replyLost,StreamInterrupted=streamInterrupted};using var gateway=new GatewayClient(new Uri("http://public-fixture.invalid"),peer);
         var config=new ClientConfig("https://public-fixture.invalid",port,"unused",Path.Combine(root,"projects.json"),Path.Combine(root,"audit.jsonl"));
@@ -144,7 +222,7 @@ internal static class ContinueContextMemoryTests
             using var response=await client.PostAsync($"http://127.0.0.1:{port}/v1/chat/completions",new StringContent(request.ToJsonString(),Encoding.UTF8,"application/json"));
             var body=await response.Content.ReadAsStringAsync();
             if(replyLost)Check((int)response.StatusCode==422&&peer.Forwarded==1&&body.Contains("dispatch_outcome_unknown")&&!body.Contains("context_handoff_unavailable"),"Lost reply must preserve unknown dispatch, prohibit implicit retry and never claim no send");
-            else if(unavailable)Check((int)response.StatusCode==422&&peer.Forwarded==0&&body.Contains("automatic_retry")&&body.Contains("context_handoff_unavailable"),"Admission failure must be nonretryable and send nothing to the model peer");
+            else if(unavailable)Check((int)response.StatusCode==424&&peer.Forwarded==0&&body.Contains("automatic_retry")&&body.Contains("context_measurement_failed"),"Failed tokenizer dependency must be nonretryable and send nothing to the model peer");
             else Check(response.IsSuccessStatusCode&&peer.Forwarded==1&&response.Headers.Contains("X-LocalBrain-Context-Recall")&&peer.Body!.Contains("current"),"Real loopback transport must forward the prepared request exactly once and return its receipt header");
         }finally{stop.Cancel();await serving;}
     }

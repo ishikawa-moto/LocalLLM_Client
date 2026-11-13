@@ -11,6 +11,8 @@ using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
+internal sealed class TaskMemoryBusyException() : IOException("Host native memory resource is already owned");
+
 // Optional Host-owned CPU backend. No URL, command or tool is accepted from a model/repository.
 internal sealed class TaskMemoryQ8 : IAsyncDisposable
 {
@@ -65,7 +67,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
             }
         }
     }
-    public async Task<JsonElement> StartAsync(CancellationToken token=default) {
+    public async Task<JsonElement> StartAsync(CancellationToken token=default,Action<string>? progress=null) {
         using var ocrPriority=background?null:Ocr.OcrPriority.Enter("taskmemory");
         if(process is not null && !process.HasExited)return await GetAsync("props",token);
         if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException("TaskMemory owner must be Windows");
@@ -86,7 +88,9 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
                     // The foreground lease above asks only the optional Slack background owner to yield.
                     await Task.Delay(25,token);
                 }
+                catch(IOException e)when((e.HResult&65535)==32){throw new TaskMemoryBusyException();}
             }
+            progress?.Invoke("input_verification");
             var actualFiles=Directory.GetFiles(options.InputDirectory,"*",SearchOption.AllDirectories)
                 .Select(p=>Path.GetRelativePath(options.InputDirectory,p).Replace('\\','/'))
                 .Where(p=>p==options.ModelFile || p.StartsWith("bin/",StringComparison.Ordinal)).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -114,6 +118,7 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
                 "--ctx-size",options.ContextLimit.ToString(),"--parallel","1","--n-gpu-layers","0","--threads","6",
                 "--cache-type-k","q8_0","--cache-type-v","q8_0","--flash-attn","on","--no-webui",
                 "--device","none","--no-op-offload","--fit","off","--offline","--log-verbosity","4","--log-colors","off"})start.ArgumentList.Add(arg);
+            token.ThrowIfCancellationRequested();progress?.Invoke("model_startup");
             job=WindowsChildJob.Start(start);process=job.Process;
             if(background)process.PriorityClass=ProcessPriorityClass.BelowNormal;
             stdout=ReadMetricsAsync(job.Output);stderr=ReadMetricsAsync(job.Error);
@@ -169,12 +174,12 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
         return await SendJsonAsync(client!,request,token,timeout);
     }
     internal static TimeSpan CompletionTimeout(int promptTokens) => TimeSpan.FromSeconds(Math.Clamp(200+promptTokens/15.0,180,900));
-    public async Task<Prediction> PredictAsync(string instruction,string[] eventIds,Action<object,int>? capture=null,CancellationToken token=default) {
+    public async Task<Prediction> PredictAsync(string instruction,string[] eventIds,Action<object,int>? capture=null,CancellationToken token=default,Action<string>? progress=null) {
         using var ocrPriority=Ocr.OcrPriority.Enter("taskmemory");
-        await StartAsync(token);
-        var template=await PostAsync("apply-template",new {messages=new[]{new {role="user",content=instruction}}},token);
+        progress?.Invoke("backend_lease");await StartAsync(token,progress);
+        progress?.Invoke("template");var template=await PostAsync("apply-template",new {messages=new[]{new {role="user",content=instruction}}},token);
         var prompt=template.GetProperty("prompt").GetString()??throw new InvalidDataException("Missing rendered model prompt");
-        var tokenizer=await PostAsync("tokenize",new {content=prompt,add_special=false,parse_special=true},token);
+        progress?.Invoke("tokenization");var tokenizer=await PostAsync("tokenize",new {content=prompt,add_special=false,parse_special=true},token);
         var tokens=tokenizer.GetProperty("tokens").EnumerateArray().Select(t=>t.GetInt32()).ToArray();
         measuredPromptTokens=tokens.Length;
         if(tokens.Length+OutputReserve+SafetyReserve>options!.ContextLimit)throw new InvalidDataException("TaskMemory prompt exceeds Host configured token budget");
@@ -182,7 +187,8 @@ internal sealed class TaskMemoryQ8 : IAsyncDisposable
             json_schema=new {type="object",properties=new {event_ids=new {type="array",items=new {type="string",@enum=eventIds},maxItems=8}},required=new[]{"event_ids"},additionalProperties=false}};
         var completionTimeout=CompletionTimeout(tokens.Length);
         capture?.Invoke(new {rendered_prompt=prompt,final_payload=payload,model_sha256=options!.ModelSha256,completion_deadline_seconds=completionTimeout.TotalSeconds},tokens.Length);
-        var response=await PostAsync("completion",payload,token,completionTimeout);
+        progress?.Invoke("selection_inference");var response=await PostAsync("completion",payload,token,completionTimeout);
+        progress?.Invoke("selection_received");
         if(response.TryGetProperty("truncated",out var truncated) && truncated.GetBoolean())throw new InvalidDataException("Native memory silently truncated prompt");
         return new(response.GetProperty("content").GetString()??"",tokens.Length,response);
     }
