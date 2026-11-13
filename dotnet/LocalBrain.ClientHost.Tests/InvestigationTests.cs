@@ -65,6 +65,18 @@ internal static class InvestigationTests
         var source=Encoding.UTF8.GetBytes("{\"messages\":[{\"role\":\"user\",\"content\":\"PUBLIC_GOAL\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\"}},{\"type\":\"function\",\"function\":{\"name\":\"run_terminal_command\"}},{\"type\":\"function\",\"function\":{\"name\":\"mcp_localbrain_agent_v2_investigate\"}}]}");
         var routed=JsonNode.Parse(ContinueManagedRouting.Prepare(source))!;
         Check(routed["tools"]!.AsArray().Count==1&&routed["messages"]![1]!["content"]!.GetValue<string>()=="PUBLIC_GOAL","Continue investigation tools route to Host without rewriting the user goal");
+        var withSystem=JsonNode.Parse(source)!.AsObject();
+        withSystem["messages"]!.AsArray().Insert(0,new JsonObject{["role"]="system",["content"]="ORIGINAL_CLIENT_POLICY"});
+        var prepared=JsonNode.Parse(ContinueManagedRouting.Prepare(Encoding.UTF8.GetBytes(withSystem.ToJsonString())))!;
+        Check(prepared["messages"]!.AsArray().Count(m=>m?["role"]?.GetValue<string>()=="system")==1 &&
+            prepared["messages"]![0]!["content"]!.GetValue<string>().StartsWith("ORIGINAL_CLIENT_POLICY\n\n",StringComparison.Ordinal) &&
+            prepared["messages"]![1]!["content"]!.GetValue<string>()=="PUBLIC_GOAL",
+            "Real Continue requests retain one leading system message accepted by the qualified Qwen template");
+        withSystem["messages"]![0]!["content"]=new JsonArray(new JsonObject{["type"]="text",["text"]="ORIGINAL_BLOCK_POLICY"});
+        prepared=JsonNode.Parse(ContinueManagedRouting.Prepare(Encoding.UTF8.GetBytes(withSystem.ToJsonString())))!;
+        Check(prepared["messages"]![0]!["content"]!.AsArray().Count==2 &&
+            prepared["messages"]![0]!["content"]![0]!["text"]!.GetValue<string>()=="ORIGINAL_BLOCK_POLICY",
+            "Structured system content remains intact within the same leading system message");
         var plain=Encoding.UTF8.GetBytes("{\"messages\":[],\"tools\":[]}");
         Check(ContinueManagedRouting.Prepare(plain).SequenceEqual(plain),"Other model/managed relay requests remain byte-exact");
         Console.WriteLine("Investigation PASS: exact goal, automatic incomplete-turn continuation, context handoff, retained evidence, no duplicate reads, immutable final report, completion gate, no command capability, infrastructure stop and Continue routing.");
