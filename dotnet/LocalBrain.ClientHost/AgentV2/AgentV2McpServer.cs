@@ -74,8 +74,10 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                         if(investigations.TryGetValue(key,out var active))await TaskAgentCoordinator.CancelAsync(active.Root,active.Task,isolatedControlRoot);
                         continue;
                     }
-                    if(method.GetString()=="tools/call" && message.TryGetProperty("params",out var parameters) && parameters.ValueKind==JsonValueKind.Object && parameters.TryGetProperty("arguments",out var arguments) && arguments.ValueKind==JsonValueKind.Object &&
-                        arguments.TryGetProperty("task",out var task) && task.ValueKind==JsonValueKind.Object && task.TryGetProperty("read_only",out var readOnly) && readOnly.ValueKind==JsonValueKind.True){
+                    if(method.GetString()=="tools/call" && message.TryGetProperty("params",out var parameters) && parameters.ValueKind==JsonValueKind.Object &&
+                        (parameters.TryGetProperty("name",out var name) && name.ValueKind==JsonValueKind.String && name.GetString()=="localbrain_agent_v2_investigate" ||
+                        parameters.TryGetProperty("arguments",out var arguments) && arguments.ValueKind==JsonValueKind.Object &&
+                        arguments.TryGetProperty("task",out var task) && task.ValueKind==JsonValueKind.Object && task.TryGetProperty("read_only",out var readOnly) && readOnly.ValueKind==JsonValueKind.True)){
                         pending.RemoveAll(t=>t.IsCompletedSuccessfully);
                         if(pending.Count<4){pending.Add(RespondAsync(line));continue;}
                     }
@@ -143,7 +145,13 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
             throw new InvalidDataException("Unknown Agent v2 tool");
         if (runner is not null && name == "localbrain_agent_v2_resume")
             throw new UnauthorizedAccessException("Runner resume is not exposed");
-        var task = AgentTaskRequest.Parse(arguments.GetProperty("task").GetRawText());
+        var taskJson=arguments.GetProperty("task").GetRawText();
+        if(name=="localbrain_agent_v2_investigate"){
+            var input=System.Text.Json.Nodes.JsonNode.Parse(taskJson)?.AsObject()??throw new InvalidDataException("Investigation task missing");
+            if(input["read_only"] is {} flag && !flag.GetValue<bool>())throw new UnauthorizedAccessException("Investigation cannot request mutation capability");
+            input["read_only"]=true;taskJson=input.ToJsonString();
+        }
+        var task = AgentTaskRequest.Parse(taskJson);
         if(name=="localbrain_agent_v2_investigate" && !task.ReadOnly)
             throw new UnauthorizedAccessException("Investigation requires the read-only Host path");
         if(task.ReadOnly && launchManaged && requestKey is null)throw new InvalidDataException("Investigation delivery requires an MCP request ID");

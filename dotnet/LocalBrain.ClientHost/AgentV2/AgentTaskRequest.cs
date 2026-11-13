@@ -49,7 +49,7 @@ internal sealed record AgentTaskRequest(
             request.Risk is not ("LOW" or "NORMAL" or "MEDIUM" or "HIGH") ||
             request.AllowedFiles is null or { Length: 0 or > 100 } ||
             request.AllowedFiles.Sum(file => file.Length) > 8_000 ||
-            request.AllowedFiles.Any(file => (file.Contains('*') && (request.CommandExecution is null || !(file=="**" || file.EndsWith("/**") && file[..^3].IndexOf('*')<0))) || string.IsNullOrWhiteSpace(file) || file.Length > 260 ||
+            request.AllowedFiles.Any(file => (file.Contains('*') && (request.CommandExecution is null && !request.ReadOnly || !(file=="**" || file.EndsWith("/**") && file[..^3].IndexOf('*')<0))) || string.IsNullOrWhiteSpace(file) || file.Length > 260 ||
                 Path.IsPathRooted(file) || file.Split('/', '\\').Any(part => part is "." or ".." or ".git" or ".localbrain")) ||
             request.AllowedFiles.Any(file => Regex.IsMatch(Path.GetFileName(file),
                 @"^(?:\.env(?:\..*)?|id_(?:rsa|ed25519)|.*\.(?:pfx|p12|key|pem))$",

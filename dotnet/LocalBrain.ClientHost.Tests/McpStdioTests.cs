@@ -3,9 +3,36 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using LocalBrain.ClientHost;
+using LocalBrain.ClientHost.AgentV2;
 
 internal static class McpStdioTests
 {
+    internal static async Task AgentEntryAsync(string directory,string repo,ClientConfig config)
+    {
+        var configPath=Path.Combine(directory,"agent-stdio-config.json");
+        File.WriteAllText(configPath,JsonSerializer.Serialize(config,ClientConfig.JsonOptions));
+        var start=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"localbrain.exe")){
+            UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
+            StandardInputEncoding=new UTF8Encoding(false),StandardOutputEncoding=Encoding.UTF8};
+        start.ArgumentList.Add("agent-v2-mcp");start.Environment["LOCALBRAIN_CLIENT_CONFIG"]=configPath;
+        using var child=Process.Start(start)??throw new Exception("Agent MCP pipe fixture did not launch");
+        using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try{
+            var text=string.Concat(Enumerable.Repeat("日本語の読み取り検証・引用\"と改行\n・絵文字🐕。",180));
+            var payload=JsonSerializer.Serialize(new{jsonrpc="2.0",id="unicode_agent_731",method="tools/call",
+                @params=new{name="localbrain_agent_v2_investigate",arguments=new{workspace=repo,task=new{read_only=true,requirement=text}}}},
+                new JsonSerializerOptions{Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping});
+            await child.StandardInput.WriteLineAsync(payload.AsMemory(),stop.Token);
+            // Keep stdin open, as Continue does. Invalid scope must produce a correlated error before EOF, without starting work.
+            var line=await child.StandardOutput.ReadLineAsync(stop.Token)??throw new Exception("No Agent MCP response");
+            using var reply=JsonDocument.Parse(line);
+            if(reply.RootElement.GetProperty("id").GetString()!="unicode_agent_731" ||
+                !reply.RootElement.GetProperty("error").GetProperty("message").GetString()!.StartsWith("InvalidDataException:",StringComparison.Ordinal))
+                throw new Exception("Actual Agent MCP entry corrupted Unicode or lost the request ID");
+            child.StandardInput.Close();await child.WaitForExitAsync(stop.Token);
+            Console.WriteLine("Actual Agent MCP UTF-8 entry PASS: Japanese/emoji >4KiB, open input pipe, correlated invalid-scope response and no task dispatch.");
+        }finally{if(!child.HasExited){child.Kill(true);await child.WaitForExitAsync();}}
+    }
     public static async Task FixtureAsync()
     {
         if (OperatingSystem.IsWindows())

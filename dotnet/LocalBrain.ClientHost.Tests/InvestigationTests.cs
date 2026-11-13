@@ -79,6 +79,17 @@ internal static class InvestigationTests
             "Structured system content remains intact within the same leading system message");
         var plain=Encoding.UTF8.GetBytes("{\"messages\":[],\"tools\":[]}");
         Check(ContinueManagedRouting.Prepare(plain).SequenceEqual(plain),"Other model/managed relay requests remain byte-exact");
+        var mcpTask=JsonNode.Parse(AgentTaskRunner.RequestJson(request with{AllowedFiles=["**"]}))!.AsObject();
+        mcpTask.Remove("read_only");
+        var mcpInput=JsonSerializer.Serialize(new{jsonrpc="2.0",id=731,method="tools/call",@params=new{name="localbrain_agent_v2_investigate",arguments=new{workspace=repo,task=mcpTask}}});
+        var originalIn=Console.In;var originalOut=Console.Out;var output=new StringWriter();var mcpControl=Path.Combine(directory,"readonly-mcp-input");
+        try{Console.SetIn(new StringReader(mcpInput+"\n"));Console.SetOut(output);await new AgentV2McpServer(new ProjectAllowlist(config),config,mcpControl,false).RunAsync();}
+        finally{Console.SetIn(originalIn);Console.SetOut(originalOut);}
+        using(var reply=JsonDocument.Parse(output.ToString()))Check(reply.RootElement.GetProperty("id").GetInt32()==731&&!reply.RootElement.TryGetProperty("error",out _),"Investigate capability owns read-only mode when the caller omits the optional flag");
+        var mcpDir=TaskAgentCoordinator.CurrentDirectory(repo,mcpControl)!;
+        var mcpJob=JsonSerializer.Deserialize<TaskAgentCoordinator.Job>(File.ReadAllBytes(Path.Combine(mcpDir,"job.json")),ClientConfig.JsonOptions)!;
+        Check(mcpJob.Authorization is null && AgentTaskRequest.Parse(mcpJob.RequestJson).ReadOnly,"Read-only wildcard selection creates no mutation or command grant");
+        await McpStdioTests.AgentEntryAsync(directory,repo,config);
         Console.WriteLine("Investigation PASS: exact goal, automatic incomplete-turn continuation, context handoff, retained evidence, no duplicate reads, immutable final report, completion gate, no command capability, infrastructure stop and Continue routing.");
     }
 }
