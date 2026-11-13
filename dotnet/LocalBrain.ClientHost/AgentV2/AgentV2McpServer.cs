@@ -74,8 +74,10 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                         if(investigations.TryGetValue(key,out var active))await TaskAgentCoordinator.CancelAsync(active.Root,active.Task,isolatedControlRoot);
                         continue;
                     }
-                    if(method.GetString()=="tools/call" && message.TryGetProperty("params",out var parameters) && parameters.ValueKind==JsonValueKind.Object && parameters.TryGetProperty("arguments",out var arguments) && arguments.ValueKind==JsonValueKind.Object &&
-                        arguments.TryGetProperty("task",out var task) && task.ValueKind==JsonValueKind.Object && task.TryGetProperty("read_only",out var readOnly) && readOnly.ValueKind==JsonValueKind.True){
+                    if(method.GetString()=="tools/call" && message.TryGetProperty("params",out var parameters) && parameters.ValueKind==JsonValueKind.Object &&
+                        (parameters.TryGetProperty("name",out var name) && name.ValueKind==JsonValueKind.String && name.GetString()=="localbrain_agent_v2_investigate" ||
+                        parameters.TryGetProperty("arguments",out var arguments) && arguments.ValueKind==JsonValueKind.Object &&
+                        arguments.TryGetProperty("task",out var task) && task.ValueKind==JsonValueKind.Object && task.TryGetProperty("read_only",out var readOnly) && readOnly.ValueKind==JsonValueKind.True)){
                         pending.RemoveAll(t=>t.IsCompletedSuccessfully);
                         if(pending.Count<4){pending.Add(RespondAsync(line));continue;}
                     }
