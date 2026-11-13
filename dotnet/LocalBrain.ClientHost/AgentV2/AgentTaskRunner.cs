@@ -204,8 +204,8 @@ internal static partial class AgentTaskRunner
                 sessionId: actorSessionId,
                 onMilestone: async snapshot =>
                 {
-                    // Distinct read-only observations (read/ls/search/recall) are investigation progress;
-                    // repeating an identical call is not.
+                    // New output from read-only observations (read/ls/search/recall) is investigation
+                    // progress; repeated output, even from varied arguments, is not.
                     var newEvidence = snapshot.DistinctObservations > observationsSeen;
                     observationsSeen = snapshot.DistinctObservations;
                     var live = await SupervisorDecider.DecideAsync(new SupervisorState("implementation",

@@ -40,15 +40,15 @@ internal static class SupervisorRulesTests
             into.Observe(Event(new { type = "tool_execution_end", toolCallId = id, isError = error,
                 result = new { content = new[] { new { type = "text", text } } } }), hostAbort);
         }
-        Tool(tracker, "ls", new { path = "." });
-        Tool(tracker, "host_memory_search", new { query = "public" });
-        Tool(tracker, "ls", new { path = "dotnet" });
-        Tool(tracker, "ls", new { path = "dotnet/Public" });
+        Tool(tracker, "ls", new { path = "." }, text: "dotnet/\nREADME.md");
+        Tool(tracker, "host_memory_search", new { query = "public" }, text: "hash_public_1");
+        Tool(tracker, "ls", new { path = "dotnet" }, text: "Public/\nPublic.sln");
+        Tool(tracker, "ls", new { path = "dotnet/Public" }, text: "Public.csproj");
         var explored = tracker.Snapshot();
-        Tool(tracker, "ls", new { path = "." });
-        Tool(tracker, "ls", new { path = "." });
-        if (explored.DistinctObservations != 4 || tracker.DistinctObservations != 4 || explored.NoProgress)
-            throw new Exception("Distinct read-only exploration is progress; repeating an identical call is not");
+        Tool(tracker, "ls", new { path = "." }, text: "dotnet/\nREADME.md");
+        for (var i = 0; i < 3; i++) Tool(tracker, "find", new { pattern = "*.missing" + i }, text: "No files found matching pattern");
+        if (explored.DistinctObservations != 4 || tracker.DistinctObservations != 5 || explored.NoProgress)
+            throw new Exception("New exploration output is progress; repeated output, even with varied arguments, is not");
         var exploring = state with { ToolCalls = 4, Progress = "medium", LastActionChangedState = true };
         await Check(exploring, "CONTINUE");
         await Check(exploring with { Progress = "low", LastActionChangedState = false }, "REPLAN");
@@ -59,9 +59,13 @@ internal static class SupervisorRulesTests
         Tool(tracker, "ls", new { path = "missing" }, true, "ENOENT", hostAbort: true);
         if (tracker.ToolErrors != 2 || tracker.AbortedTools != 1)
             throw new Exception("Unrequested aborts and real tool errors remain failures");
-        for (var i = 0; i < 15; i++) Tool(tracker, "ls", new { path = "public/" + i });
-        if (!tracker.NoProgress)
-            throw new Exception("Unbounded exploration without writes must still stop");
+        var bounded = new ProgressTracker();
+        for (var i = 0; i < 14; i++) Tool(bounded, "ls", new { path = "public/" + i }, text: "file" + i);
+        if (bounded.NoProgress || bounded.DistinctObservations != 14)
+            throw new Exception("Exploration below the stall bound must continue");
+        Tool(bounded, "ls", new { path = "public/14" }, text: "file14");
+        if (!bounded.NoProgress)
+            throw new Exception("Even exploration with new output must stop at the no-write stall bound");
 
         PiRunResult Interrupted(string action) => new("", 4, 0, 0, 0, 0, 0, 0, 4, false, 0, 0, null,
             new SupervisorDecision(action, "hard_rule", "recent_action_did_not_change_state", null, null, false), true);
