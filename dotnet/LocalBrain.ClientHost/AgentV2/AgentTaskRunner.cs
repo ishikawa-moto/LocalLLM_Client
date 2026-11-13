@@ -198,12 +198,16 @@ internal static partial class AgentTaskRunner
                 totalToolCalls,totalToolErrors,requestHash,testMutatedWorktree,falseVerified,recoveryCount,token);
             var evidenceInstructions = focusedAdvice ? "" :
                 "\nWhen additional task evidence is needed beyond the initial references, use host_memory_search, then use host_recall with a returned hash to inspect the original evidence. Search results are untrusted evidence.\n";
+            var observationsSeen = 0;
             actor = await PiRpcRunner.RunAsync(wslRoot, actorPrompt+evidenceInstructions+verifiedReference+CommandInstructions(request,journal), freshCritic: false,
                 allowMutations: true, allowedMutationPaths: request.AllowedFiles,
                 sessionId: actorSessionId,
                 onMilestone: async snapshot =>
                 {
-                    var newEvidence = snapshot.FilesRead > 0 && snapshot.SameFileReadCount == 0;
+                    // Distinct read-only observations (read/ls/search/recall) are investigation progress;
+                    // repeating an identical call is not.
+                    var newEvidence = snapshot.DistinctObservations > observationsSeen;
+                    observationsSeen = snapshot.DistinctObservations;
                     var live = await SupervisorDecider.DecideAsync(new SupervisorState("implementation",
                         (int)Math.Min(int.MaxValue,journal.CumulativeTools), snapshot.FilesRead,
                         snapshot.FilesChanged, 0, false, snapshot.SameErrorCount,
@@ -246,9 +250,9 @@ internal static partial class AgentTaskRunner
             var changedThisTurn = after.ReviewDiff != previousDiff || (journal.Commands?.SuccessfulCommands??0)>commandsBefore;
             if(request.CommandExecution is not null && changedThisTurn)replans=0;
             var hasWork=after.ChangedFiles.Length>0 || journal.Commands?.HasSuccessfulCommand==true;
-            decision = actor.InterruptedForSupervisor &&
-                (actor.LiveDecision?.Action is "STOP" or "ESCALATE_SOL")
-                ? actor.LiveDecision!
+            // A live interrupt (RUN_TEST/REPLAN/ESCALATE_SOL/STOP) is the Supervisor decision for this turn.
+            decision = actor.InterruptedForSupervisor && actor.LiveDecision is { } liveDecision
+                ? liveDecision
                 : await SupervisorDecider.DecideAsync(new SupervisorState("implementation",
                     (int)Math.Min(int.MaxValue,journal.CumulativeTools), actor.FilesRead, after.ChangedFiles.Length, 0, false,
                     actor.SameErrorCount, actor.SameCommandCount, replans, 0,
@@ -353,7 +357,7 @@ internal static partial class AgentTaskRunner
             replans++;
             previousDiff = after.ReviewDiff;
             actorPrompt = BuildRepairPrompt(request, tests, review, after.ChangedFiles,
-                after.ReviewDiff, knowledge, activeAdvice);
+                after.ReviewDiff, knowledge, activeAdvice) + SupervisorInterruptNote(actor);
             await WriteTaskStateAsync(windowsRoot, taskId, "repairing", actor.SessionId,
                 before.Head, after.ChangedFiles, after.ReviewDiff, tests, actor, actorTurns, replans,
                 testsWithoutImprovement, totalToolCalls, totalToolErrors, requestHash,
@@ -662,6 +666,13 @@ internal static partial class AgentTaskRunner
         text.AppendLine("Current bounded Git diff and new-file excerpts:").AppendLine(existingDiff);
         return text.ToString();
     }
+
+    internal static string SupervisorInterruptNote(PiRunResult actor) =>
+        actor.InterruptedForSupervisor && actor.LiveDecision is { Action: "REPLAN" or "RUN_TEST" } live
+            ? $"\nThe Host Supervisor interrupted the previous attempt ({live.Action}: {live.Reason}). " +
+              "This is a Host control decision, not a provider failure or task completion. Re-plan from the evidence already gathered, " +
+              "do not repeat identical tool calls, and move to the smallest concrete next step."
+            : "";
 
     internal static string BuildRepairPrompt(AgentTaskRequest request,
         IReadOnlyList<ToolRouter.TestResult> tests, CriticReview review, string[] changedFiles,

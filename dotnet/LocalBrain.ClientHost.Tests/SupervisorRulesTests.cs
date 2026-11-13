@@ -19,6 +19,57 @@ internal static class SupervisorRulesTests
         await Check(state with {SameErrorCount=3},"ESCALATE_SOL");
         await Check(state with {CompletionCandidate=true},"RUN_TEST");
 
+        // Pi 1.4.0 reports a Host-requested abort during request setup as stopReason=error.
+        const string piAbort = "This operation was aborted";
+        if (PiRpcRunner.ClassifyAssistantStop("error", piAbort, true) != PiRpcRunner.AssistantStop.HostAbort ||
+            PiRpcRunner.ClassifyAssistantStop("aborted", "Request was aborted", true) != PiRpcRunner.AssistantStop.HostAbort ||
+            PiRpcRunner.ClassifyAssistantStop("error", piAbort, false) != PiRpcRunner.AssistantStop.ProviderError ||
+            PiRpcRunner.ClassifyAssistantStop("aborted", "Request was aborted", false) != PiRpcRunner.AssistantStop.ProviderError ||
+            PiRpcRunner.ClassifyAssistantStop("error", "Windows model relay failed (process)", true) != PiRpcRunner.AssistantStop.ProviderError ||
+            PiRpcRunner.ClassifyAssistantStop("error", "fetch failed: " + piAbort, true) != PiRpcRunner.AssistantStop.ProviderError ||
+            PiRpcRunner.ClassifyAssistantStop("toolUse", null, true) != PiRpcRunner.AssistantStop.Normal)
+            throw new Exception("Only the abort the Host requested may be expected; any other provider failure must still fail");
+
+        static JsonElement Event(object value) => JsonSerializer.SerializeToElement(value);
+        var tracker = new ProgressTracker();
+        var call = 0;
+        void Tool(ProgressTracker into, string name, object args, bool error = false, string text = "ok", bool hostAbort = false)
+        {
+            var id = "public_" + (++call);
+            into.Observe(Event(new { type = "tool_execution_start", toolCallId = id, toolName = name, args }), hostAbort);
+            into.Observe(Event(new { type = "tool_execution_end", toolCallId = id, isError = error,
+                result = new { content = new[] { new { type = "text", text } } } }), hostAbort);
+        }
+        Tool(tracker, "ls", new { path = "." });
+        Tool(tracker, "host_memory_search", new { query = "public" });
+        Tool(tracker, "ls", new { path = "dotnet" });
+        Tool(tracker, "ls", new { path = "dotnet/Public" });
+        var explored = tracker.Snapshot();
+        Tool(tracker, "ls", new { path = "." });
+        Tool(tracker, "ls", new { path = "." });
+        if (explored.DistinctObservations != 4 || tracker.DistinctObservations != 4 || explored.NoProgress)
+            throw new Exception("Distinct read-only exploration is progress; repeating an identical call is not");
+        var exploring = state with { ToolCalls = 4, Progress = "medium", LastActionChangedState = true };
+        await Check(exploring, "CONTINUE");
+        await Check(exploring with { Progress = "low", LastActionChangedState = false }, "REPLAN");
+        Tool(tracker, "ls", new { path = "dotnet/Public/x" }, true, ProgressTracker.HostAbortedToolText, hostAbort: true);
+        if (tracker.ToolErrors != 0 || tracker.AbortedTools != 1)
+            throw new Exception("A tool cancelled by the Host abort is not a model tool failure");
+        Tool(tracker, "ls", new { path = "dotnet/Public/y" }, true, ProgressTracker.HostAbortedToolText);
+        Tool(tracker, "ls", new { path = "missing" }, true, "ENOENT", hostAbort: true);
+        if (tracker.ToolErrors != 2 || tracker.AbortedTools != 1)
+            throw new Exception("Unrequested aborts and real tool errors remain failures");
+        for (var i = 0; i < 15; i++) Tool(tracker, "ls", new { path = "public/" + i });
+        if (!tracker.NoProgress)
+            throw new Exception("Unbounded exploration without writes must still stop");
+
+        PiRunResult Interrupted(string action) => new("", 4, 0, 0, 0, 0, 0, 0, 4, false, 0, 0, null,
+            new SupervisorDecision(action, "hard_rule", "recent_action_did_not_change_state", null, null, false), true);
+        if (!AgentTaskRunner.SupervisorInterruptNote(Interrupted("REPLAN")).Contains("REPLAN", StringComparison.Ordinal) ||
+            AgentTaskRunner.SupervisorInterruptNote(Interrupted("STOP")).Length != 0 ||
+            AgentTaskRunner.SupervisorInterruptNote(Interrupted("REPLAN") with { InterruptedForSupervisor = false }).Length != 0)
+            throw new Exception("A Supervisor REPLAN must reach the next repair prompt");
+
         const string apiObservation = "I've verified the .NET API usage (instance IsInvalidTime). The Host reruns and owns validation.";
         if (AgentTaskRunner.ClaimsCompletion(apiObservation) ||
             AgentTaskRunner.ClaimsCompletion("Let me search for additional evidence about what the verified solution looks like.") ||

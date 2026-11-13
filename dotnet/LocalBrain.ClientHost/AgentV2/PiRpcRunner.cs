@@ -110,12 +110,13 @@ internal static class PiRpcRunner
         var nextMilestoneAt = 4;
         var providerError = false;
         var providerErrorCode="UnclassifiedProviderError";
+        var hostAbort = new HostAbort();
         await using var worker = JsonlWorker.Start(start, message =>
         {
             if (message.TryGetProperty("type", out var journalType) &&
                 journalType.GetString() is "tool_execution_start" or "tool_execution_end")
                 HostTaskJournal.Current?.RecordToolEvent(message);
-            progress.Observe(message);
+            progress.Observe(message, hostAbort.Requested);
             if (!message.TryGetProperty("type", out var type)) return;
             if (!freshCritic && type.GetString() == "tool_execution_end" && progress.NoProgress)
                 noProgressSignal.TrySetResult();
@@ -130,13 +131,22 @@ internal static class PiRpcRunner
                 case "message_end":
                     if (!message.TryGetProperty("message", out var completed) ||
                         !completed.TryGetProperty("role", out var role) || role.GetString() != "assistant") break;
-                    if (completed.TryGetProperty("stopReason", out var stop) && stop.GetString() == "error")
+                    var stopReason = completed.TryGetProperty("stopReason", out var stop) &&
+                        stop.ValueKind == JsonValueKind.String ? stop.GetString() : null;
+                    var raw=completed.TryGetProperty("errorMessage",out var reason) && reason.ValueKind==JsonValueKind.String ? reason.GetString()??"" : "";
+                    switch (ClassifyAssistantStop(stopReason, raw, hostAbort.Requested))
                     {
-                        providerError = true;
-                        var raw=completed.TryGetProperty("errorMessage",out var reason)?reason.GetString()??"":"";
-                        providerErrorCode=new[]{"dispatch_outcome_unknown","ContextMeasurementUnavailable","Windows Host request failed","Host capability is unavailable","InvalidDataException","UnauthorizedAccessException","context_handoff_required"}
-                            .FirstOrDefault(code=>raw.Contains(code,StringComparison.Ordinal))??"UnclassifiedProviderError";
-                        HostTaskJournal.Current?.Record("provider_error",new {code=providerErrorCode},"runtime_observed");
+                        case AssistantStop.HostAbort:
+                            hostAbort.Observed = true;
+                            HostTaskJournal.Current?.Record("host_abort_observed",new {stop_reason=stopReason},"runtime_observed");
+                            break;
+                        case AssistantStop.ProviderError:
+                            providerError = true;
+                            providerErrorCode=stopReason=="aborted" ? "UnrequestedProviderAbort" :
+                                new[]{"dispatch_outcome_unknown","ContextMeasurementUnavailable","Windows Host request failed","Host capability is unavailable","InvalidDataException","UnauthorizedAccessException","context_handoff_required"}
+                                .FirstOrDefault(code=>raw.Contains(code,StringComparison.Ordinal))??"UnclassifiedProviderError";
+                            HostTaskJournal.Current?.Record("provider_error",new {code=providerErrorCode},"runtime_observed");
+                            break;
                     }
                     if (windowsRoot is not null && taskId is not null &&
                         completed.TryGetProperty("usage", out var usage) &&
@@ -188,7 +198,7 @@ internal static class PiRpcRunner
             }
             if (finished == noProgressSignal.Task)
             {
-                await AbortAsync(worker, runTimeout.Token);
+                await AbortAsync(worker, hostAbort, runTimeout.Token);
                 break;
             }
             if (!await milestoneReady) continue;
@@ -197,7 +207,7 @@ internal static class PiRpcRunner
                 liveDecision = await onMilestone(snapshot);
                 if (liveDecision.Action is not ("RUN_TEST" or "REPLAN" or "ESCALATE_SOL" or "STOP"))
                     continue;
-                await AbortAsync(worker, runTimeout.Token);
+                await AbortAsync(worker, hostAbort, runTimeout.Token);
                 interruptedForSupervisor = true;
                 break;
             }
@@ -213,6 +223,13 @@ internal static class PiRpcRunner
         }
         if (providerError && sideEffects?.HandoffRequested != true)
             throw new InvalidOperationException("LocalBrain model response failed: "+providerErrorCode);
+        if (hostAbort.Requested)
+            HostTaskJournal.Current?.Record("supervisor_interrupt", new {
+                action = interruptedForSupervisor ? liveDecision?.Action : "NO_PROGRESS",
+                source = interruptedForSupervisor ? liveDecision?.Source : "progress_tracker",
+                reason = interruptedForSupervisor ? liveDecision?.Reason : "no_progress_threshold",
+                pi_abort_acknowledged = true, pi_abort_observed = hostAbort.Observed,
+                aborted_tools = progress.AbortedTools }, "host_observed");
         HostTaskJournal.Current?.Record(freshCritic ? "critic_response" : "actor_response",
             new { text = VisibleText(output.ToString()), progress.ToolCalls, progress.ToolErrors }, "model_claim");
         return new PiRunResult(VisibleText(output.ToString()), progress.ToolCalls, progress.ToolErrors,
@@ -223,13 +240,39 @@ internal static class PiRpcRunner
             liveDecision, interruptedForSupervisor, sideEffects?.HandoffRequested == true);
     }
 
-    private static async Task AbortAsync(JsonlWorker worker, CancellationToken token)
+    private static async Task AbortAsync(JsonlWorker worker, HostAbort hostAbort, CancellationToken token)
     {
+        // Set before sending: Pi may emit the cancelled turn before the RPC acknowledgement.
+        hostAbort.Requested = true;
         var aborted = await worker.SendAsync(new() { ["type"] = "abort" },
             TimeSpan.FromSeconds(30), token);
         if (!aborted.TryGetProperty("success", out var success) ||
             success.ValueKind != JsonValueKind.True)
             throw new IOException("Pi did not acknowledge Supervisor abort");
+    }
+
+    internal enum AssistantStop { Normal, HostAbort, ProviderError }
+
+    /// <summary>
+    /// Separates the cancellation the Host itself requested from provider failures.
+    /// Pi 1.4.0 reports an abort observed during request setup (auth resolution)
+    /// as stopReason=error with the AbortSignal reason text, not stopReason=aborted.
+    /// Only those exact abort texts, and only after the Host sent abort, are expected.
+    /// </summary>
+    internal static AssistantStop ClassifyAssistantStop(string? stopReason, string? errorMessage, bool hostAbortRequested) =>
+        stopReason switch
+        {
+            "aborted" => hostAbortRequested ? AssistantStop.HostAbort : AssistantStop.ProviderError,
+            "error" when hostAbortRequested &&
+                errorMessage?.Trim() is "This operation was aborted" or "Request was aborted" => AssistantStop.HostAbort,
+            "error" => AssistantStop.ProviderError,
+            _ => AssistantStop.Normal
+        };
+
+    private sealed class HostAbort
+    {
+        public volatile bool Requested;
+        public volatile bool Observed;
     }
 
     private static string VisibleText(string raw)
