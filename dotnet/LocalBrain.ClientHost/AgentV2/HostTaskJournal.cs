@@ -22,6 +22,7 @@ internal sealed class HostTaskJournal : IDisposable
     }
     private readonly string requestJson;
     private readonly bool requiresApproval;
+    private readonly bool readOnly;
     private readonly string workspaceId;
     private readonly string root;
     private readonly long previousTools;
@@ -46,6 +47,7 @@ internal sealed class HostTaskJournal : IDisposable
             Path.GetFullPath(root), "main", ""));
         requestJson = AgentTaskRunner.RequestJson(request);
         requiresApproval=request.EffectiveRisk=="HIGH";
+        readOnly=request.ReadOnly;
         store.CreateTask(taskId, workspaceId, CanonicalStore.Hash(Encoding.UTF8.GetBytes(requestJson)), requestJson);
         var saved = store.GetTask(taskId)!;
         previousTools = saved.ToolCalls; turnsRecorded = saved.ActorTurns;
@@ -258,6 +260,11 @@ internal sealed class HostTaskJournal : IDisposable
             CausedByEventId:type=="tool_execution_end" && toolStarts.TryGetValue(toolId,out var cause)?cause:null);
         var receipt = store.CountedAppend(input, tools:type=="tool_execution_start"?1:0);
         if (type=="tool_execution_start") toolStarts[toolId]=receipt.EventId;
+        if(readOnly){
+            if(type=="tool_execution_end")toolStarts.Remove(toolId);
+            Checkpoint(new{activity=toolStarts.Count>0?"tool_running":"model_pending",active_tools=toolStarts.Count,
+                last_tool_failed=message.TryGetProperty("isError",out var error)&&error.ValueKind==JsonValueKind.True});
+        }
     }
 
     internal CanonicalStore Canonical => store;

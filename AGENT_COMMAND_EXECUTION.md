@@ -1,5 +1,13 @@
 # Agent v2：タスク単位のコマンド実行
 
+## 読み取り調査の管理経路
+
+`localbrain_agent_v2_investigate`は、LOWの読み取り調査を同じ`TaskAgentCoordinator`の独立workerへ渡します。`read_only=true`、`command_execution`なし、`required_tests=[{"kind":"git_diff_check"}]`を指定します。書込・shell・コマンド能力を付与せず、既存のread/ls方針だけを使うため、コマンド用のネイティブ許可は作りません。NORMAL/HIGHのレビュー規則をこのモードで迂回することはできません。
+
+元の依頼、完了条件、実ツール結果、失敗、次の作業、Actorターン、Context Handoffと最終報告を既存Canonicalに記録します。応答が正常にsettleしても未完了なら、同じ目的と証拠から最大6ターン、受付後20分の予算内で継続し、新しいCriticと既存Completion Gateを通します。検索はlsによるファイル発見とreadに限定し、任意shellや再帰grepによる保護パスの迂回は追加しません。未知のモデル配送・worker消失・明示取消・監視停止は自動再送せず証拠を保持します。インフラ停止は外部AI救済の理由にしません。既存の変更タスク用外部レビュー・救済・知識再利用は変更しません。
+
+ContinueがこのMCP能力を提示した要求ではBridgeが直接のファイル・Terminalツールを外し、管理経路へ案内します。元のユーザー指示は書き換えません。MCPはworkerの最終報告を待って返すため、通常の完了に追加ユーザーメッセージは不要です。Continue 2.0.0では`connectionTimeout: 1320000`がツール呼出しのtimeoutにも使われるため設定します。接続自体が切れた後のContinueターン起動APIはこの構成にはなく、workerは継続してCanonicalに報告を残しますが、切断後のUI配信はstatusで確認する必要があります。待機中のMCP呼出しに`notifications/cancelled`が届いた場合は、対応する正確な読み取りタスクを取り消します。通知を送らないUI停止や接続切断は人間の取消と推定せず、正確なtask_idのcancelで停止します。
+
 Continueは実装・ターミナル作業をWindows Hostへ渡します。Hostは速やかにタスクIDを返し、MCP接続とは独立してバックグラウンド実行を管理します。`queued`と`running`は完了を意味しません。
 
 ## 1タスクにつき1回の許可

@@ -351,7 +351,7 @@ internal static class AgentV2Commands
         {
             var request = AgentTaskRequest.Parse(prompt!);
             var root = allowlist.Resolve(args.ElementAtOrDefault(1) ?? Environment.CurrentDirectory);
-            if(request.CommandExecution is not null){
+            if(request.CommandExecution is not null || request.ReadOnly){
                 if(command=="recover")throw new InvalidOperationException("Managed command tasks use their existing Host owner and durable task identity");
                 Console.WriteLine(JsonSerializer.Serialize(await TaskAgentCoordinator.SubmitAsync(root,request,config,resume:command=="resume",control:controlRoot),ClientConfig.JsonOptions));return;
             }

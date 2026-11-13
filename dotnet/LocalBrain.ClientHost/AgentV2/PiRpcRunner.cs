@@ -14,7 +14,7 @@ internal static class PiRpcRunner
         string? sessionId = null,
         Func<PiProgressSnapshot, Task<SupervisorDecision>>? onMilestone = null,
         string? windowsRoot = null, string? taskId = null,
-        CancellationToken token = default)
+        CancellationToken token = default,bool finalResponseOnly=false)
     {
         Slack.RestrictedExecution.DenyAgentTools();
         using var ocrPriority=Ocr.OcrPriority.Enter("agent");
@@ -150,6 +150,8 @@ internal static class PiRpcRunner
                         ContextTelemetryState.TryRecordActual(windowsRoot, taskId, actual);
                     }
                     if (completed.TryGetProperty("content", out var blocks) && blocks.ValueKind == JsonValueKind.Array)
+                    {
+                        if(finalResponseOnly)output.Clear();
                         foreach (var block in blocks.EnumerateArray())
                             if (block.TryGetProperty("type", out var kind) && kind.GetString() == "text" &&
                                 block.TryGetProperty("text", out var value) && value.ValueKind == JsonValueKind.String)
@@ -157,6 +159,7 @@ internal static class PiRpcRunner
                                 var text = value.GetString() ?? "";
                                 if (output.Length + text.Length <= 100_000) output.Append(text);
                             }
+                    }
                     break;
                 case "agent_settled": settled.TrySetResult(); break;
             }

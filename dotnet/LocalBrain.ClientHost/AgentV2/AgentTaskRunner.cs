@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
-internal static class AgentTaskRunner
+internal static partial class AgentTaskRunner
 {
     internal sealed record Result(string TaskId, string Risk, string BaselineHead, string[] ChangedFiles,
         ToolRouter.TestResult[] Tests, string CriticVerdict, string[] CriticIssues, int ToolCalls, int ToolErrors,
@@ -775,11 +775,12 @@ internal static class AgentTaskRunner
             required_tests = request.RequiredTests.Select(test =>
                 new { kind = test.Kind, target = test.Target }).ToArray() };
         var json=JsonSerializer.Serialize(canonical);
-        if(request.CommandExecution is null && !request.ExternalAiDisabled)return json;
+        if(request.CommandExecution is null && !request.ExternalAiDisabled && !request.ReadOnly)return json;
         var node=System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
         if(request.CommandExecution is not null)
             node["command_execution"]=JsonSerializer.SerializeToNode(request.CommandExecution,ClientConfig.JsonOptions);
         if(request.ExternalAiDisabled)node["external_ai_disabled"]=true;
+        if(request.ReadOnly)node["read_only"]=true;
         return node.ToJsonString();
     }
 
