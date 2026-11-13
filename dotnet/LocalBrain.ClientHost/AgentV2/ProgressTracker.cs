@@ -6,13 +6,17 @@ namespace LocalBrain.ClientHost.AgentV2;
 
 internal sealed record PiProgressSnapshot(int ToolCalls, int ToolErrors, int FilesRead,
     int FilesChanged, int SameFileReadCount, int SameCommandCount, int SameErrorCount,
-    int ToolCallsSinceProgress, bool NoProgress);
+    int ToolCallsSinceProgress, bool NoProgress, int DistinctObservations = 0);
 
 /// <summary>Counts repeated work without storing tool arguments or output text.</summary>
 internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=null)
 {
+    // Pi reports a tool cancelled by the RPC abort with this exact result text.
+    internal const string HostAbortedToolText = "Operation aborted";
     private readonly HashSet<string> observedCommandReceipts=new();
+    private readonly HashSet<string> observations = new();
     private readonly Dictionary<string, string> active = new();
+    private readonly Dictionary<string, string> pendingObservations = new();
     private string? lastRead;
     private string? lastCommand;
     private string? lastError;
@@ -25,14 +29,18 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
     public int SameCommandCount { get; private set; }
     public int SameErrorCount { get; private set; }
     public int ToolCallsSinceProgress { get; private set; }
+    /// <summary>Successful read-only observations with arguments not seen before in this run.</summary>
+    public int DistinctObservations { get; private set; }
+    /// <summary>Tools cancelled by a Host-requested abort; these are not tool failures.</summary>
+    public int AbortedTools { get; private set; }
     public bool NoProgress => SameErrorCount >= 3 || SameCommandCount >= 4 ||
         SameFileReadCount >= 4 || ToolCallsSinceProgress >= 15;
 
     public PiProgressSnapshot Snapshot() => new(ToolCalls, ToolErrors, FilesRead,
         FilesChanged, SameFileReadCount, SameCommandCount, SameErrorCount,
-        ToolCallsSinceProgress, NoProgress);
+        ToolCallsSinceProgress, NoProgress, DistinctObservations);
 
-    public void Observe(JsonElement message)
+    public void Observe(JsonElement message, bool hostAbortRequested = false)
     {
         if (!message.TryGetProperty("type", out var type)) return;
         if (type.GetString() == "tool_execution_start")
@@ -45,6 +53,8 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
             active[id] = name;
             if (name is "obs_recall" or "host_recall") ObservationRecalls++;
             if (!message.TryGetProperty("args", out var args)) return;
+            if (name is "read" or "ls" or "grep" or "find" or "host_memory_search" or "host_recall")
+                pendingObservations[id] = Hash(name + "\n" + args.GetRawText());
             if (name == "read" && args.TryGetProperty("path", out var path) &&
                 path.ValueKind == JsonValueKind.String)
             {
@@ -67,6 +77,8 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
             var name = id is not null && active.Remove(id, out var value) ? value : "unknown";
             var failed = message.TryGetProperty("isError", out var error) &&
                 error.ValueKind == JsonValueKind.True;
+            var observation = id is not null && pendingObservations.Remove(id, out var pending) ? pending : null;
+            if (!failed && observation is not null && observations.Add(observation)) DistinctObservations++;
             if(!failed && name is ("host_command_start" or "host_command_status") && message.TryGetProperty("result",out var commandResult) && commandResult.ValueKind==JsonValueKind.Object &&
                 commandResult.TryGetProperty("details",out var details) && details.ValueKind==JsonValueKind.Object && details.TryGetProperty("operation_id",out var operationId) && operationId.ValueKind==JsonValueKind.String &&
                 details.TryGetProperty("receipt_hash",out var receiptHash) && receiptHash.ValueKind==JsonValueKind.String){
@@ -77,7 +89,6 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
             }
             if (failed)
             {
-                ToolErrors++;
                 var sample = "";
                 if (message.TryGetProperty("result", out var result) &&
                     result.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
@@ -87,6 +98,12 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
                             sample = text.GetString()![..Math.Min(512, text.GetString()!.Length)];
                             break;
                         }
+                if (hostAbortRequested && sample == HostAbortedToolText)
+                {
+                    AbortedTools++;
+                    return;
+                }
+                ToolErrors++;
                 var fingerprint = Hash(name + sample);
                 SameErrorCount = fingerprint == lastError ? SameErrorCount + 1 : 1;
                 lastError = fingerprint;

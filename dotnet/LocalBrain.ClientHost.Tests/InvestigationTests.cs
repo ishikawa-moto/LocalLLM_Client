@@ -62,6 +62,28 @@ internal static class InvestigationTests
         var stopped=await AgentTaskRunner.RunInvestigationAsync(infraJob,config,default,(_,_,_,_)=>{attempts++;throw new IOException("public provider failure");});
         Check(!stopped.Complete&&attempts==1&&stopped.Reason!.StartsWith("infrastructure_stopped"),"Infrastructure failure neither retries an unknown dispatch nor calls external rescue");
 
+        PiRunResult Interrupted(string action)=>new("",4,0,0,0,0,0,0,4,false,0,0,null,new SupervisorDecision(action,"hard_rule","recent_action_did_not_change_state",null,null,false),true);
+        async Task<(AgentTaskRunner.InvestigationResult Result,int Actors)> Supervised(string name,string action){
+            var supervisedControl=Path.Combine(directory,name);
+            await TaskAgentCoordinator.SubmitAsync(repo,request,config,control:supervisedControl,launch:false);
+            var supervisedJob=JsonSerializer.Deserialize<TaskAgentCoordinator.Job>(File.ReadAllBytes(Path.Combine(TaskAgentCoordinator.CurrentDirectory(repo,supervisedControl)!,"job.json")),ClientConfig.JsonOptions)!;
+            var actors=0;
+            var outcome=await AgentTaskRunner.RunInvestigationAsync(supervisedJob,config,default,async(prompt,critic,session,token)=>{
+                await Task.Yield();
+                if(critic)return Result("{\"verdict\":\"PASS\",\"issues\":[]}");
+                if(++actors==1)return Interrupted(action);
+                Check(prompt.Contains("Host Supervisor interrupted the previous attempt to re-plan"),"REPLAN feedback reaches the next Actor turn");
+                HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_start",toolCallId=name+"_read",toolName="read",args=new{path="README.md"}}));
+                HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_end",toolCallId=name+"_read",toolName="read",isError=false,result=new{content="PUBLIC_EVIDENCE_731"}}));
+                return Result("README.md:1 contains PUBLIC_EVIDENCE_731. The public finding is supported by the retained read result. Other conditions remain unknown.");
+            });
+            return (outcome,actors);
+        }
+        var replanned=await Supervised("investigation-replan","REPLAN");
+        Check(replanned.Result.Complete&&replanned.Actors==2&&replanned.Result.Turns==2,"A Supervisor REPLAN continues to a new Actor turn and completes only through the gate");
+        var halted=await Supervised("investigation-stop","STOP");
+        Check(!halted.Result.Complete&&halted.Actors==1&&halted.Result.Reason=="supervisor_stopped_no_progress","A Supervisor STOP still ends the investigation without completion");
+
         var source=Encoding.UTF8.GetBytes("{\"messages\":[{\"role\":\"user\",\"content\":\"PUBLIC_GOAL\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\"}},{\"type\":\"function\",\"function\":{\"name\":\"run_terminal_command\"}},{\"type\":\"function\",\"function\":{\"name\":\"mcp_localbrain_agent_v2_investigate\"}}]}");
         var routed=JsonNode.Parse(ContinueManagedRouting.Prepare(source))!;
         Check(routed["tools"]!.AsArray().Count==1&&routed["messages"]![1]!["content"]!.GetValue<string>()=="PUBLIC_GOAL","Continue investigation tools route to Host without rewriting the user goal");
