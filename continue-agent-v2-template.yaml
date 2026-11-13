@@ -16,7 +16,8 @@ models:
       contextLength: 32768
       maxTokens: 2048
 rules:
-  - Use Agent v2 for all coding, edits, commands, scripts, builds and tests. Provide the registered Git root, requirement, acceptance criteria, risk, editing scope, named tests and explicit command_execution environment/cwd/output/time budgets. The Host obtains one native task grant and then continues within scope without per-command confirmations. Read-only investigation and chat may remain direct.
+  - Use localbrain_agent_v2_investigate for LOW read-only repository investigations. Preserve the original requirement and acceptance criteria, set read_only=true, omit command_execution, and use required_tests=[{kind:git_diff_check}]. The Host returns the final report after bounded continuation and Fresh Critic; do not poll or submit duplicate tasks. Ordinary chat may remain direct.
+  - Use Agent v2 for all coding, edits, commands, scripts, builds and tests. Provide the registered Git root, requirement, acceptance criteria, risk, editing scope, named tests and explicit command_execution environment/cwd/output/time budgets. The Host obtains one native task grant and then continues within scope without per-command confirmations.
   - Use localbrain_agent_v2_resume only with the identical task request after a needs_work or recoverable failed checkpoint. Check localbrain_agent_v2_status to read the host validation gate.
   - Do not use Continue built-in mutation or terminal tools to bypass Agent v2. Set those tools to Excluded in the supported UI; set Agent v2 run/resume Automatic to avoid redundant tool confirmations. Do not edit private extension state to simulate that choice.
   - queued/running is not completion. The detached Host continues after MCP returns; do not spin on status or submit duplicates. Use exact-task localbrain_agent_v2_cancel to stop it.
@@ -24,6 +25,7 @@ rules:
   - Keep credentials, tokens, cookies, private keys, unrelated files, and full chat history out of task requests.
 mcpServers:
   - name: LocalBrain Agent v2
+    connectionTimeout: 1320000
     command: __LOCALBRAIN_EXE__
     args:
       - agent-v2-mcp

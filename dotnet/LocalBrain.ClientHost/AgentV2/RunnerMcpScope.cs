@@ -81,6 +81,11 @@ internal sealed class RunnerMcpScope(string workspace)
 
     internal void RequireTask(AgentTaskRequest request)
     {
+        if(request.ReadOnly){
+            AgentTaskRequest.Parse(AgentTaskRunner.RequestJson(request));
+            if(request.AllowedFiles.Length>8)throw new UnauthorizedAccessException("Runner investigation scope exceeds eight named files");
+            return;
+        }
         var scope = request.CommandExecution;
         if (request.EffectiveRisk != "LOW" || request.ApprovedHighRisk || scope is null ||
             scope.MaxCommands != 0 || scope.OutputDirectories.Length != 0 ||

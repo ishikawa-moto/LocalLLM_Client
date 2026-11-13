@@ -69,7 +69,7 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
                 var managed=AgentV2.ManagedRelayPermit.Consume(managedPermit,original);
                 if(!managed)await supervisor.CheckAsync(original,requestId!,audit,cancellationToken);
                 phase="context_admission";
-                var prepared=managed?null:await (memory ?? throw new UnauthorizedAccessException("Managed relay capability required")).PrepareAsync(original,cancellationToken,trace);
+                var prepared=managed?null:await (memory ?? throw new UnauthorizedAccessException("Managed relay capability required")).PrepareAsync(ContinueManagedRouting.Prepare(original),cancellationToken,trace);
                 if(managed){preparedBody=new MemoryStream(original,false);preparedLength=original.LongLength;
                     audit.Write("host_managed_context_admitted",new{requestId,owner="Host task preflight and one-use body-bound permit; bridge keeps network deadlines"});
                 }else{

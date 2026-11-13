@@ -55,7 +55,7 @@ internal static class ManagedAgentTests
         finally{Console.SetIn(originalIn);Console.SetOut(originalOut);}
         var replies=capture.ToString().Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(s=>JsonDocument.Parse(s).RootElement.Clone()).ToArray();
         Check(watch.Elapsed<TimeSpan.FromSeconds(5)&&replies.Length==3&&replies.All(r=>!r.TryGetProperty("error",out _)),"MCP handles submission then status promptly on the same connection");
-        var tools=replies[0].GetProperty("result").GetProperty("tools");Check(tools.GetArrayLength()==4&&tools.EnumerateArray().Any(t=>t.GetProperty("name").GetString()=="localbrain_agent_v2_cancel"),"Installed MCP contract exposes exact cancellation with command schema");
+        var tools=replies[0].GetProperty("result").GetProperty("tools");Check(tools.GetArrayLength()==5&&tools.EnumerateArray().Any(t=>t.GetProperty("name").GetString()=="localbrain_agent_v2_cancel"),"Installed MCP contract exposes exact cancellation and managed investigation");
         Check(!JsonDocument.Parse(replies[2].GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!).RootElement.GetProperty("eligible_for_completion").GetBoolean(),"MCP queued status cannot falsely claim completion");
         var tracker=new ProgressTracker((id,hash)=>id=="public"&&hash=="genuine");
         void Progress(string id,object details){tracker.Observe(Json(new{type="tool_execution_start",toolCallId=id,toolName="host_command_status",args=new{}}));tracker.Observe(Json(new{type="tool_execution_end",toolCallId=id,isError=false,result=new{details}}));}
@@ -68,6 +68,7 @@ internal static class ManagedAgentTests
         refused=false;try{ManagedRelayPermit.Consume(permit,publicBody);}catch(IOException){refused=true;}Check(refused,"A consumed capability cannot bypass normal supervision twice");
         permit=ManagedRelayPermit.Issue(CanonicalStore.Hash(publicBody),task);refused=false;try{ManagedRelayPermit.Consume(permit,new byte[]{1});}catch(UnauthorizedAccessException){refused=true;}Check(refused,"Capability is bound to the exact admitted provider payload");
         await PositiveCompletionAsync(dir,repo,request,config);
+        await InvestigationTests.RunAsync(dir,repo,config);
         Console.WriteLine("Managed Agent admission PASS: bounded submission, exact request/hash compatibility, task ownership, duplicate observation, exact cancel, canonical completion gate, prefix scope and Host-only progress. Public isolated proof; no native approval/model/production changes.");
     }
     private static async Task PositiveCompletionAsync(string directory,string repo,AgentTaskRequest request,ClientConfig config)

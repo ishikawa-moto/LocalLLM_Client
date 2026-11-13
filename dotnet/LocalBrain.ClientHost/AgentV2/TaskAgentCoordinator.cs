@@ -8,7 +8,7 @@ namespace LocalBrain.ClientHost.AgentV2;
 internal static class TaskAgentCoordinator
 {
     internal sealed record Job(string TaskId,string Root,string RequestJson,string RequestHash,string Head,
-        string ControlRoot,string ConfigHash,string RuntimeDll,string RuntimeHash,TaskCommandAuthorization.Pending Authorization);
+        string ControlRoot,string ConfigHash,string RuntimeDll,string RuntimeHash,TaskCommandAuthorization.Pending? Authorization);
     internal sealed record Report(string TaskId,string State,bool EligibleForCompletion,int ActorTurns,
         string? Reason,DateTimeOffset UpdatedAt,DateTimeOffset? ActiveSince=null);
     internal sealed record AdviceResumeRuntime(string TaskId,string OriginalRuntimeHash,string RuntimeDll,
@@ -39,12 +39,13 @@ internal static class TaskAgentCoordinator
         if(job.TaskId!=taskId || report.TaskId!=taskId || OwnerAlive(current) ||
             File.Exists(Path.Combine(current,"cancel.json")) || report.State is not ("blocked" or "complete"))
             throw new UnauthorizedAccessException("Managed administrative actions require the exact stopped, authorized task");
-        return TaskCommandAuthorization.Enter(TaskCommandAuthorization.Read(job.Authorization)??
+        return TaskCommandAuthorization.Enter(TaskCommandAuthorization.Read(job.Authorization??throw new UnauthorizedAccessException("Read-only tasks have no command grant"))??
             throw new UnauthorizedAccessException("The original task grant is unavailable"));
     }
     internal static async Task<object> SubmitAsync(string root,AgentTaskRequest request,ClientConfig config,bool resume=false,string? control=null,bool launch=true,bool runnerSummary=false)
     {
-        if(request.CommandExecution is null)throw new InvalidDataException("Managed tasks require an explicit command_execution scope");
+        if(request.CommandExecution is null && !request.ReadOnly)throw new InvalidDataException("Managed tasks require an explicit command_execution scope");
+        if(request.ReadOnly)request=AgentTaskRequest.Parse(AgentTaskRunner.RequestJson(request));
         var parent=WorkspaceDirectory(root,control);CanonicalStore.GuardPath(parent);Directory.CreateDirectory(parent);
         using var submission=new FileStream(Path.Combine(parent,"submission.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
         var current=CurrentDirectory(root,control);var hash=AgentTaskRunner.RequestHash(request);
@@ -63,9 +64,9 @@ internal static class TaskAgentCoordinator
             }
             if(prior.RequestHash==hash && (resume || !candidateDiscarded)){
                 // An existing launch or terminal result is always observed, never silently replayed.
-                if(resume&&!OwnerAlive(current)&&report?.State=="blocked"&&report.ActiveSince is {} since&&
+                if(resume&&request.CommandExecution is not null&&!OwnerAlive(current)&&report?.State=="blocked"&&report.ActiveSince is {} since&&
                     DateTimeOffset.UtcNow<since.AddMinutes(request.CommandExecution.MaxTaskMinutes)){
-                    TaskCommandAuthorization.Validate(TaskCommandAuthorization.Read(prior.Authorization)??throw new UnauthorizedAccessException("The original task grant is unavailable"));
+                    TaskCommandAuthorization.Validate(TaskCommandAuthorization.Read(prior.Authorization??throw new UnauthorizedAccessException("Command grant unavailable"))??throw new UnauthorizedAccessException("The original task grant is unavailable"));
                     if(File.Exists(Path.Combine(current,"cancel.json")))return await StatusAsync(root,control);
                     if(launch)Launch(current,prior,control,resuming:true);
                 }
@@ -81,7 +82,7 @@ internal static class TaskAgentCoordinator
         if (runnerSummary) TaskCommandAuthorization.RequireNativeReceiptPath(dir);
         Directory.CreateDirectory(dir);
         var configBytes=JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions);File.WriteAllBytes(Path.Combine(dir,"worker-config.json"),configBytes);
-        var auth=TaskCommandAuthorization.Prepare(dir,root,taskId,request,snapshot.Head);
+        var auth=request.ReadOnly?null:TaskCommandAuthorization.Prepare(dir,root,taskId,request,snapshot.Head);
         var dll=typeof(TaskAgentCoordinator).Assembly.Location;
         var job=new Job(taskId,root,AgentTaskRunner.RequestJson(request),hash,snapshot.Head,control??CanonicalStore.DefaultRoot,CanonicalStore.Hash(configBytes),dll,CanonicalStore.Hash(File.ReadAllBytes(dll)),auth);
         TaskCommandGate.WriteNew(Path.Combine(dir,"job.json"),job);
@@ -150,10 +151,40 @@ internal static class TaskAgentCoordinator
         var commandRoot=Path.Combine(control??CanonicalStore.DefaultRoot,"command-jobs",job.TaskId);
         var commandDirs=Directory.Exists(commandRoot)?Directory.EnumerateDirectories(commandRoot).Take(1024).ToArray():[];
         var gatewayNotice=gatewayRequestId is null?null:await AgentV3.GatewayTaskNotice.ReadAsync(dir,job,gatewayRequestId);
-        return new{task_id=job.TaskId,phase,canonical_phase=canonicalPhase,eligible_for_completion=complete,worker_alive=alive,
+        string? finalReport=null;string? activity=null;var activeTools=0;
+        if(canonical?.TaskId==job.TaskId && AgentTaskRequest.Parse(job.RequestJson).ReadOnly){
+            using var state=JsonDocument.Parse(canonical.StateJson);
+            if(state.RootElement.TryGetProperty("activity",out var recordedActivity))activity=recordedActivity.GetString();
+            if(state.RootElement.TryGetProperty("active_tools",out var recordedTools))activeTools=recordedTools.GetInt32();
+            if(state.RootElement.TryGetProperty("report_sha256",out var value) && value.ValueKind==JsonValueKind.String){
+                var hash=value.GetString()!;
+                if(hash.Length!=64 || hash.Any(c=>!Uri.IsHexDigit(c)))throw new InvalidDataException("Invalid report identity");
+                var bytes=File.ReadAllBytes(Path.Combine(job.ControlRoot,"evidence",hash+".blob"));
+                if(bytes.Length>96000 || CanonicalStore.Hash(bytes)!=hash)throw new InvalidDataException("Investigation report integrity failed");
+                finalReport=System.Text.Encoding.UTF8.GetString(bytes);
+            }
+        }
+        return new{task_id=job.TaskId,phase,canonical_phase=canonicalPhase,activity,active_tools=activeTools,eligible_for_completion=complete,worker_alive=alive,
             actor_turns=Math.Max(r.ActorTurns,canonical?.TaskId==job.TaskId?(int)canonical.ActorTurns:0),command_count=commandDirs.Length,
             unsettled_command_intents=commandDirs.Count(d=>!File.Exists(Path.Combine(d,"receipt.json"))),cancellation_requested=File.Exists(Path.Combine(dir,"cancel.json")),
-            reason=candidateDiscarded?"candidate_discarded_evidence_retained":r.Reason,candidate_hash=candidateHash,gateway_status=gatewayNotice is null?null:new{state=gatewayNotice.State,notice=gatewayNotice.Text},updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
+            reason=candidateDiscarded?"candidate_discarded_evidence_retained":r.Reason,final_report=finalReport,candidate_hash=candidateHash,gateway_status=gatewayNotice is null?null:new{state=gatewayNotice.State,notice=gatewayNotice.Text},updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
+    }
+    internal static async Task<object> WaitForInvestigationAsync(string root,string? control=null)
+    {
+        var dir=CurrentDirectory(root,control)??throw new InvalidOperationException("No investigation to observe");
+        var job=Read<Job>(Path.Combine(dir,"job.json"));
+        if(!AgentTaskRequest.Parse(job.RequestJson).ReadOnly)throw new InvalidOperationException("Only read-only investigations use report delivery");
+        var started=DateTimeOffset.UtcNow;
+        while(true){
+            var report=Read<Report>(Path.Combine(dir,"report.json"));
+            if(report.State is not ("queued" or "running" or "waiting_for_writer") ||
+                DateTimeOffset.UtcNow-started>TimeSpan.FromMinutes(21) ||
+                (!OwnerAlive(dir) && DateTimeOffset.UtcNow-started>TimeSpan.FromSeconds(10)))break;
+            await Task.Delay(1000);
+        }
+        // This is observation of one exact job, never another submission or restart.
+        if(CurrentDirectory(root,control)!=dir)throw new InvalidOperationException("Investigation ownership changed during delivery");
+        return await StatusAsync(root,control);
     }
     private static bool ValidateOutputs(string control,string task)
     {
@@ -288,18 +319,32 @@ internal static class TaskAgentCoordinator
                 CanonicalStore.Hash(File.ReadAllBytes(job.RuntimeDll))!=job.RuntimeHash||CanonicalStore.Hash(File.ReadAllBytes(Path.Combine(dir,"worker-config.json")))!=job.ConfigHash||
                 AgentTaskRunner.RequestHash(request)!=job.RequestHash||!string.Equals(new ProjectAllowlist(config).Resolve(job.Root),job.Root,StringComparison.OrdinalIgnoreCase)||ProjectAllowlist.CurrentHead(job.Root)!=job.Head)
                 throw new UnauthorizedAccessException("Managed task baseline/runtime/config changed before execution");
-            Report("awaiting_authorization");var grant=TaskCommandAuthorization.Read(job.Authorization);
-            if (grant is null && File.Exists(job.Authorization.Input+".launch-intent"))
+            if(request.ReadOnly){
+                activeSince??=DateTimeOffset.UtcNow;
+                var remainingRead=activeSince.Value.AddMinutes(20)-DateTimeOffset.UtcNow;
+                if(remainingRead<=TimeSpan.Zero){Report("time_budget_exhausted");return;}
+                stop.CancelAfter(remainingRead);
+                if(previousReport.State!="queued")throw new InvalidOperationException("Read-only owner recovery requires explicit reconciliation; no unknown launch replay");
+                while(true){stop.Token.ThrowIfCancellationRequested();try{using var lease=new FileStream(Path.Combine(job.ControlRoot,"writer.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);break;}
+                    catch(IOException){Report("waiting_for_writer");await Task.Delay(2000,stop.Token);}}
+                Report("running");
+                var result=await AgentTaskRunner.RunInvestigationAsync(job,config,stop.Token);
+                stop.Token.ThrowIfCancellationRequested();
+                turns=result.Turns;Report(result.Complete?"complete":"blocked",result.Reason,result.Complete);return;
+            }
+            var authorization=job.Authorization??throw new UnauthorizedAccessException("Command task grant missing");
+            Report("awaiting_authorization");var grant=TaskCommandAuthorization.Read(authorization);
+            if (grant is null && File.Exists(authorization.Input+".launch-intent"))
                 throw new InvalidOperationException("Existing native confirmation launch has no result; observe it without relaunching");
-            using (var dialog = grant is null ? TaskCommandAuthorization.Launch(job.Authorization) : null)
+            using (var dialog = grant is null ? TaskCommandAuthorization.Launch(authorization) : null)
             {
                 while (grant is null)
                 {
                     await Task.Delay(500, stop.Token);
                     if (File.Exists(Path.Combine(dir, "cancel.json"))) throw new OperationCanceledException(stop.Token);
-                    grant = TaskCommandAuthorization.Read(job.Authorization);
+                    grant = TaskCommandAuthorization.Read(authorization);
                     if (grant is null && dialog?.HasExited == true)
-                        grant = TaskCommandAuthorization.Read(job.Authorization) ??
+                        grant = TaskCommandAuthorization.Read(authorization) ??
                             throw new InvalidOperationException($"Native confirmation exited {dialog.ExitCode} without a receipt; task did not start");
                 }
             }
