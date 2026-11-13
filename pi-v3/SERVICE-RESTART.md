@@ -39,8 +39,9 @@ Slackの既存正常経路は維持し、新OCR経路だけを無効のままに
   バージョン更新は Host/モデルの実行要求では行わず、配備時に固定 lock を使用します。
 - Host の信頼済み `clientsettings.json` の `piRuntime.piExecutable` と `piRuntime.agentDirectory`
   で専用の実行先・保存先を選べます。モデルの task からは変更できません。
-  未指定は従来の `/home/worker/.volta/bin/pi` と `/home/worker/localbrain-v2/pi-1.4` です。
-  検証では専用の1.4.0を指定し、旧グローバル Pi を上書きしません。
+  未指定時は、管理下の Pi 1.4.0 `/home/worker/localbrain-pi/releases/1.4.0-049f0c3/bin/pi` と
+  `/home/worker/localbrain-pi/agent-049f0c3` を使用します。`agent-v2 pi-health` も同じ設定を参照し、
+  1.4.0 と Compaction 設定を確認します。
 - Host 管理の `agentDirectory/settings.json` に、publish 出力の
   `scripts/pi-settings.json`（既存 v3 の同一設定）を配置します。内容は標準 Compaction
   `enabled=true / reserveTokens=8192 / keepRecentTokens=12000` のみです。未配置・不一致は停止します。
