@@ -143,7 +143,13 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
             throw new InvalidDataException("Unknown Agent v2 tool");
         if (runner is not null && name == "localbrain_agent_v2_resume")
             throw new UnauthorizedAccessException("Runner resume is not exposed");
-        var task = AgentTaskRequest.Parse(arguments.GetProperty("task").GetRawText());
+        var taskJson=arguments.GetProperty("task").GetRawText();
+        if(name=="localbrain_agent_v2_investigate"){
+            var input=System.Text.Json.Nodes.JsonNode.Parse(taskJson)?.AsObject()??throw new InvalidDataException("Investigation task missing");
+            if(input["read_only"] is {} flag && !flag.GetValue<bool>())throw new UnauthorizedAccessException("Investigation cannot request mutation capability");
+            input["read_only"]=true;taskJson=input.ToJsonString();
+        }
+        var task = AgentTaskRequest.Parse(taskJson);
         if(name=="localbrain_agent_v2_investigate" && !task.ReadOnly)
             throw new UnauthorizedAccessException("Investigation requires the read-only Host path");
         if(task.ReadOnly && launchManaged && requestKey is null)throw new InvalidDataException("Investigation delivery requires an MCP request ID");

@@ -56,6 +56,7 @@ try
     }
     else if (command == "agent-v2-mcp")
     {
+        McpStdio.Configure();
         await new AgentV2McpServer(new ProjectAllowlist(config), config).RunAsync();
     }
     else if (command == "agent-task-worker")
