@@ -44,11 +44,11 @@ internal sealed record ClientConfig(
     private static string Expand(string value, string baseDir) => Path.GetFullPath(Environment.ExpandEnvironmentVariables(value), baseDir);
 }
 
-// Trusted Host configuration only. A private Pi installation lets validation
-// preserve the old global Pi; no installation or model-selected path is added.
+// Trusted Host configuration only; never selected by a model request.
+// Defaults are the managed PC73 Pi 1.4.0 runtime registered by the installation receipt.
 internal sealed record PiRuntimeOptions(
-    string PiExecutable = "/home/worker/.volta/bin/pi",
-    string AgentDirectory = "/home/worker/localbrain-v2/pi-1.4")
+    string PiExecutable = "/home/worker/localbrain-pi/releases/1.4.0-049f0c3/bin/pi",
+    string AgentDirectory = "/home/worker/localbrain-pi/agent-049f0c3")
 {
     internal void Validate()
     {

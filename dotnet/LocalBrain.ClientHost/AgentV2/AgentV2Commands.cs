@@ -391,6 +391,8 @@ internal static class AgentV2Commands
 
     private static async Task PiHealthAsync(string workspace)
     {
+        var runtime = ClientConfig.Load().PiRuntime ?? new PiRuntimeOptions();
+        await WslWorkspace.RequirePi140Async(CancellationToken.None, runtime);
         var provider = Path.Combine(AppContext.BaseDirectory, "scripts", "localbrain-provider.js");
         var relay = Path.Combine(AppContext.BaseDirectory, "localbrain.exe");
         var wslProvider = await WslWorkspace.MapFileAsync(provider);
@@ -399,7 +401,8 @@ internal static class AgentV2Commands
             "scripts", "localbrain-policy.mjs"));
         var start = new ProcessStartInfo("wsl.exe");
         foreach (var arg in new[] { "-d", "Ubuntu", "--cd", workspace, "--exec", "/usr/bin/env",
-            $"LOCALBRAIN_RELAY_EXE={wslRelay}", "/home/worker/.volta/bin/pi", "--mode", "rpc",
+            $"PI_CODING_AGENT_DIR={runtime.AgentDirectory}", $"LOCALBRAIN_RELAY_EXE={wslRelay}",
+            runtime.PiExecutable, "--mode", "rpc", "--no-session",
             "--offline", "--approve", "--provider", "localbrain", "--model", "local-qwen38",
             "--extension", wslProvider, "--extension", wslPolicy, "--tools", "read" }) start.ArgumentList.Add(arg);
         await using var worker = JsonlWorker.Start(start);
@@ -413,6 +416,7 @@ internal static class AgentV2Commands
             model.GetProperty("provider").GetString() != "localbrain")
             throw new InvalidOperationException("Pi did not select the LocalBrain model");
         Console.WriteLine(JsonSerializer.Serialize(new { pi_rpc = "ready", workspace,
+            pi_executable = runtime.PiExecutable, pi_version = "1.4.0", agent_directory = runtime.AgentDirectory,
             model = data.GetProperty("model").GetProperty("id").GetString(),
             provider = "localbrain",
             session_id = data.GetProperty("sessionId").GetString(), stderr_lines = worker.StderrLineCount },
