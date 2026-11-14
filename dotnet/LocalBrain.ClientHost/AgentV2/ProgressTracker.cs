@@ -110,8 +110,9 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
             }
             else if (name is "edit" or "write" or "host_edit" or "host_write" ||
                 name=="host_edit_and_validate" && message.TryGetProperty("result",out var fused) &&
-                fused.TryGetProperty("details",out var fusionDetails) && fusionDetails.ValueKind==JsonValueKind.Object &&
-                fusionDetails.TryGetProperty("edit_hash",out var editHash) && editHash.ValueKind==JsonValueKind.String)
+                fused.ValueKind==JsonValueKind.Object && fused.TryGetProperty("details",out var fusionDetails) && fusionDetails.ValueKind==JsonValueKind.Object &&
+                fusionDetails.TryGetProperty("status",out var fusionStatus) && fusionStatus.ValueKind==JsonValueKind.String &&
+                fusionStatus.GetString() is "edit_applied_validation_observed" or "edit_applied_validation_unsettled")
             {
                 FilesChanged++;
                 ToolCallsSinceProgress = 0;

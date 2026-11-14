@@ -152,7 +152,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
                     var saved=JsonSerializer.Deserialize<FusionState>(File.ReadAllBytes(fusionPath),ClientConfig.JsonOptions)
                         ??throw new InvalidDataException("Missing fused edit state");
                     if(saved.Fingerprint!=fusionFingerprint)throw new UnauthorizedAccessException("Fused edit intent is immutable; inspect the existing outcome");
-                    return await ObserveFusedEditAsync(owned,saved,token);
+                    return await ObserveFusedEditAsync(owned,saved,token,editJustApplied:false);
                 }
                 validation=owned.AdmitFusion();
             }
@@ -206,7 +206,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
                     var start=JsonSerializer.SerializeToElement(await commands!.StartAsync(validation!,token,fused:true),ClientConfig.JsonOptions);
                     if(start.GetProperty("state").GetString() is "busy" or "outcome_unknown")
                         return new(true,"edit_applied_validation_unsettled",hash,CommandState:start);
-                    return await ObserveFusedEditAsync(commands,applied,token);
+                    return await ObserveFusedEditAsync(commands,applied,token,editJustApplied:true);
                 }
                 catch(Exception error) when(error is IOException or InvalidOperationException or UnauthorizedAccessException or InvalidDataException) {
                     journal!.Record("fused_validation_unsettled",new{operation_id=validation!.OperationId,edit_hash=hash,error=error.GetType().Name,automatic_retry=false},"host_observed");
@@ -218,13 +218,13 @@ internal sealed class SideEffectGate : IAsyncDisposable
         finally {operationLock.Release();}
     }
 
-    private static async Task<Reply> ObserveFusedEditAsync(TaskCommandGate commands,FusionState saved,CancellationToken token)
+    private static async Task<Reply> ObserveFusedEditAsync(TaskCommandGate commands,FusionState saved,CancellationToken token,bool editJustApplied)
     {
         if(saved.Phase!="edit_applied" || saved.EditHash is null)return new(true,"edit_outcome_unknown_do_not_replay");
         var id=commands.FusedOperationId;
         if(!Directory.Exists(System.IO.Path.Combine(commands.Root,id)))
             return new(true,"edit_applied_validation_not_started_do_not_replay",saved.EditHash);
-        return new(true,"edit_applied_validation_observed",saved.EditHash,
+        return new(true,editJustApplied?"edit_applied_validation_observed":"existing_edit_validation_observed",saved.EditHash,
             CommandState:await commands.ObserveFusionAsync(id,token));
     }
     internal string ResolveMutationPath(string? relative)

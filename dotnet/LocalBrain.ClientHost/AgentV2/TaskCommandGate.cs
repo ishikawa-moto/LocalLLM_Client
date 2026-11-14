@@ -38,6 +38,8 @@ internal sealed class TaskCommandGate : IAsyncDisposable
         var validation=contract.FusedValidation??throw new UnauthorizedAccessException("No exact fused validation command was approved");
         TaskCommandAuthorization.Validate(grant);
         validation.Validate(contract);
+        CanonicalStore.GuardPath(validation.Program);
+        if(!File.Exists(validation.Program))throw new InvalidDataException("Approved fused validation executable is missing");
         _=ResolveCwd(validation.WorkingDirectory);
         if(Directory.EnumerateDirectories(Root).Any())throw new InvalidOperationException("A command intent already exists");
         RequireStorageBudget();
