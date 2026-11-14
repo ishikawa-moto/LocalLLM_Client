@@ -84,6 +84,10 @@ internal static partial class AgentTaskRunner
         }catch(OperationCanceledException)when(token.IsCancellationRequested){
             interrupted=true;completed=false;reason="task_cancelled_or_budget_exhausted";
             feedback="Execution stopped; prior tool results retained. No automatic replay.";
+        }catch(PiTurnTimeoutException){
+            reason="pi_turn_deadline_exceeded";
+            feedback="The Pi turn did not settle. Prior tool results were retained. No automatic replay.";
+            journal.Record("investigation_infrastructure_stop",new{error="PiInvestigationTurnTimeout",reason},"host_observed");
         }catch(Exception error)when(error is not OperationCanceledException){
             // Provider/transport/admission problems are not reasoning failures and never dispatch external rescue.
             reason="infrastructure_stopped: "+error.GetType().Name;
