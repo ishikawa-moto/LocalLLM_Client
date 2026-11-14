@@ -619,7 +619,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         "Output only the verdict as a single JSON object. Do not emit analysis, prose, or Markdown. " +
         "Use {\"verdict\":\"PASS\",\"issues\":[]} only if all criteria are satisfied, otherwise " +
         "{\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Each issue must be at most 250 characters and point to concrete evidence. " +
-        "Do not list hypothetical issues that you ruled out. No tools or edits.\n\n";
+        "For a behavioral issue, include a concrete input with expected and actual behavior, or cite a specific unsupported acceptance criterion. " +
+        "Do not list hypothetical issues that you ruled out. Passing tests alone do not establish all criteria. No tools or edits.\n\n";
 
     internal async Task<string> ValidateAsync(string ticketHash,string candidateHash,CancellationToken token=default,
         bool distinguishTestFailure=false) {
@@ -641,7 +642,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if((hostCompletion || Events("codex_rescue_external_response").Any(e=>e.Input.EvidenceRefs.Contains(ticketHash))) &&
             !AutomaticCompletion.HasPassingTests(request,tests))
             throw new UnverifiedCandidateException();
-        var evidence=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]));
+        var evidence=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]))+
+            ReviewerEvidence.LocalTestDetails(Store,tests);
         var critic=await PiRpcRunner.RunAsync(wsl,CriticContract()+evidence,true,windowsRoot:ticket.RescueRoot,
             taskId:ticket.TaskId,token:token,finalResponseOnly:true,structuredReview:true);
         var parsed=CopilotReviewer.Parse(critic.Text);var criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(critic.Text));

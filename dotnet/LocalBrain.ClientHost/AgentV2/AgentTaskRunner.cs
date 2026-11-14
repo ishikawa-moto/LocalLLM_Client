@@ -541,6 +541,7 @@ internal static partial class AgentTaskRunner
         if (testsPassed && after.UnexpectedFiles.Length == 0)
         {
             var prompt = BuildCriticPrompt(request, after.ReviewDiff, after.ChangedFiles, tests, knowledge)+
+                (hostCompletion?ReviewerEvidence.LocalTestDetails(HostTaskJournal.Current?.Canonical,tests):"")+
                 (HostTaskJournal.Current?.Commands is {} commands?"\nHost-observed command receipts; verify acceptance criteria, not just exit0:\n"+commands.Summary():"");
             var critic = await PiRpcRunner.RunAsync(wslRoot, prompt, freshCritic: true,
                 windowsRoot: windowsRoot, taskId: taskId, token: token,
