@@ -132,7 +132,13 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     }
     internal ToolRouter.TestResult Test(string id)
     {
-        ValidateId(id);var dir=Path.Combine(Root,id);var receipt=ReadReceipt(dir);var ok=Successful(receipt);
+        ValidateId(id);var dir=Path.Combine(Root,id);CanonicalStore.GuardPath(dir);
+        if(!File.Exists(Path.Combine(dir,"receipt.json"))){
+            var empty=CanonicalStore.Hash([]);
+            return new("command_exit","windows_host_owned_command_receipt",false,-1,0,0,empty,empty,0,null,
+                [Directory.Exists(dir)?"command_outcome_unknown":"command_not_started"]);
+        }
+        var receipt=ReadReceipt(dir);var ok=Successful(receipt);
         return new("command_exit","windows_host_owned_command_receipt",ok,receipt.ExitCode??-1,receipt.StdoutBytes,receipt.StderrBytes,receipt.StdoutHash,receipt.StderrHash,receipt.ElapsedMs,null,ok?[]:["command_"+receipt.State]);
     }
     internal string Summary()

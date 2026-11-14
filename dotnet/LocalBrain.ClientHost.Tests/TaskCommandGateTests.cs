@@ -80,6 +80,7 @@ internal static class TaskCommandGateTests
         var request=Request([output]);var taskId=Guid.NewGuid().ToString("N");var grant=FixtureGrant(Path.Combine(root,"grant"),repo,taskId,request,"public_head");
         using var scope=TaskCommandAuthorization.Enter(grant);using var store=new CanonicalStore(Path.Combine(root,"control"));
         using var journal=new HostTaskJournal(store,repo,taskId,request,"public_head");var gate=journal.Commands!;
+        Check(gate.Test("not_started") is {Passed:false,FailureCodes:["command_not_started"]},"Missing command receipt must be a failed test, not an infrastructure exception");
         var file=Path.Combine(output,"result.csv");var cmd=Windows("public_success","success",file);
         var first=Value(await gate.StartAsync(cmd,CancellationToken.None));Check(first.GetProperty("state").GetString()=="running","Command start returns a running handle, not success");
         var result=await Done(gate,cmd.OperationId);Check(result.GetProperty("exit_code").GetInt32()==0&&result.GetProperty("host_command_progress").GetBoolean()&&File.ReadAllText(file)=="PUBLIC_CSV_731\n","Real Windows owned output and receipt required");
@@ -100,6 +101,7 @@ internal static class TaskCommandGateTests
         var unknown=Path.Combine(gate.Root,"public_unknown");Directory.CreateDirectory(unknown);var originalManifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(gate.Root,"public_success","manifest.json"))).RootElement.Clone();
         File.WriteAllText(Path.Combine(unknown,"manifest.json"),originalManifest.GetRawText());
         var uncertain=Value(await gate.StatusAsync("public_unknown",false,CancellationToken.None));Check(uncertain.GetProperty("state").GetString()=="outcome_unknown","Missing terminal receipt is unknown, never success or automatic replay");
+        Check(gate.Test("public_unknown") is {Passed:false,FailureCodes:["command_outcome_unknown"]},"An unsettled intent must not pass or erase the remaining task state");
         var replayBlocked=Value(await gate.StartAsync(cmd with{OperationId="new_id_unknown_bypass"},CancellationToken.None));Check(replayBlocked.GetProperty("state").GetString()=="outcome_unknown","Changing operation ID cannot bypass an unknown identical intent");
         File.WriteAllText(file,"changed after completion");Check(!gate.Test("public_success").Passed,"Expected-output drift invalidates success without replacing original receipt");
         if(wsl){
