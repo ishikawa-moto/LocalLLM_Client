@@ -153,7 +153,14 @@ function withContextTelemetry(stream, selected, context, options) {
       if (process.env.LOCALBRAIN_STRUCTURED_REVIEW === "1") {
         const base = replacement ?? payload;
         // The bounded, no-tool verdict must have room for its JSON rather than generated reasoning.
-        replacement = { ...base, chat_template_kwargs: { ...base.chat_template_kwargs, enable_thinking: false } };
+        replacement = { ...base, chat_template_kwargs: { ...base.chat_template_kwargs, enable_thinking: false },
+          response_format: { type: "json_schema", json_schema: { name: "localbrain_critic", strict: true, schema: {
+            type: "object", properties: {
+              verdict: { type: "string", enum: ["PASS", "ISSUES"] },
+              issues: { type: "array", minItems: 0, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 250 } },
+            }, required: ["verdict", "issues"], additionalProperties: false,
+          } } },
+        };
       }
       const snapshot = await captureContext(context, replacement ?? payload);
       if (process.env.LOCALBRAIN_SIDEFX_PIPE) {

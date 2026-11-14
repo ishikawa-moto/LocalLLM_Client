@@ -618,7 +618,8 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         "You are an independent read-only Critic. Assess every acceptance criterion using the supplied diff and test evidence. " +
         "Output only the verdict as a single JSON object. Do not emit analysis, prose, or Markdown. " +
         "Use {\"verdict\":\"PASS\",\"issues\":[]} only if all criteria are satisfied, otherwise " +
-        "{\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. No tools or edits.\n\n";
+        "{\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Each issue must be at most 250 characters and point to concrete evidence. " +
+        "Do not list hypothetical issues that you ruled out. No tools or edits.\n\n";
 
     internal async Task<string> ValidateAsync(string ticketHash,string candidateHash,CancellationToken token=default,
         bool distinguishTestFailure=false) {
