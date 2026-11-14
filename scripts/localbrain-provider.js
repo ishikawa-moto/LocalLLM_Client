@@ -149,7 +149,12 @@ function withContextTelemetry(stream, selected, context, options) {
   const upstream = options.onPayload;
   return stream(selected, context, { ...options,
     onPayload: async (payload, model) => {
-      const replacement = await upstream?.(payload, model);
+      let replacement = await upstream?.(payload, model);
+      if (process.env.LOCALBRAIN_STRUCTURED_REVIEW === "1") {
+        const base = replacement ?? payload;
+        // The bounded, no-tool verdict must have room for its JSON rather than generated reasoning.
+        replacement = { ...base, chat_template_kwargs: { ...base.chat_template_kwargs, enable_thinking: false } };
+      }
       const snapshot = await captureContext(context, replacement ?? payload);
       if (process.env.LOCALBRAIN_SIDEFX_PIPE) {
         if (!snapshot) throw new Error("ContextMeasurementUnavailable");

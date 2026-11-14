@@ -543,13 +543,15 @@ internal static partial class AgentTaskRunner
             var prompt = BuildCriticPrompt(request, after.ReviewDiff, after.ChangedFiles, tests, knowledge)+
                 (HostTaskJournal.Current?.Commands is {} commands?"\nHost-observed command receipts; verify acceptance criteria, not just exit0:\n"+commands.Summary():"");
             var critic = await PiRpcRunner.RunAsync(wslRoot, prompt, freshCritic: true,
-                windowsRoot: windowsRoot, taskId: taskId, token: token);
+                windowsRoot: windowsRoot, taskId: taskId, token: token,
+                finalResponseOnly:hostCompletion,structuredReview:hostCompletion);
             criticReview = critic.ToolErrors==0?ParseCriticReview(critic.Text):new("INVALID",[]);
             if (criticReview.Verdict == "INVALID")
             {
                 var retry = await PiRpcRunner.RunAsync(wslRoot,
                     prompt + "\nReturn one JSON object only, with no prose or Markdown fence.",
-                    freshCritic: true, windowsRoot: windowsRoot, taskId: taskId, token: token);
+                    freshCritic: true, windowsRoot: windowsRoot, taskId: taskId, token: token,
+                    finalResponseOnly:hostCompletion,structuredReview:hostCompletion);
                 criticReview = retry.ToolErrors==0?ParseCriticReview(retry.Text):new("INVALID",[]);
             }
         }

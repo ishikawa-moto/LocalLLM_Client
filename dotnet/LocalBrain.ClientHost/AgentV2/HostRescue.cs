@@ -613,6 +613,13 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         RequireTicket(ticket,ticketHash);
         return new(ticket,candidateHash,stateHash,actualDiffHash);
     }
+    internal static string CriticContract(bool retry = false) =>
+        (retry ? "The previous answer was not a valid verdict. " : "") +
+        "You are an independent read-only Critic. Assess every acceptance criterion using the supplied diff and test evidence. " +
+        "Output only the verdict as a single JSON object. Do not emit analysis, prose, or Markdown. " +
+        "Use {\"verdict\":\"PASS\",\"issues\":[]} only if all criteria are satisfied, otherwise " +
+        "{\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. No tools or edits.\n\n";
+
     internal async Task<string> ValidateAsync(string ticketHash,string candidateHash,CancellationToken token=default,
         bool distinguishTestFailure=false) {
         var source=await RequireValidationSourceAsync(ticketHash,candidateHash,Load(ticketHash).RescueRoot,token);var ticket=source.Ticket;var request=Request;
@@ -633,12 +640,14 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         if((hostCompletion || Events("codex_rescue_external_response").Any(e=>e.Input.EvidenceRefs.Contains(ticketHash))) &&
             !AutomaticCompletion.HasPassingTests(request,tests))
             throw new UnverifiedCandidateException();
-        var prompt=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]))+"\nYou are a fresh independent local Critic. Assess every acceptance criterion and test evidence. Return exactly JSON {\"verdict\":\"PASS\",\"issues\":[]} or {\"verdict\":\"ISSUES\",\"issues\":[\"specific issue\"]}. Do not modify files.";
-        var critic=await PiRpcRunner.RunAsync(wsl,prompt,true,windowsRoot:ticket.RescueRoot,taskId:ticket.TaskId,token:token);
+        var evidence=ReviewerEvidence.Build(request,diff.ReviewDiff,diff.ChangedFiles,tests,new("",[]));
+        var critic=await PiRpcRunner.RunAsync(wsl,CriticContract()+evidence,true,windowsRoot:ticket.RescueRoot,
+            taskId:ticket.TaskId,token:token,finalResponseOnly:true,structuredReview:true);
         var parsed=CopilotReviewer.Parse(critic.Text);var criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(critic.Text));
         Record("codex_rescue_critic_response",new{ticket_hash=ticketHash,critic=parsed.Verdict,critic.ToolErrors},[criticHash],"model_claim",ticket.WorkspaceId);
         if(parsed.Verdict=="UNAVAILABLE" && critic.ToolErrors==0) {
-            var retry=await PiRpcRunner.RunAsync(wsl,"Return exactly one JSON object and nothing else. No explanations or markdown. Verdict PASS with empty issues, or ISSUES with specific issues. Evaluate the following same evidence in a fresh context.\n"+prompt,true,windowsRoot:ticket.RescueRoot,taskId:ticket.TaskId,token:token);
+            var retry=await PiRpcRunner.RunAsync(wsl,CriticContract(retry:true)+evidence,true,windowsRoot:ticket.RescueRoot,
+                taskId:ticket.TaskId,token:token,finalResponseOnly:true,structuredReview:true);
             parsed=CopilotReviewer.Parse(retry.Text);criticHash=Store.PutEvidence(Encoding.UTF8.GetBytes(retry.Text));
             Record("codex_rescue_critic_format_retry",new{ticket_hash=ticketHash,critic=parsed.Verdict,retry.ToolErrors},[criticHash],"model_claim",ticket.WorkspaceId);
             if(retry.ToolErrors>0)throw new InvalidDataException("Fresh local Rescue Critic retry had tool errors");
