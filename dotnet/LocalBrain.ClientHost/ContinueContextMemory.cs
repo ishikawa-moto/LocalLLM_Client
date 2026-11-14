@@ -11,6 +11,7 @@ namespace LocalBrain.ClientHost;
 internal sealed class ContinueContextMemory : IAsyncDisposable
 {
     internal const int ActorLimit=32768,Trigger=24576,Safety=2048,MaxBytes=2*1024*1024;
+    private const int RetainedToolPreviewChars=4096;
     internal sealed record Prepared(byte[] Body,int OriginalTokens,int ForwardedTokens,string? SourceHash,bool SelectionCacheHit=false,bool FallbackUsed=false,string? SelectionFailure=null);
     private readonly string root;
     private readonly Func<JsonObject,CancellationToken,Task<int>> measure;
@@ -84,7 +85,6 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
         var tail=Enumerable.Range(lastUser+1,messages.Count-lastUser-1).LastOrDefault(i=>Role(messages[i])=="assistant",messages.Count);
         var keep=Enumerable.Range(0,messages.Count).Where(i=>Role(messages[i]) is "system" or "developer" || i==firstUser || i==lastUser || i>=tail).ToHashSet();
         var history=Enumerable.Range(0,messages.Count).Where(i=>!keep.Contains(i)).ToArray();
-        if(history.Length==0){trace.FailureReason="context_budget_exceeded";throw new InvalidDataException("Latest request/tools alone exceed the actor budget");}
         trace.Mark("candidate_generation");
         var texts=new Dictionary<string,string>(StringComparer.Ordinal);
         var candidates=new List<TaskMemorySelection.Candidate>();
@@ -96,18 +96,18 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
         var query=Text(messages[lastUser]);if(query.Length>8192)query=query[..8192];
         var ranked=TaskMemoryRetrieval.Select(query,candidates,16,texts);
         var selectionProfile="public_fixture";
-        if(nativeProfilePath is not null){CanonicalStore.GuardPath(nativeProfilePath);if(new FileInfo(nativeProfilePath).Length>65536)throw new InvalidDataException("Oversized native profile");selectionProfile=CanonicalStore.Hash(File.ReadAllBytes(nativeProfilePath));}
+        if(history.Length!=0 && nativeProfilePath is not null){CanonicalStore.GuardPath(nativeProfilePath);if(new FileInfo(nativeProfilePath).Length>65536)throw new InvalidDataException("Oversized native profile");selectionProfile=CanonicalStore.Hash(File.ReadAllBytes(nativeProfilePath));}
         var candidateHash=CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(new{protocol="request-source-retrieval-v1",task,query,candidates=ranked,profile=selectionProfile}));
         var cachePath=Path.Combine(root,hash+"."+candidateHash+".selection.json");CanonicalStore.GuardPath(cachePath);
-        JsonElement? nativeDiagnostics=null;string? response=null;var cacheHit=File.Exists(cachePath);
-        string? selectionFailure=null;List<TaskMemorySelection.Candidate> chosen;
+        JsonElement? nativeDiagnostics=null;string? response=null;var cacheHit=history.Length!=0 && File.Exists(cachePath);
+        string? selectionFailure=null;List<TaskMemorySelection.Candidate> chosen=[];
         trace.Mark("selection_cache");
         try {
             if(cacheHit){
                 using var cached=JsonDocument.Parse(File.ReadAllBytes(cachePath));var c=cached.RootElement;
                 if(c.GetProperty("source_sha256").GetString()!=hash || c.GetProperty("candidate_sha256").GetString()!=candidateHash)throw new InvalidDataException("Selection cache belongs to another input/profile");
                 response=c.GetProperty("selection").GetString()!;nativeDiagnostics=c.GetProperty("native_diagnostics").Clone();
-            }else{
+            }else if(history.Length!=0){
                 var waiting=Stopwatch.StartNew();var acquired=await selectionSlot.WaitAsync(0,token);
                 trace.LockWaitMs=waiting.Elapsed.TotalMilliseconds;
                 if(!acquired)selectionFailure="history_selection_busy";
@@ -154,18 +154,35 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
             "Current system/developer instructions and the latest user request remain authoritative. " +
             "Original request archive SHA256: "+hash+". Only these bounded excerpts were recalled; do not invent omitted details.\n";
         var reduced=(JsonObject)request.DeepClone();int after;
+        var previews=new Dictionary<int,string>();
+        var previewAttempted=false;
         while(true){
             var packet=prefix+string.Join("\n",chosen.Select(c=>c.EventId+" ["+c.VerificationStatus+"] "+c.Preview));
             var result=new JsonArray();
             foreach(var i in Enumerable.Range(0,messages.Count).Where(i=>keep.Contains(i)&&(Role(messages[i]) is "system" or "developer")))result.Add(messages[i]!.DeepClone());
-            result.Add(new JsonObject{["role"]="user",["content"]=packet});
-            foreach(var i in Enumerable.Range(0,messages.Count).Where(i=>keep.Contains(i)&&(Role(messages[i]) is not ("system" or "developer"))))result.Add(messages[i]!.DeepClone());
+            if(history.Length!=0)result.Add(new JsonObject{["role"]="user",["content"]=packet});
+            foreach(var i in Enumerable.Range(0,messages.Count).Where(i=>keep.Contains(i)&&(Role(messages[i]) is not ("system" or "developer")))){
+                var message=messages[i]!.DeepClone();
+                if(previews.TryGetValue(i,out var preview))message["content"]=preview;
+                result.Add(message);
+            }
             ValidateToolPairs(result);reduced["messages"]=result;
             trace.Mark("final_measurement");after=await measure(reduced,token);
             if(after<1)throw new InvalidDataException("Unverified reconstructed prompt measurement");
             trace.Mark("reconstruction");
             if(after>0 && after<=budget)break;
-            if(chosen.Count==0){trace.FailureReason="context_budget_exceeded";throw new InvalidDataException("Pinned instructions/current request/tools exceed32K admission budget");}
+            if(chosen.Count==0){
+                if(!previewAttempted){
+                    previewAttempted=true;
+                    for(var i=tail;i<messages.Count;i++){
+                        if(Role(messages[i])!="tool" || messages[i]!["content"] is not JsonValue value ||
+                            !value.TryGetValue<string>(out var content) || content.Length<=RetainedToolPreviewChars)continue;
+                        previews.Add(i,RetainedToolPreview(content,hash,i));
+                    }
+                    if(previews.Count!=0){trace.Mark("retained_tool_preview",new{count=previews.Count});continue;}
+                }
+                trace.FailureReason="context_budget_exceeded";throw new InvalidDataException("Pinned instructions/current request/tools exceed32K admission budget");
+            }
             if(trace.FallbackUsed && chosen.Count>1)chosen=TaskMemoryRetrieval.Select(query,candidates,chosen.Count-1,texts).ToList();
             else chosen.RemoveAt(0);
         }
@@ -174,10 +191,19 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
         var receipt=new {source_sha256=hash,prepared_sha256=CanonicalStore.Hash(body),actor_context_limit=ActorLimit,
             original_prompt_tokens=before,forwarded_prompt_tokens=after,output_reserve=output,safety_reserve=Safety,
             candidate_ids=ranked.Select(c=>c.EventId),selected_ids=chosen.Select(c=>c.EventId),
-            fallback_used=trace.FallbackUsed,selection_failure=selectionFailure,
+            fallback_used=trace.FallbackUsed,selection_failure=selectionFailure,retained_tool_preview_indices=previews.Keys,
             native_diagnostics=nativeDiagnostics,memory_scope="exact_current_request_only",authority="source excerpts, not truth or approval",tool_replay=false};
         Store(Path.Combine(root,hash+"."+Guid.NewGuid().ToString("N")+".receipt.json"),JsonSerializer.SerializeToUtf8Bytes(receipt));
         trace.Mark("admitted");return new(body,before,after,hash,cacheHit,trace.FallbackUsed,selectionFailure);
+    }
+    private static string RetainedToolPreview(string content,string hash,int index)
+    {
+        var head=RetainedToolPreviewChars/2;
+        var tail=content.Length-head;
+        if(char.IsHighSurrogate(content[head-1]))head--;
+        if(char.IsLowSurrogate(content[tail]))tail++;
+        return $"[Truncated tool output; original length {content.Length} UTF-16 units. Local request archive SHA256 {hash}, message index {index}. Preview only.]\n"+
+            content[..head]+"\n[... omitted ...]\n"+content[tail..];
     }
     private static string Role(JsonNode? m)=>m?["role"]?.GetValue<string>()??"";
     private static string Text(JsonNode? m)=>m?["content"] is JsonValue v&&v.TryGetValue<string>(out var s)?s:m?.ToJsonString()??"";

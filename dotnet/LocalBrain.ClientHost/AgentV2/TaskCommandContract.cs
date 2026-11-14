@@ -13,6 +13,10 @@ internal sealed record TaskCommandContract(
     [property:JsonPropertyName("max_commands")] int MaxCommands=256,
     [property:JsonPropertyName("max_output_bytes")] int MaxOutputBytes=2097152)
 {
+    [JsonPropertyName("fused_validation")]
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public TaskCommandRequest? FusedValidation { get; init; }
+
     internal void Validate()
     {
         if(Environments is null or {Length:0 or >2} || Environments.Any(e=>e is not ("windows" or "wsl")) ||
@@ -22,6 +26,12 @@ internal sealed record TaskCommandContract(
             MaxCommandSeconds is <1 or >86400 || MaxTaskMinutes is <1 or >1440 || MaxActorTurns is <3 or >300 ||
             MaxCommands is <0 or >1024 || MaxOutputBytes is <4096 or >8388608)
             throw new InvalidDataException("Invalid task command scope or finite budgets");
+        if(FusedValidation is {} validation){
+            validation.Validate(this);
+            if(MaxCommands!=1 || MaxCommandSeconds>30 || validation.Environment!="windows" || !Path.IsPathFullyQualified(validation.Program) ||
+                validation.ExpectedOutputs is {Length:>0})
+                throw new InvalidDataException("Fused validation requires one exact Windows executable and arguments, at most 30 seconds and no output files");
+        }
     }
     internal static bool Relative(string p)=>!string.IsNullOrWhiteSpace(p)&&p.Length<=260&&!Path.IsPathRooted(p)&&
         p.IndexOfAny(['\0','\r','\n'])<0&&(p=="."||!p.Split('/','\\').Any(s=>s is ".." or ".git" or ".localbrain"));

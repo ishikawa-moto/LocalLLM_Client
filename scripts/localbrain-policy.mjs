@@ -47,8 +47,8 @@ export function checkToolCall(event, cwd) {
   }
   if (event.toolName === "edit" || event.toolName === "write")
     return { block: true, reason: "Native mutation tools are disabled; use the Windows Host tools" };
-  if (event.toolName === "host_edit" || event.toolName === "host_write")
-    event = { ...event, toolName: event.toolName === "host_edit" ? "edit" : "write" };
+  if (event.toolName === "host_edit" || event.toolName === "host_write" || event.toolName === "host_edit_and_validate")
+    event = { ...event, toolName: event.toolName === "host_write" ? "write" : "edit" };
   if (!FILE_TOOLS.has(event.toolName))
     return { block: true, reason: "This tool is not in the LocalBrain WSL policy" };
   const root = fs.realpathSync.native(cwd);

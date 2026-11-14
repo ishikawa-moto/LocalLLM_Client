@@ -22,6 +22,8 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     private readonly SemaphoreSlim gate=new(1,1);private bool disposed;
     internal string Root {get;}
     internal bool AllowsCommands => contract.MaxCommands > 0;
+    internal bool AllowsFusion => contract.FusedValidation is not null;
+    internal string FusedOperationId => contract.FusedValidation!.OperationId;
     internal TaskCommandGate(HostTaskJournal journal,AgentTaskRequest request)
     {
         this.journal=journal;contract=request.CommandExecution??throw new UnauthorizedAccessException("No task command contract");
@@ -31,10 +33,23 @@ internal sealed class TaskCommandGate : IAsyncDisposable
         journal.Record("task_command_grant_bound",new{task_id=journal.TaskId,grant_input_hash=grant.Pending.InputHash,grant_receipt_hash=grant.ReceiptHash,
             contract,trust="personal trusted project code; not a hostile-code sandbox",lifetime="same exact task until completion/cancellation; finite active execution budget"},"human_confirmed");
     }
-    internal async Task<object> StartAsync(TaskCommandRequest request,CancellationToken token)
+    internal TaskCommandRequest AdmitFusion()
+    {
+        var validation=contract.FusedValidation??throw new UnauthorizedAccessException("No exact fused validation command was approved");
+        TaskCommandAuthorization.Validate(grant);
+        validation.Validate(contract);
+        CanonicalStore.GuardPath(validation.Program);
+        if(!File.Exists(validation.Program))throw new InvalidDataException("Approved fused validation executable is missing");
+        _=ResolveCwd(validation.WorkingDirectory);
+        if(Directory.EnumerateDirectories(Root).Any())throw new InvalidOperationException("A command intent already exists");
+        RequireStorageBudget();
+        return validation;
+    }
+    internal async Task<object> StartAsync(TaskCommandRequest request,CancellationToken token,bool fused=false)
     {
         Slack.RestrictedExecution.DenyAgentTools();
-        if (!AllowsCommands) throw new UnauthorizedAccessException("This grant authorizes file work only");
+        if (!AllowsCommands || AllowsFusion!=fused || (fused && !ReferenceEquals(request,contract.FusedValidation)))
+            throw new UnauthorizedAccessException("This grant does not authorize this route to start a command");
         await gate.WaitAsync(token);try{
             ObjectDisposedException.ThrowIf(disposed,this);TaskCommandAuthorization.Validate(grant);request.Validate(contract);
             var cwd=ResolveCwd(request.WorkingDirectory);_ = ResolveOutputs(cwd,request.ExpectedOutputs??[]);
@@ -52,15 +67,29 @@ internal sealed class TaskCommandGate : IAsyncDisposable
             }
             if(live.Values.Any(r=>!r.Work.IsCompleted))return new{state="busy",automatic_retry=false,message="One owned command is still running; observe it instead of launching a duplicate"};
             if(Directory.EnumerateDirectories(Root).Count()>=contract.MaxCommands)throw new InvalidOperationException("Task command count budget exhausted");
-            var stored=Directory.EnumerateFiles(Root,"*",SearchOption.AllDirectories).Sum(p=>new FileInfo(p).Length);
-            if(stored+contract.MaxOutputBytes>128L*1024*1024 || new DriveInfo(Path.GetPathRoot(Root)!).AvailableFreeSpace<1024L*1024*1024)
-                throw new IOException("Task command output storage admission failed");
+            RequireStorageBudget();
             Directory.CreateDirectory(directory);var nonce=Guid.NewGuid().ToString("N");
             WriteNew(Path.Combine(directory,"manifest.json"),new{task_id=journal.TaskId,request_hash=grant.Pending.RequestHash,grant_receipt_hash=grant.ReceiptHash,fingerprint,nonce,command=request,cwd,created_at=DateTimeOffset.UtcNow});
             journal.Record("command_launch_intent",new{operation_id=request.OperationId,fingerprint,nonce,environment=request.Environment,cwd,automatic_retry=false},"host_verified");
             var running=new Running(request,directory,fingerprint,nonce);live.Add(request.OperationId,running);running.Work=RunAsync(running,cwd);
             return StatusCore(request.OperationId);
         }finally{gate.Release();}
+    }
+    private void RequireStorageBudget()
+    {
+        var stored=Directory.EnumerateFiles(Root,"*",SearchOption.AllDirectories).Sum(p=>new FileInfo(p).Length);
+        if(stored+contract.MaxOutputBytes>128L*1024*1024 || new DriveInfo(Path.GetPathRoot(Root)!).AvailableFreeSpace<1024L*1024*1024)
+            throw new IOException("Task command output storage admission failed");
+    }
+    internal async Task<JsonElement> ObserveFusionAsync(string id,CancellationToken token)
+    {
+        // Let short checks settle in this tool call. An owned slow command keeps running;
+        // the Actor can observe it via the existing status tool, never start it again.
+        for(var deadline=Stopwatch.StartNew();;){
+            var state=JsonSerializer.SerializeToElement(await StatusAsync(id,false,token),ClientConfig.JsonOptions);
+            if(state.GetProperty("state").GetString()!="running" || deadline.Elapsed>=TimeSpan.FromSeconds(8))return state;
+            await Task.Delay(150,token);
+        }
     }
     internal async Task<object> StatusAsync(string id,bool cancel,CancellationToken token)
     {
@@ -103,7 +132,13 @@ internal sealed class TaskCommandGate : IAsyncDisposable
     }
     internal ToolRouter.TestResult Test(string id)
     {
-        ValidateId(id);var dir=Path.Combine(Root,id);var receipt=ReadReceipt(dir);var ok=Successful(receipt);
+        ValidateId(id);var dir=Path.Combine(Root,id);CanonicalStore.GuardPath(dir);
+        if(!File.Exists(Path.Combine(dir,"receipt.json"))){
+            var empty=CanonicalStore.Hash([]);
+            return new("command_exit","windows_host_owned_command_receipt",false,-1,0,0,empty,empty,0,null,
+                [Directory.Exists(dir)?"command_outcome_unknown":"command_not_started"]);
+        }
+        var receipt=ReadReceipt(dir);var ok=Successful(receipt);
         return new("command_exit","windows_host_owned_command_receipt",ok,receipt.ExitCode??-1,receipt.StdoutBytes,receipt.StderrBytes,receipt.StdoutHash,receipt.StderrHash,receipt.ElapsedMs,null,ok?[]:["command_"+receipt.State]);
     }
     internal string Summary()
