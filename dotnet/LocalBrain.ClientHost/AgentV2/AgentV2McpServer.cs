@@ -52,7 +52,12 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
                     max_task_minutes=new{type="integer",minimum=1,maximum=1440},
                     max_actor_turns=new{type="integer",minimum=3,maximum=300},
                     max_commands=new{type="integer",minimum=runner?0:1,maximum=runner?0:1024},
-                    max_output_bytes=new{type="integer",minimum=4096,maximum=8388608}
+                    max_output_bytes=new{type="integer",minimum=4096,maximum=8388608},
+                    fused_validation=new{type="object",description="Optional exact validation command for a one-file combined edit. Native approval displays and binds it. Use one command, max 30 seconds, no output files, and a matching command_exit test.",properties=new{
+                        operationId=new{type="string"},environment=new{type="string",@enum=new[]{"windows"}},
+                        program=new{type="string",description="Absolute executable path."},arguments=new{type="array",items=new{type="string"}},
+                        workingDirectory=new{type="string"},timeoutSeconds=new{type="integer",minimum=1,maximum=30}
+                    },required=new[]{"operationId","environment","program","arguments"},additionalProperties=false}
                 }, required=new[]{"environments","working_directories","output_directories"},additionalProperties=false }
             }, required = new[] { "requirement", "acceptance_criteria", "risk",
                 "approved_high_risk", "allowed_files", "required_tests" },

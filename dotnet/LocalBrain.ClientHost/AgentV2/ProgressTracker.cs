@@ -108,7 +108,10 @@ internal sealed class ProgressTracker(Func<string,string,bool>? commandVerifier=
                 SameErrorCount = fingerprint == lastError ? SameErrorCount + 1 : 1;
                 lastError = fingerprint;
             }
-            else if (name is "edit" or "write" or "host_edit" or "host_write")
+            else if (name is "edit" or "write" or "host_edit" or "host_write" ||
+                name=="host_edit_and_validate" && message.TryGetProperty("result",out var fused) &&
+                fused.TryGetProperty("details",out var fusionDetails) && fusionDetails.ValueKind==JsonValueKind.Object &&
+                fusionDetails.TryGetProperty("edit_hash",out var editHash) && editHash.ValueKind==JsonValueKind.String)
             {
                 FilesChanged++;
                 ToolCallsSinceProgress = 0;

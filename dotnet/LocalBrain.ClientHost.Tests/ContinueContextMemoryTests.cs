@@ -78,6 +78,25 @@ internal static class ContinueContextMemoryTests
         Check(File.ReadAllBytes(Path.Combine(root,prepared.SourceHash+".json")).SequenceEqual(original),"Full immutable source must be preserved");
         var repeat=await memory.PrepareAsync(original);
         Check(calls==1&&repeat.SelectionCacheHit&&repeat.Body.SequenceEqual(prepared.Body),"Identical input/profile may reuse validated IDs without repeating slow CPU inference");
+        var bigTool=(JsonObject)shortRequest.DeepClone();
+        var bigResult=(JsonObject)toolResult.DeepClone();
+        bigResult["content"]="BEGIN_TOOL_RESULT"+new string('x',40000)+"END_TOOL_RESULT";
+        bigTool["messages"]=new JsonArray(messages[0]!.DeepClone(),latest.DeepClone(),toolCall.DeepClone(),bigResult);
+        bigTool["tools"]=full["tools"]!.DeepClone();
+        var bigBytes=Bytes(bigTool);
+        var preview=await memory.PrepareAsync(bigBytes);
+        var previewBody=JsonNode.Parse(preview.Body)!;var pm=previewBody["messages"]!.AsArray();
+        var text=pm[3]!["content"]!.GetValue<string>();
+        Check(preview.OriginalTokens>32768&&preview.ForwardedTokens<=24576&&calls==1,"Oversized latest tool output must be reduced even without historical messages or a selector");
+        Check(pm.Count==4&&JsonNode.DeepEquals(pm[0],messages[0])&&JsonNode.DeepEquals(pm[1],latest)&&JsonNode.DeepEquals(pm[2],toolCall)&&
+            pm[3]!["tool_call_id"]!.GetValue<string>()=="call_current"&&JsonNode.DeepEquals(previewBody["tools"],bigTool["tools"]),"Only tool result content can change");
+        Check(text.Contains("BEGIN_TOOL_RESULT")&&text.EndsWith("END_TOOL_RESULT")&&text.Contains(preview.SourceHash!)&&
+            File.ReadAllBytes(Path.Combine(root,preview.SourceHash+".json")).SequenceEqual(bigBytes),"Preview must point to the byte-exact archive");
+        ContinueContextMemory.ValidateToolPairs(pm);
+        var bigWithHistory=(JsonObject)full.DeepClone();
+        bigWithHistory["messages"]!.AsArray()[messages.Count-1]=bigResult.DeepClone();
+        var historyPreview=await memory.PrepareAsync(Bytes(bigWithHistory));
+        Check(historyPreview.ForwardedTokens<=24576&&historyPreview.SourceHash is not null&&calls==2,"Oversized latest tool output must also be reduced after historical excerpts cannot fit");
         var firstSource=prepared.SourceHash;
         await using var bad=new ContinueContextMemory(root+"-invalid",Count,(_,_,_,_)=>Task.FromResult("{\"event_ids\":[\"invented_other_task\"]}"));
         var safe=await bad.PrepareAsync(original);

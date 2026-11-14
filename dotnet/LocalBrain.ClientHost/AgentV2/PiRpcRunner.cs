@@ -44,6 +44,8 @@ internal static class PiRpcRunner
         launch.Add($"LOCALBRAIN_CONTEXT_AGENT_PHASE={(freshCritic ? "critic" : "actor")}");
         if ((sideEffects is not null ? "/home/worker/localbrain-v2/verified-tokenizer.json" : telemetryOptions?.TokenizerJson) is { } tokenizer)
             launch.Add($"LOCALBRAIN_CONTEXT_TOKENIZER_JSON={tokenizer}");
+        if (Environment.GetEnvironmentVariable("LOCALBRAIN_DISABLE_OBSERVATION_PACK") == "1")
+            launch.Add("LOCALBRAIN_DISABLE_OBSERVATION_PACK=1");
         launch.AddRange([
             runtime.PiExecutable, "--mode", "rpc",
             "--offline", "--no-approve", "--no-extensions", "--no-mcp", "--no-skills",
@@ -92,9 +94,14 @@ internal static class PiRpcRunner
                 start.ArgumentList.Add(sessionId);
             }
             start.ArgumentList.Add("--tools");
-            start.ArgumentList.Add(allowMutations
-                ? "read,ls,host_edit,host_write,host_recall,host_memory_search"+(HostTaskJournal.Current?.Commands?.AllowsCommands == true?",host_command_start,host_command_status,host_command_cancel":"")
-                : "read,ls,host_recall,host_memory_search");
+            var tools="read,ls,host_recall,host_memory_search";
+            if(allowMutations)
+                tools+=HostTaskJournal.Current?.Commands switch {
+                    {AllowsFusion:true}=>",host_edit_and_validate,host_command_status,host_command_cancel",
+                    {AllowsCommands:true}=>",host_edit,host_write,host_command_start,host_command_status,host_command_cancel",
+                    _=>",host_edit,host_write"
+                };
+            start.ArgumentList.Add(tools);
         }
 
         var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

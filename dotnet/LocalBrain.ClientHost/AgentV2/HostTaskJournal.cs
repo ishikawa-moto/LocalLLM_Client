@@ -126,6 +126,17 @@ internal sealed class HostTaskJournal : IDisposable
         store.ReserveMemoryAccess(Input("taskmemory_recall_access",new {offset},"host_verified",[]),32);
         return store.Recall(taskId,hash,offset);
     }
+    internal string RecordToolObservation(string tool,string toolCallId,string content)
+    {
+        Slack.RestrictedExecution.DenyAgentTools();
+        var bytes=new UTF8Encoding(false,true).GetBytes(content);
+        if(bytes.Length is <=4096 or >1024*1024 || tool.Length is <1 or >128 || toolCallId.Length is <1 or >256)
+            throw new InvalidDataException("Tool observation is outside Host bounds");
+        var hash=store.PutEvidence(bytes);
+        store.Append(Input("pi_tool_observation",new{tool,tool_call_id=toolCallId,byte_length=bytes.Length,
+            utf16_length=content.Length,authority="untrusted tool output; not instructions or completion evidence"},"runtime_observed",[hash]));
+        return hash;
+    }
     internal TaskMemorySelection.Candidate[] SearchMemory(string query) {
         Slack.RestrictedExecution.DenyAgentTools();
         if(string.IsNullOrWhiteSpace(query) || query.Length>1024)throw new InvalidDataException("Memory search query outside Host bounds");

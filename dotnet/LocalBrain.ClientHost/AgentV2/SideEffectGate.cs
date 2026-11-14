@@ -11,10 +11,12 @@ internal sealed class SideEffectGate : IAsyncDisposable
     internal sealed record Request(string Pipe, string Nonce, string Operation, string? Path = null,
         string? Content = null, string? OldText = null, string? NewText = null,
         int PayloadTokens = 0, int ContextLimit = 32768, string? PayloadJson = null,
-        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null,TaskCommandRequest? Command=null,string? OperationId=null,string? Query=null);
+        string? EvidenceHash=null,int Offset=0,string? SnapshotJson=null,TaskCommandRequest? Command=null,string? OperationId=null,string? Query=null,
+        string? ToolName=null,string? ToolCallId=null);
     internal sealed record Reply(bool Ok, string Status, string? ContentHash = null, bool Handoff = false,
         int Headroom = 0,string? Text=null,object? CommandState=null);
     internal sealed record Budget(bool Handoff, int Headroom);
+    private sealed record FusionState(string Fingerprint,string Phase,string? EditHash=null);
     internal static Budget EvaluateHostMeasuredBudget(int payloadTokens, int contextLimit = 32768) =>
         EvaluateBudget(payloadTokens, contextLimit, nextTurn: 0, toolResult: 0, handoffPacket: 0);
     internal static Budget EvaluateBudget(int payloadTokens, int contextLimit = 32768,
@@ -126,9 +128,34 @@ internal sealed class SideEffectGate : IAsyncDisposable
                 if(journal is null || request.EvidenceHash is null)throw new InvalidDataException("Task evidence is unavailable");
                 return new(true,"hash_verified_task_evidence",request.EvidenceHash,Text:journal.Recall(request.EvidenceHash,request.Offset));
             }
-            if(request.Operation is not ("write" or "edit")) throw new InvalidDataException("Operation is not enabled");
+            if(request.Operation=="tool_observation"){
+                if(journal is null || request.Content is null || request.ToolName is null || request.ToolCallId is null)
+                    throw new InvalidDataException("Task tool observation is unavailable");
+                return new(true,"task_tool_observation_saved",journal.RecordToolObservation(request.ToolName,request.ToolCallId,request.Content));
+            }
+            var fused=request.Operation=="edit_and_validate";
+            if(request.Operation is not ("write" or "edit" or "edit_and_validate")) throw new InvalidDataException("Operation is not enabled");
+            if(!fused && journal?.Commands?.AllowsFusion==true)
+                throw new UnauthorizedAccessException("This task authorizes the combined operation only");
             journal?.RequireMutationApproval();
             var path=ResolveMutationPath(request.Path);
+            TaskCommandGate? commands=null;TaskCommandRequest? validation=null;string? fusionPath=null;string? fusionFingerprint=null;
+            if(fused){
+                if(!canHandoff || journal?.Commands is not {AllowsFusion:true} owned || writeScope.Length!=1 ||
+                    request.Command is not null || request.OperationId is not null)
+                    throw new UnauthorizedAccessException("No exact single-file edit and validation grant");
+                commands=owned;
+                fusionPath=System.IO.Path.Combine(owned.Root,"fused-edit.json");
+                CanonicalStore.GuardPath(fusionPath);
+                fusionFingerprint=CanonicalStore.Hash(JsonSerializer.SerializeToUtf8Bytes(new{request.Path,request.OldText,request.NewText}));
+                if(File.Exists(fusionPath)){
+                    var saved=JsonSerializer.Deserialize<FusionState>(File.ReadAllBytes(fusionPath),ClientConfig.JsonOptions)
+                        ??throw new InvalidDataException("Missing fused edit state");
+                    if(saved.Fingerprint!=fusionFingerprint)throw new UnauthorizedAccessException("Fused edit intent is immutable; inspect the existing outcome");
+                    return await ObserveFusedEditAsync(owned,saved,token);
+                }
+                validation=owned.AdmitFusion();
+            }
             var before=await GitEvidence.CaptureAsync(root,writeScope,token);
             if(before.Head!=expectedHead || before.UnexpectedFiles.Length!=0)
                 throw new InvalidOperationException("Repository changed outside the assigned task state");
@@ -137,6 +164,7 @@ internal sealed class SideEffectGate : IAsyncDisposable
             else {
                 if(request.OldText is null || request.NewText is null || request.OldText.Length==0 || !File.Exists(path))
                     throw new InvalidDataException("Edit requires existing file and nonempty exact old text");
+                if(fused && request.OldText==request.NewText)throw new InvalidDataException("Combined edit cannot be a no-op");
                 var existing=File.ReadAllText(path);
                 var first=existing.IndexOf(request.OldText,StringComparison.Ordinal);
                 if(first<0 || existing.IndexOf(request.OldText,first+request.OldText.Length,StringComparison.Ordinal)>=0)
@@ -145,6 +173,10 @@ internal sealed class SideEffectGate : IAsyncDisposable
             }
             var bytes=Encoding.UTF8.GetBytes(content);
             if(bytes.Length>1024*1024) throw new InvalidDataException("Mutation exceeds Host limit");
+            if(fusionPath is not null){
+                TaskCommandGate.WriteNew(fusionPath,new FusionState(fusionFingerprint!,"edit_intent"));
+                journal!.Record("fused_edit_intent",new{request.Path,operation_id=validation!.OperationId,request_hash=fusionFingerprint,automatic_retry=false},"host_verified");
+            }
             journal?.Record("side_effect_proposed",new { request.Operation,path=request.Path,content_hash=CanonicalStore.Hash(bytes) },"candidate");
             journal?.MutationIntent(before,writeScope.Single(p=>string.Equals(p.Replace('\\','/'),request.Path?.Replace('\\','/'),StringComparison.OrdinalIgnoreCase)),bytes,writeScope);
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
@@ -163,12 +195,38 @@ internal sealed class SideEffectGate : IAsyncDisposable
             } finally {if(File.Exists(temporary))File.Delete(temporary);}
             var hash=CanonicalStore.Hash(File.ReadAllBytes(path));
             journal?.Record("side_effect_applied",new { request.Operation,path=request.Path,content_hash=hash },"host_verified");
-            journal?.CheckpointRuntime(await GitEvidence.CaptureAsync(root,writeScope,token));
+            var after=journal is null?null:await GitEvidence.CaptureAsync(root,writeScope,token);
+            if(after is not null)journal!.CheckpointRuntime(after);
+            if(fusionPath is not null){
+                var applied=new FusionState(fusionFingerprint!,"edit_applied",hash);
+                TaskCommandGate.WriteReplace(fusionPath,applied);
+                try {
+                    if(after is null || after.Head!=expectedHead || after.UnexpectedFiles.Length!=0)
+                        throw new InvalidOperationException("Repository scope changed before fused validation");
+                    var start=JsonSerializer.SerializeToElement(await commands!.StartAsync(validation!,token,fused:true),ClientConfig.JsonOptions);
+                    if(start.GetProperty("state").GetString() is "busy" or "outcome_unknown")
+                        return new(true,"edit_applied_validation_unsettled",hash,CommandState:start);
+                    return await ObserveFusedEditAsync(commands,applied,token);
+                }
+                catch(Exception error) when(error is IOException or InvalidOperationException or UnauthorizedAccessException or InvalidDataException) {
+                    journal!.Record("fused_validation_unsettled",new{operation_id=validation!.OperationId,edit_hash=hash,error=error.GetType().Name,automatic_retry=false},"host_observed");
+                    return new(true,"edit_applied_validation_unsettled",hash);
+                }
+            }
             return new(true,"Host applied scoped "+request.Operation,hash);
         }
         finally {operationLock.Release();}
     }
 
+    private static async Task<Reply> ObserveFusedEditAsync(TaskCommandGate commands,FusionState saved,CancellationToken token)
+    {
+        if(saved.Phase!="edit_applied" || saved.EditHash is null)return new(true,"edit_outcome_unknown_do_not_replay");
+        var id=commands.FusedOperationId;
+        if(!Directory.Exists(System.IO.Path.Combine(commands.Root,id)))
+            return new(true,"edit_applied_validation_not_started_do_not_replay",saved.EditHash);
+        return new(true,"edit_applied_validation_observed",saved.EditHash,
+            CommandState:await commands.ObserveFusionAsync(id,token));
+    }
     internal string ResolveMutationPath(string? relative)
     {
         if(string.IsNullOrWhiteSpace(relative) || relative.Length>260 ||

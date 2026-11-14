@@ -64,6 +64,11 @@ internal sealed record AgentTaskRequest(
                         test.Target.Split('/', '\\').Any(part => part is "." or ".." or ".git" or ".localbrain")
                     : test.Kind!="command_exit" && !string.IsNullOrWhiteSpace(test.Target))))
             throw new InvalidDataException("Agent task request is incomplete or exceeds limits");
+        if(request.CommandExecution?.FusedValidation is {} fusion &&
+            (request.AllowedFiles is not [var file] || file.Contains('*') ||
+             request.RequiredTests.Count(test=>test.Kind=="command_exit")!=1 ||
+             !request.RequiredTests.Any(test=>test.Kind=="command_exit" && test.Target==fusion.OperationId)))
+            throw new InvalidDataException("Fused validation requires one exact file and its matching required command receipt");
         if(request.ReadOnly && (request.CommandExecution is not null || request.EffectiveRisk!="LOW" ||
             request.RequiredTests is not [{Kind:"git_diff_check",Target:null}]))
             throw new InvalidDataException("Read-only investigations require LOW risk, no command grant, and only git_diff_check");
