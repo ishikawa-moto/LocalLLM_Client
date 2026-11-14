@@ -69,6 +69,28 @@ internal static class InvestigationTests
         var stopped=await AgentTaskRunner.RunInvestigationAsync(infraJob,config,default,(_,_,_,_)=>{attempts++;throw new IOException("public provider failure");});
         Check(!stopped.Complete&&attempts==1&&stopped.Reason!.StartsWith("infrastructure_stopped"),"Infrastructure failure neither retries an unknown dispatch nor calls external rescue");
 
+        var timeoutControl=Path.Combine(directory,"investigation-pi-deadline");
+        await TaskAgentCoordinator.SubmitAsync(repo,request,config,control:timeoutControl,launch:false);
+        var timeoutDir=TaskAgentCoordinator.CurrentDirectory(repo,timeoutControl)!;
+        var timeoutJob=JsonSerializer.Deserialize<TaskAgentCoordinator.Job>(File.ReadAllBytes(Path.Combine(timeoutDir,"job.json")),ClientConfig.JsonOptions)!;
+        var timeoutAttempts=0;
+        var timedOut=await AgentTaskRunner.RunInvestigationAsync(timeoutJob,config,default,(_,critic,_,token)=>{
+            Check(!critic&&!token.IsCancellationRequested,"Pi can time out before the investigation deadline");
+            timeoutAttempts++;
+            HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_end",
+                toolCallId="deadline_read",toolName="read",isError=false,result=new{content="PUBLIC_PARTIAL_EVIDENCE"}}));
+            throw new PiTurnTimeoutException();
+        });
+        Check(!timedOut.Complete&&timedOut.Turns==1&&timedOut.Reason=="pi_turn_deadline_exceeded"&&timeoutAttempts==1,
+            "A Pi turn deadline settles as incomplete without replay or another model call");
+        TaskCommandGate.WriteReplace(Path.Combine(timeoutDir,"report.json"),new TaskAgentCoordinator.Report(
+            timeoutJob.TaskId,"blocked",false,timedOut.Turns,timedOut.Reason,DateTimeOffset.UtcNow));
+        var timeoutStatus=JsonSerializer.SerializeToElement(await TaskAgentCoordinator.StatusAsync(repo,timeoutControl));
+        Check(timeoutStatus.GetProperty("canonical_phase").GetString()=="blocked"&&
+            !timeoutStatus.GetProperty("eligible_for_completion").GetBoolean()&&
+            timeoutStatus.GetProperty("final_report").GetString()!.Contains("No automatic replay."),
+            "A timed-out turn records the incomplete report and terminal Canonical phase exposed to MCP");
+
         PiRunResult Interrupted(string action)=>new("",4,0,0,0,0,0,0,4,false,0,0,null,new SupervisorDecision(action,"hard_rule","recent_action_did_not_change_state",null,null,false),true);
         async Task<(AgentTaskRunner.InvestigationResult Result,int Actors)> Supervised(string name,string action){
             var supervisedControl=Path.Combine(directory,name);
@@ -119,6 +141,6 @@ internal static class InvestigationTests
         var mcpJob=JsonSerializer.Deserialize<TaskAgentCoordinator.Job>(File.ReadAllBytes(Path.Combine(mcpDir,"job.json")),ClientConfig.JsonOptions)!;
         Check(mcpJob.Authorization is null && AgentTaskRequest.Parse(mcpJob.RequestJson).ReadOnly,"Read-only wildcard selection creates no mutation or command grant");
         await McpStdioTests.AgentEntryAsync(directory,repo,config);
-        Console.WriteLine("Investigation PASS: exact goal, automatic incomplete-turn continuation, context handoff, retained evidence, no duplicate reads, immutable final report, completion gate, no command capability, infrastructure stop and Continue routing.");
+        Console.WriteLine("Investigation PASS: exact goal, automatic incomplete-turn continuation, context handoff, retained evidence, no duplicate reads, immutable final report, completion gate, no command capability, infrastructure stop, Pi deadline settlement and Continue routing.");
     }
 }

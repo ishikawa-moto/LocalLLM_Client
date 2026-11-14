@@ -193,34 +193,41 @@ internal static class PiRpcRunner
         runTimeout.CancelAfter(TimeSpan.FromMinutes(10));
         SupervisorDecision? liveDecision = null;
         var interruptedForSupervisor = false;
-        while (!settled.Task.IsCompleted)
+        try
         {
-            var milestoneReady = milestones.Reader.WaitToReadAsync(runTimeout.Token).AsTask();
-            var finished = await Task.WhenAny(settled.Task, worker.Completion,
-                noProgressSignal.Task, milestoneReady).WaitAsync(runTimeout.Token);
-            if (settled.Task.IsCompleted) break;
-            if (finished == worker.Completion) {
-                await worker.Completion;
-                throw new IOException("Pi RPC closed before the run settled");
-            }
-            if (finished == noProgressSignal.Task)
+            while (!settled.Task.IsCompleted)
             {
-                await AbortAsync(worker, hostAbort, runTimeout.Token);
-                break;
+                var milestoneReady = milestones.Reader.WaitToReadAsync(runTimeout.Token).AsTask();
+                var finished = await Task.WhenAny(settled.Task, worker.Completion,
+                    noProgressSignal.Task, milestoneReady).WaitAsync(runTimeout.Token);
+                if (settled.Task.IsCompleted) break;
+                if (finished == worker.Completion) {
+                    await worker.Completion;
+                    throw new IOException("Pi RPC closed before the run settled");
+                }
+                if (finished == noProgressSignal.Task)
+                {
+                    await AbortAsync(worker, hostAbort, runTimeout.Token);
+                    break;
+                }
+                if (!await milestoneReady) continue;
+                while (milestones.Reader.TryRead(out var snapshot) && onMilestone is not null)
+                {
+                    liveDecision = await onMilestone(snapshot);
+                    if (liveDecision.Action is not ("RUN_TEST" or "REPLAN" or "ESCALATE_SOL" or "STOP"))
+                        continue;
+                    await AbortAsync(worker, hostAbort, runTimeout.Token);
+                    interruptedForSupervisor = true;
+                    break;
+                }
+                if (interruptedForSupervisor) break;
             }
-            if (!await milestoneReady) continue;
-            while (milestones.Reader.TryRead(out var snapshot) && onMilestone is not null)
-            {
-                liveDecision = await onMilestone(snapshot);
-                if (liveDecision.Action is not ("RUN_TEST" or "REPLAN" or "ESCALATE_SOL" or "STOP"))
-                    continue;
-                await AbortAsync(worker, hostAbort, runTimeout.Token);
-                interruptedForSupervisor = true;
-                break;
-            }
-            if (interruptedForSupervisor) break;
         }
-        milestones.Writer.TryComplete();
+        catch (OperationCanceledException error) when (runTimeout.IsCancellationRequested && !token.IsCancellationRequested)
+        {
+            throw new PiTurnTimeoutException(error);
+        }
+        finally { milestones.Writer.TryComplete(); }
         if (!settled.Task.IsCompleted)
         {
             var finished = await Task.WhenAny(settled.Task, worker.Completion)
@@ -295,6 +302,10 @@ internal static class PiRpcRunner
         return raw.Trim();
     }
 }
+
+internal sealed class PiTurnTimeoutException(OperationCanceledException? inner = null)
+    : OperationCanceledException("The Pi turn did not settle within its deadline.", inner,
+        inner?.CancellationToken ?? CancellationToken.None);
 
 internal sealed record PiRunResult(string Text, int ToolCalls, int ToolErrors, int FilesRead, int FilesChanged,
     int SameFileReadCount, int SameCommandCount, int SameErrorCount, int ToolCallsSinceProgress,
