@@ -42,6 +42,16 @@ internal static class HostRescueTests
         using var store=new CanonicalStore(fixture.HostRoot);
         using var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,request,fixture.Head);
         var rescue=new HostRescue(journal);var ticket=rescue.Load(fixture.TicketHash);
+        var tap=Encoding.UTF8.GetBytes("TAP version 13\n unselected raw log\nok 1 - covered frontier remains contiguous\n");
+        var tapHash=store.PutEvidence(tap);
+        var testReceipt=new ToolRouter.TestResult("npm_test","trusted_personal_wsl",true,0,tap.Length,0,tapHash,"",10,1,[]);
+        var localDetails=ReviewerEvidence.LocalTestDetails(store,[testReceipt]);
+        Check(localDetails.Contains("executed 1") && localDetails.Contains("covered frontier remains contiguous") &&
+            !localDetails.Contains("unselected raw log") &&
+            !ReviewerEvidence.LocalTestDetails(store,[testReceipt with{StdoutBytes=tap.Length+1}]).Contains("covered frontier"),
+            "Local Critic may see bounded case names from the verified test receipt only");
+        Check(!ReviewerEvidence.Build(request,"",[],[testReceipt],SecondBrainEvidence.Packet.Empty)
+            .Contains("covered frontier remains contiguous"),"Case names must not enter the external reviewer evidence packet");
         var prepared=rescue.PreparedExport(ticket);
         using var packet=JsonDocument.Parse(prepared.Payload);
         var sources=packet.RootElement.GetProperty("starting_source");
