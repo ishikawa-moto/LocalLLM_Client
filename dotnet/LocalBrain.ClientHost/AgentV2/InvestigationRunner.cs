@@ -109,14 +109,24 @@ internal static partial class AgentTaskRunner
     private static (string Text,int Reads) InvestigationEvidence(CanonicalStore store,string task)
     {
         var excerpts=new List<string>();var count=0;
-        foreach(var hash in store.TaskEvidence(task)){
+        var inputs=new Dictionary<string,JsonElement>(StringComparer.Ordinal);
+        foreach(var id in store.EventIds(task)){
+            var recorded=store.ReadTaskEvent(task,id).Input;
+            if(recorded.Producer!="windows_host" || recorded.EventType is not ("pi_tool_execution_start" or "pi_tool_execution_end") ||
+                recorded.EvidenceRefs is not [var hash])continue;
             var bytes=store.ReadEvidence(hash);if(bytes.Length>2*1024*1024)continue;
             try{
                 using var d=JsonDocument.Parse(bytes);var e=d.RootElement;
-                if(e.ValueKind!=JsonValueKind.Object || !e.TryGetProperty("type",out var type) || type.GetString()!="tool_execution_end" ||
-                    !e.TryGetProperty("toolName",out var name) || name.GetString() is not ("read" or "grep" or "find" or "ls") ||
+                if(e.ValueKind!=JsonValueKind.Object || !e.TryGetProperty("toolCallId",out var call) || call.GetString() is not {} callId)continue;
+                if(recorded.EventType=="pi_tool_execution_start"){
+                    if(e.TryGetProperty("args",out var args))inputs[callId]=args.Clone();
+                    continue;
+                }
+                var argsText=inputs.Remove(callId,out var input)?Bound(input.GetRawText(),700):"";
+                if(!e.TryGetProperty("toolName",out var name) || name.GetString() is not ("read" or "grep" or "find" or "ls" or "host_memory_search" or "host_recall") ||
                     !e.TryGetProperty("isError",out var error) || error.ValueKind!=JsonValueKind.False)continue;
-                if(name.GetString()=="read")count++;excerpts.Add(hash+": "+Bound(e.GetRawText(),4000));
+                if(name.GetString()=="read")count++;
+                excerpts.Add(hash+(argsText.Length==0?"":" input="+argsText)+": "+Bound(e.GetRawText(),2200));
             }catch(JsonException){}
         }
         return (Bound(string.Join("\n",excerpts.TakeLast(8)),20000),count);

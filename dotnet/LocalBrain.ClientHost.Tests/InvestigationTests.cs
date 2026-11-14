@@ -28,7 +28,11 @@ internal static class InvestigationTests
         var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var execution=AgentTaskRunner.RunInvestigationAsync(job,config,(CancellationToken)default,async(prompt,critic,session,token)=>{
             await Task.Yield();
-            if(critic){Check(prompt.Contains("PUBLIC_EVIDENCE_731"),"Fresh Critic receives real retained tool evidence");return Result("{\"verdict\":\"PASS\",\"issues\":[]}");}
+            if(critic){
+                Check(prompt.Contains("PUBLIC_EVIDENCE_731")&&prompt.Contains("PUBLIC_PAGE_4096")&&prompt.Contains("PUBLIC_SEARCH_EVIDENCE"),
+                    "Fresh Critic receives real retained reads, search results and the recalled page");
+                return Result("{\"verdict\":\"PASS\",\"issues\":[]}");
+            }
             calls++;Check(prompt.Contains(request.Requirement)&&prompt.Contains(request.AcceptanceCriteria[0]),"Every continuation receives exact original goal and criteria");
             if(calls==1){firstSession=session;reads++;
                 HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_start",toolCallId="public_read",toolName="read",args=new{path="README.md"}}));
@@ -39,6 +43,9 @@ internal static class InvestigationTests
             Check(prompt.Contains("PUBLIC_EVIDENCE_731"),"Progress survives settled turn and handoff without repeated file reads");
             if(calls==2)return Result("",true);
             rotated=session!=firstSession;
+            HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_end",toolCallId="search",toolName="host_memory_search",isError=false,result=new{content="PUBLIC_SEARCH_EVIDENCE"}}));
+            HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_start",toolCallId="recall",toolName="host_recall",args=new{offset=4096}}));
+            HostTaskJournal.Current!.RecordToolEvent(JsonSerializer.SerializeToElement(new{type="tool_execution_end",toolCallId="recall",toolName="host_recall",isError=false,result=new{content="PUBLIC_PAGE_4096"}}));
             return Result("README.md:1 contains PUBLIC_EVIDENCE_731. The public finding is supported by the retained read result. No additional environment was inspected; other conditions remain unknown.");
         });
         await entered.Task;
