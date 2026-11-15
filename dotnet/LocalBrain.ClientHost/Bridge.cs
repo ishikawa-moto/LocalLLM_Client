@@ -120,7 +120,8 @@ internal sealed class Bridge(ClientConfig config, GatewayClient gateway, Audit a
         }
         catch(Exception error) when(!forwardingStarted && preparingContext && error is (InvalidDataException or InvalidOperationException or IOException or JsonException or UnauthorizedAccessException or TimeoutException or HttpRequestException or OperationCanceledException or ArgumentException or KeyNotFoundException)){
             failureReason=hostShutdown.IsCancellationRequested?"host_shutdown":lifetime.IsCancellationRequested?"host_request_timeout":trace.Reason(error);
-            audit.Write("continue_context_handoff_failed",new{requestId,error=error.GetType().Name,reason=failureReason,metadata=trace.Snapshot(),action="preserve_source_no_forward_no_tool_replay"});
+            audit.Write("continue_context_handoff_failed",new{requestId,error=error.GetType().Name,reason=failureReason,metadata=trace.Snapshot(),
+                measurement=(error as ContinueContextMemory.PayloadCounter.MeasurementException)?.Diagnostics,action="preserve_source_no_forward_no_tool_replay"});
             // 424 reports a failed local dependency without OpenAI SDK's automatic 5xx/408/409 retry.
             context.Response.StatusCode=failureReason=="invalid_context_request"?400:
                 failureReason is "context_budget_exceeded" or "history_reconstruction_failed"?422:424;

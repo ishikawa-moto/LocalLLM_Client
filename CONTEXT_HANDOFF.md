@@ -37,6 +37,8 @@ Continueの履歴選択は既定30秒です。Host制御ルートの`continue-co
 
 既存の受付・失敗・終了監査に、段階ごとの経過時間、選択とフォールバック、計測トークン数、転送開始・上流ヘッダー受信・失敗理由を追加します。`requestId`と応答の`X-LocalBrain-Request-Id`で照合します。入力全文や認証情報は監査に追加しません。Continue内の`Request was aborted`はSDKへ渡したAbortSignalの中断を表し、Hostの期限切れとは区別します。Hostから観測できるクライアント切断、Host停止、上流期限切れ、ストリーム停止を別理由として記録します。HTTP受付前のキャンセルやContinueの停止操作と画面切替の区別は、Host監査だけでは確定できません。受付障害から外部AI救援を起動する経路は追加しません。
 
+Python計測ワーカーが要求を拒否した場合、`continue_context_handoff_failed.measurement` にホワイトリスト化した `python_error`、`classification`、`worker_running`、`worker_exit_code` を記録します。分類はJSON引数の解析、テンプレート処理、入力検証などを区別し、未知の値は固定の `OtherError` / `unknown` に置き換えます。Pythonの例外メッセージ・トレースバック・入力本文は記録しません。計測失敗時のHTTP 424・転送禁止・自動再送禁止は変更しません。
+
 原文と派生記録は、Gitソース外のHost制御ディレクトリにある`continue-memory/`へ置きます。記録には参照元・転送後のハッシュ、計測トークン数、選択ID、ネイティブ診断を結び付けます。入力・プロファイル・候補集合が同一なら、検証済みの参照元IDを再利用できます。ただしActorのペイロードは毎回、正確な参照元から再構成・再計測します。この派生キャッシュでツール実行や承認を再利用することはありません。新しい要求や変更されたネイティブプロファイルの間では選択結果を共用しません。
 
 `X-LocalBrain-Context-Recall`と`X-LocalBrain-Actor-Prompt-Tokens`応答ヘッダーで、内容を公開せずに、実際の記憶参照と転送後サイズを識別できます。既存の認証、実行確認、書込・外部出力の範囲、SecondBrain採用方針、ServerPCのモデル設定は変更しません。

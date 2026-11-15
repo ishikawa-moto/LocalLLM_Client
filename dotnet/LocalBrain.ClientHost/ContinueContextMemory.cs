@@ -242,6 +242,24 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
 
     internal sealed class PayloadCounter : IAsyncDisposable
     {
+        internal sealed class MeasurementException(string pythonError,string classification,bool workerRunning,int? workerExitCode)
+            : IOException("Qualified actor tokenizer refused the request")
+        {
+            internal object Diagnostics=>new{python_error=pythonError,classification,worker_running=workerRunning,worker_exit_code=workerExitCode};
+        }
+        internal static MeasurementException Refused(JsonElement reply,bool running,int? exitCode)
+        {
+            var error=reply.TryGetProperty("error",out var e)&&e.ValueKind==JsonValueKind.String?e.GetString():null;
+            var code=reply.TryGetProperty("error_code",out var c)&&c.ValueKind==JsonValueKind.String?c.GetString():null;
+            return new(error is "ValueError" or "TypeError" or "JSONDecodeError" or "UndefinedError" or
+                "TemplateRuntimeError" or "TemplateError" or "KeyError" or "IndexError"?error:"OtherError",
+                code is "request_json" or "segments" or "segment_encoding" or "messages" or "tool_arguments_json" or
+                "tool_arguments" or "tools" or "template_kwargs" or "template_render" or "prompt_encoding" or
+                "template_system_position" or "template_message_role" or "template_missing_user" or
+                "template_missing_messages" or "template_content_type" or "template_content_item" or
+                "template_system_image" or "template_system_video" or "template_reasoning_effort" or "template_rejected"?code:"unknown",
+                running,exitCode);
+        }
         private readonly string? distribution,python,tokenizer,scriptPath;
         internal PayloadCounter() {}
         internal PayloadCounter(string distribution,string python,string tokenizer,string scriptPath)
@@ -263,7 +281,7 @@ internal sealed class ContinueContextMemory : IAsyncDisposable
             }
             var reply=await worker.SendAsync(new(){["texts"]=Array.Empty<string>(),["messages"]=request["messages"],
                 ["tools"]=request["tools"],["chat_template_kwargs"]=request["chat_template_kwargs"]},TimeSpan.FromSeconds(30),token);
-            if(reply.TryGetProperty("error",out _))throw new InvalidDataException("Qualified actor tokenizer refused the request");
+            if(reply.TryGetProperty("error",out _))throw Refused(reply,worker.IsRunning,worker.IsRunning?null:worker.ExitCode);
             return reply.GetProperty("prompt_tokens").GetInt32();
             }catch(Exception error)when(error is OperationCanceledException or TimeoutException or IOException or InvalidDataException or InvalidOperationException){
                 // Only this slot owns the tokenizer; discard late replies before admitting another input.
