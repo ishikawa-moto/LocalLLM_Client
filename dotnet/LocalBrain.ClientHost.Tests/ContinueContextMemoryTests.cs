@@ -13,6 +13,26 @@ internal static class ContinueContextMemoryTests
     static JsonObject Message(string role,string text)=>new(){["role"]=role,["content"]=text};
     static Task<int> Count(JsonObject request,CancellationToken token)=>Task.FromResult(request["messages"]!.AsArray().Sum(m=>m!.ToJsonString().Length));
     static byte[] Bytes(JsonObject value)=>Encoding.UTF8.GetBytes(value.ToJsonString());
+    internal static async Task TokenizerAsync(string distribution,string python,string tokenizer,string script)
+    {
+        await using var counter=new ContinueContextMemory.PayloadCounter(distribution,python,tokenizer,script);
+        var request=new JsonObject{["messages"]=new JsonArray(Message("user","Public tokenizer fixture."))};
+        Check(await counter.MeasureAsync(request,CancellationToken.None)>0,"Actual JSONL worker must measure a public fixture");
+        request["messages"]!.AsArray().Insert(0,Message("system","Public first policy."));
+        request["messages"]!.AsArray().Insert(1,Message("system","PRIVATE_SENTINEL_NOT_FOR_DIAGNOSTICS"));
+        var rejected=false;
+        try{await counter.MeasureAsync(request,CancellationToken.None);}
+        catch(ContinueContextMemory.PayloadCounter.MeasurementException error){
+            var diagnostics=JsonSerializer.Serialize(error.Diagnostics);
+            Check(diagnostics.Contains("\"classification\":\"template_system_position\"")&&diagnostics.Contains("\"python_error\":\"ValueError\"")&&
+                !diagnostics.Contains("PRIVATE_SENTINEL"),"Actual Python classifications must survive C# without content leakage");
+            rejected=true;
+        }
+        Check(rejected,"Invalid template input must not receive a token count");
+        request["messages"]!.AsArray().RemoveAt(1);
+        Check(await counter.MeasureAsync(request,CancellationToken.None)>0,"Discarded failed worker must restart for a fresh valid request");
+        Console.WriteLine("Actual WSL tokenizer JSONL, safe refusal classification and fresh-worker recovery PASS; public fixtures, inference0.");
+    }
     internal static async Task NativeAsync(string root)
     {
         // Explicit disposable control root with an already-qualified native input manifest;
@@ -39,6 +59,11 @@ internal static class ContinueContextMemoryTests
     }
     internal static async Task RunAsync()
     {
+        using(var reply=JsonDocument.Parse("""{"error":"private prompt contents","error_code":"private tool arguments"}""")){
+            var diagnostics=JsonSerializer.Serialize(ContinueContextMemory.PayloadCounter.Refused(reply.RootElement,false,7).Diagnostics);
+            Check(diagnostics.Contains("OtherError")&&diagnostics.Contains("unknown")&&diagnostics.Contains("\"worker_exit_code\":7")&&!diagnostics.Contains("private"),
+                "Unknown worker diagnostics must be replaced with fixed classifications, never persisted verbatim");
+        }
         var root=Path.Combine(Path.GetTempPath(),"continue-memory-proof-"+Guid.NewGuid().ToString("N"));
         var calls=0;string? selected=null;
         await using var memory=new ContinueContextMemory(root,Count,(task,query,candidates,token)=>{
@@ -220,7 +245,8 @@ internal static class ContinueContextMemoryTests
     {
         var root=Path.Combine(Path.GetTempPath(),"continue-transport-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
         var reserve=new TcpListener(IPAddress.Loopback,0);reserve.Start();var port=((IPEndPoint)reserve.LocalEndpoint).Port;reserve.Stop();
-        var memory=new ContinueContextMemory(Path.Combine(root,"archive"),(p,t)=>p["messages"]!.AsArray().Count>10?Task.FromResult(40000):unavailable?throw new IOException("public fixture measurement unavailable"):Task.FromResult(1000),
+        using var refusal=JsonDocument.Parse("""{"error":"JSONDecodeError","error_code":"tool_arguments_json"}""");
+        var memory=new ContinueContextMemory(Path.Combine(root,"archive"),(p,t)=>p["messages"]!.AsArray().Count>10?Task.FromResult(40000):unavailable?throw ContinueContextMemory.PayloadCounter.Refused(refusal.RootElement,true,null):Task.FromResult(1000),
             (_,_,_,_)=>unavailable?throw new IOException("public fixture unavailable"):Task.FromResult("{\"event_ids\":[]}"));
         var peer=new Peer{ReplyLost=replyLost,StreamInterrupted=streamInterrupted};using var gateway=new GatewayClient(new Uri("http://public-fixture.invalid"),peer);
         var config=new ClientConfig("https://public-fixture.invalid",port,"unused",Path.Combine(root,"projects.json"),Path.Combine(root,"audit.jsonl"));
@@ -241,7 +267,13 @@ internal static class ContinueContextMemoryTests
             using var response=await client.PostAsync($"http://127.0.0.1:{port}/v1/chat/completions",new StringContent(request.ToJsonString(),Encoding.UTF8,"application/json"));
             var body=await response.Content.ReadAsStringAsync();
             if(replyLost)Check((int)response.StatusCode==422&&peer.Forwarded==1&&body.Contains("dispatch_outcome_unknown")&&!body.Contains("context_handoff_unavailable"),"Lost reply must preserve unknown dispatch, prohibit implicit retry and never claim no send");
-            else if(unavailable)Check((int)response.StatusCode==424&&peer.Forwarded==0&&body.Contains("automatic_retry")&&body.Contains("context_measurement_failed"),"Failed tokenizer dependency must be nonretryable and send nothing to the model peer");
+            else if(unavailable){
+                Check((int)response.StatusCode==424&&peer.Forwarded==0&&body.Contains("automatic_retry")&&body.Contains("context_measurement_failed"),"Failed tokenizer dependency must be nonretryable and send nothing to the model peer");
+                var audit=File.ReadAllText(config.AuditLog);
+                Check(audit.Contains("\"python_error\":\"JSONDecodeError\"")&&audit.Contains("\"classification\":\"tool_arguments_json\"")&&
+                    audit.Contains("\"worker_running\":true")&&!body.Contains("JSONDecodeError"),
+                    "Only Host audit must retain safe tokenizer classifications; public errors and no-forward policy remain unchanged");
+            }
             else Check(response.IsSuccessStatusCode&&peer.Forwarded==1&&response.Headers.Contains("X-LocalBrain-Context-Recall")&&peer.Body!.Contains("current"),"Real loopback transport must forward the prepared request exactly once and return its receipt header");
         }finally{stop.Cancel();await serving;}
     }
