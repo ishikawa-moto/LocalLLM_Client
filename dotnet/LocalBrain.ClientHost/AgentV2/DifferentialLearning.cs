@@ -154,20 +154,26 @@ internal sealed class DifferentialLearning(HostTaskJournal journal)
         {
             if(row.Input.EvidenceRefs is not [var hash])continue;
             var packet=Read<Manifest>(hash);
+            var verifiedPaths = packet.changes
+                .Where(change => change.starting_hash != change.verified_result_hash)
+                .Select(change => change.path).ToArray();
             if(packet.task_id!=row.Input.TaskId || packet.schema_version!=1 ||
                 packet.validation_hash!=Field(row,"validation_hash") ||
-                !packet.changes.Any(change=>request.AllowedFiles.Contains(change.path,StringComparer.OrdinalIgnoreCase)))continue;
+                verifiedPaths.Length==0 ||
+                verifiedPaths.Any(path=>!request.AllowedFiles.Contains(path,StringComparer.OrdinalIgnoreCase)))continue;
             var prior=AgentTaskRequest.Parse(Store.TaskRequest(packet.task_id));
             if(!query.Overlaps(SearchTerms(prior.Requirement)))continue;
             var validation=Read<HostRescue.Validation>(packet.validation_hash);
             if(!AutomaticCompletion.HasPassingTests(prior,validation.Tests) || validation.CriticVerdict!="PASS" ||
                 validation.ResultDiffHash!=packet.codex_result_diff_hash)continue;
             var diff=HostEgress.Redact(new UTF8Encoding(false,true).GetString(Store.ReadEvidence(packet.codex_result_diff_hash))).Text;
+            const int maxDiffCharacters = 4096;
             var summary=new {
                 prior_task=packet.task_id, request=prior.Requirement,
-                files=packet.changes.Select(change=>change.path),
+                files=verifiedPaths,
                 tests=validation.Tests.Select(test=>new {test.Kind,test.ExecutedTests}),
-                diff_excerpt=diff[..Math.Min(diff.Length,1600)]
+                diff_excerpt=diff[..Math.Min(diff.Length,maxDiffCharacters)],
+                diff_truncated=diff.Length>maxDiffCharacters
             };
             var reference=HostEgress.Redact(JsonSerializer.Serialize(summary)).Text;
             journal.Record("differential_learning_reused",new {prior_task=packet.task_id,packet_hash=hash,

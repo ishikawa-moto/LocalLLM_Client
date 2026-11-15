@@ -14,12 +14,14 @@ internal static class PiRpcRunner
         string? sessionId = null,
         Func<PiProgressSnapshot, Task<SupervisorDecision>>? onMilestone = null,
         string? windowsRoot = null, string? taskId = null,
-        CancellationToken token = default,bool finalResponseOnly=false)
+        CancellationToken token = default,bool finalResponseOnly=false,bool structuredReview=false)
     {
         Slack.RestrictedExecution.DenyAgentTools();
         using var ocrPriority=Ocr.OcrPriority.Enter("agent");
         if (string.IsNullOrWhiteSpace(prompt) || prompt.Length > 100_000)
             throw new ArgumentException("Prompt must contain 1 to 100,000 characters");
+        if (structuredReview && (!freshCritic || allowMutations))
+            throw new ArgumentException("Structured review requires a fresh read-only Critic");
         if (allowMutations && (allowedMutationPaths is null or { Length: 0 } ||
             allowedMutationPaths.Sum(item => item.Length) > 8_000))
             throw new ArgumentException("Actor mutation allowlist is missing or too large");
@@ -42,6 +44,7 @@ internal static class PiRpcRunner
         if (taskId is not null && Guid.TryParse(taskId, out _))
             launch.Add($"LOCALBRAIN_CONTEXT_TASK_ID={taskId}");
         launch.Add($"LOCALBRAIN_CONTEXT_AGENT_PHASE={(freshCritic ? "critic" : "actor")}");
+        launch.Add($"LOCALBRAIN_STRUCTURED_REVIEW={(structuredReview ? "1" : "0")}");
         if ((sideEffects is not null ? "/home/worker/localbrain-v2/verified-tokenizer.json" : telemetryOptions?.TokenizerJson) is { } tokenizer)
             launch.Add($"LOCALBRAIN_CONTEXT_TOKENIZER_JSON={tokenizer}");
         if (Environment.GetEnvironmentVariable("LOCALBRAIN_DISABLE_OBSERVATION_PACK") == "1")
