@@ -491,21 +491,6 @@ internal static partial class AgentTaskRunner
         }
     }
 
-    private static async Task<SolReviewer.Review> ReviewSolWithoutFailingTaskAsync(
-        AgentTaskRequest request, string diff, string[] files,
-        IReadOnlyList<ToolRouter.TestResult> tests, SecondBrainEvidence.Packet knowledge,
-        CancellationToken token)
-    {
-        try { return await SolReviewer.ReviewFinalAsync(request, diff, files, tests, knowledge, token); }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-        catch (Exception error) when (error is InvalidOperationException or IOException or
-            System.ComponentModel.Win32Exception or OperationCanceledException)
-        {
-            // Keep the completed Actor work and allow a review-only retry.
-            return new("UNAVAILABLE", []);
-        }
-    }
-
     internal static async Task<Result> FinishCheckpointReviewAsync(string windowsRoot,
         string wslRoot, AgentTaskRequest request, GitEvidence.Snapshot before,
         SecondBrainEvidence.Packet knowledge, string taskId, string actorSessionId,
