@@ -52,6 +52,11 @@ internal static class HostRescueTests
             "Local Critic may see bounded case names from the verified test receipt only");
         Check(!ReviewerEvidence.Build(request,"",[],[testReceipt],SecondBrainEvidence.Packet.Empty)
             .Contains("covered frontier remains contiguous"),"Case names must not enter the external reviewer evidence packet");
+        Check(AgentTaskRunner.ParseAcceptanceCritic("""{"verdict":"ISSUES","issues":["fails case #1"]}""",true).Verdict=="ISSUES" &&
+            AgentTaskRunner.ParseAcceptanceCritic("""{"verdict":"PASS","issues":["fails case #1"]}""",true).Verdict=="INVALID" &&
+            AgentTaskRunner.ParseAcceptanceCritic("""lead-in {"verdict":"PASS","issues":[]}""",true).Verdict=="INVALID" &&
+            AgentTaskRunner.ParseAcceptanceCritic("""{"verdict":"PASS","issues":[]}""",true).Verdict=="PASS",
+            "Structured managed acceptance must preserve ISSUES and reject malformed PASS");
         var prepared=rescue.PreparedExport(ticket);
         using var packet=JsonDocument.Parse(prepared.Payload);
         var sources=packet.RootElement.GetProperty("starting_source");
