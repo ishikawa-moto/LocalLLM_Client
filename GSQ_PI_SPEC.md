@@ -1,6 +1,8 @@
-# LocalBrain v2 採用仕様：GSQ-RCO + Pi / SoL-Pi
+# LocalBrain v2 採用仕様：GSQ-RCO + Pi / SoL-Pi（旧仕様・履歴）
 
 決定日：2026-09-25（JST）
+
+> Pi 0.85.1とSoL-Piを使用した当時の採用判断を保存しています。PC73の現行ランタイムはPi 1.4.0です。
 
 ## 判断と証拠の範囲
 
