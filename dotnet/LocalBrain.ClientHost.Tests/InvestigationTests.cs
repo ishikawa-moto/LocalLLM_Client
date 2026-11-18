@@ -115,7 +115,7 @@ internal static class InvestigationTests
 
         var source=Encoding.UTF8.GetBytes("{\"messages\":[{\"role\":\"user\",\"content\":\"PUBLIC_GOAL\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"read_file\"}},{\"type\":\"function\",\"function\":{\"name\":\"run_terminal_command\"}},{\"type\":\"function\",\"function\":{\"name\":\"mcp_localbrain_agent_v2_investigate\"}}]}");
         var routed=JsonNode.Parse(ContinueManagedRouting.Prepare(source))!;
-        Check(routed["tools"]!.AsArray().Count==1&&routed["messages"]![1]!["content"]!.GetValue<string>()=="PUBLIC_GOAL","Continue investigation tools route to Host without rewriting the user goal");
+        Check(routed["tools"]!.AsArray().Count==3&&routed["messages"]![1]!["content"]!.GetValue<string>()=="PUBLIC_GOAL","Continue investigation tools remain available alongside Agent v2; standard tools not stripped");
         var withSystem=JsonNode.Parse(source)!.AsObject();
         withSystem["messages"]!.AsArray().Insert(0,new JsonObject{["role"]="system",["content"]="ORIGINAL_CLIENT_POLICY"});
         var prepared=JsonNode.Parse(ContinueManagedRouting.Prepare(Encoding.UTF8.GetBytes(withSystem.ToJsonString())))!;
