@@ -7,7 +7,9 @@ internal static class DifferentialLearningTests
     private static void Check(bool value,string reason){if(!value)throw new InvalidOperationException(reason);}
     private static void Reject(Action action,string reason){try{action();}catch(Exception e)when(e is UnauthorizedAccessException or InvalidDataException or JsonException or IOException){return;}throw new InvalidOperationException(reason);}
     internal static async Task RunAsync() {
-        var root=Path.Combine(Path.GetTempPath(),"localbrain-learning-tests",Guid.NewGuid().ToString("N"));var fixture=await HostRescueTests.PrepareAsync(root);
+        var root=Path.Combine(Path.GetTempPath(),"localbrain-learning-tests",Guid.NewGuid().ToString("N"));
+        var exportScope=new[]{"task_evidence_only","file:greeting.txt","file:other.txt","file:new.txt"};
+        var fixture=await HostRescueTests.PrepareAsync(root,null,"auto",exportScope);
         using var store=new CanonicalStore(fixture.HostRoot);using var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,HostRescueTests.Request,fixture.Head);
         var rescue=new HostRescue(journal);var candidate=await rescue.ImportAsync(fixture.TicketHash,fixture.Candidate);var learning=new DifferentialLearning(journal);
         var validation=new HostRescue.Validation(fixture.TicketHash,candidate,"","",[],"PASS",true);var hash=store.PutEvidence(JsonSerializer.SerializeToUtf8Bytes(validation));

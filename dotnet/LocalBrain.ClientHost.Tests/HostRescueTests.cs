@@ -268,8 +268,9 @@ internal static class HostRescueTests
         var oversized=new IncrementalInput();await Reject(()=>RescueInput.ReadAsync(oversized),"Oversized incremental input accepted");
         Check(oversized.ReadBytes==2*1024*1024+1 && oversized.WasDisposed,"Untrusted stream was not stopped/disposed at the byte boundary");
         var parent=Path.Combine(Path.GetTempPath(),"localbrain-rescue-tests",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(parent);
+        var exportScope=new[]{"task_evidence_only","file:greeting.txt","file:other.txt","file:new.txt"};
         foreach(var boundary in new[]{"import_before_1","import_after_1","import_after_2"}) {
-            var root=Path.Combine(parent,boundary);var fixture=await PrepareAsync(root);await TerminateAtAsync(root,boundary);
+            var root=Path.Combine(parent,boundary);var fixture=await PrepareAsync(root,null,"auto",exportScope);await TerminateAtAsync(root,boundary);
             using var store=new CanonicalStore(fixture.HostRoot);using var journal=new HostTaskJournal(store,fixture.MainRoot,fixture.TaskId,Request,fixture.Head);var rescue=new HostRescue(journal);
             var hash=await rescue.ImportAsync(fixture.TicketHash,fixture.Candidate);var ticket=rescue.Load(fixture.TicketHash);
             Check(File.ReadAllText(Path.Combine(ticket.RescueRoot,"greeting.txt"))=="HELLO\n" && File.ReadAllText(Path.Combine(ticket.RescueRoot,"other.txt"))=="SECOND\n" && File.ReadAllText(Path.Combine(ticket.RescueRoot,"new.txt"))=="THIRD\n","Interrupted import did not recover");
