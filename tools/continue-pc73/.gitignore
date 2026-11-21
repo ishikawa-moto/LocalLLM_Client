@@ -1,0 +1,4 @@
+/node_modules/
+/tests/lib/.build/
+/tests/.pc73-boundary-*/
+/out/

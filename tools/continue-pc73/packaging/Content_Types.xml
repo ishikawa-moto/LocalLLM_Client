@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="json" ContentType="application/json" />
+  <Default Extension="js" ContentType="application/javascript" />
+  <Default Extension="mjs" ContentType="application/javascript" />
+  <Default Extension="map" ContentType="application/json" />
+  <Default Extension="d.ts" ContentType="text/plain" />
+  <Default Extension="png" ContentType="image/png" />
+  <Default Extension="svg" ContentType="image/svg+xml" />
+  <Default Extension="gif" ContentType="image/gif" />
+  <Default Extension="html" ContentType="text/html" />
+  <Default Extension="css" ContentType="text/css" />
+  <Default Extension="md" ContentType="text/markdown" />
+  <Default Extension="txt" ContentType="text/plain" />
+  <Default Extension="py" ContentType="text/plain" />
+  <Default Extension="sh" ContentType="text/x-shellscript" />
+  <Default Extension="wasm" ContentType="application/wasm" />
+  <Default Extension="node" ContentType="application/octet-stream" />
+  <Default Extension="onnx" ContentType="application/octet-stream" />
+  <Default Extension="plist" ContentType="application/xml" />
+  <Default Extension="ignore" ContentType="text/plain" />
+  <Default Extension="tmLanguage" ContentType="application/xml" />
+  <Default Extension="scm" ContentType="text/plain" />
+  <Default Extension="vsixmanifest" ContentType="application/xml" />
+  <Override PartName="/extension.vsixmanifest" ContentType="application/xml" />
+</Types>

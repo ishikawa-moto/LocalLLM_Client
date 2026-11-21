@@ -1,0 +1,11 @@
+name: LocalBrain Agent v2 MCP
+version: 1.0.0
+schema: v1
+mcpServers:
+  - name: LocalBrain Agent v2
+    connectionTimeout: 300000
+    command: "<absolute path of verified release>/localbrain.exe"
+    args:
+      - agent-v2-mcp
+    env:
+      LOCALBRAIN_CLIENT_CONFIG: "<absolute path to existing app/clientsettings.json>"
