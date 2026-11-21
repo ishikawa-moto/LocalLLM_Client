@@ -1,0 +1,9 @@
+{
+  "name": "localbrain-continue-pc73-build",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "shell-quote": "1.7.3",
+    "typescript": "5.4.5"
+  }
+}

@@ -1,0 +1,3 @@
+* text eol=lf
+packaging/Content_Types.xml -text whitespace=cr-at-eol
+src/patched/core/tools/definitions/runTerminalCommand.ts whitespace=-blank-at-eol

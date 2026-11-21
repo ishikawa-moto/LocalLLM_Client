@@ -1,0 +1,37 @@
+[
+  {
+    "before": "  const systemMsg = msgsCopy.find((msg) => msg.role === \"system\");\n  msgsCopy = msgsCopy.filter((msg) => msg.role !== \"system\");\n  msgsCopy = msgsCopy.filter((msg) => !chatMessageIsEmpty(msg));\n  msgsCopy = addSpaceToAnyEmptyMessages(msgsCopy);\n  const toolSequence = extractToolSequence(msgsCopy);\n  let lastMessagesTokens = 0;\n  for (const msg of toolSequence) {\n    lastMessagesTokens += countChatMessageTokens(modelName, msg);\n",
+    "after": "  const systemMsg = msgsCopy.find((msg) => msg.role === \"system\");\n  msgsCopy = msgsCopy.filter((msg) => msg.role !== \"system\");\n  msgsCopy = msgsCopy.filter((msg) => !chatMessageIsEmpty(msg));\n  msgsCopy = addSpaceToAnyEmptyMessages(msgsCopy);\n  const lastUserMessage = [...msgsCopy].reverse().find((msg) => msg.role === \"user\");\n  const toolSequence = extractToolSequence(msgsCopy);\n  let lastMessagesTokens = 0;\n  for (const msg of toolSequence) {\n    lastMessagesTokens += countChatMessageTokens(modelName, msg);\n",
+    "atEnd": false
+  },
+  {
+    "before": "  inputTokensAvailable -= minOutputTokens;\n  inputTokensAvailable -= toolTokens;\n  inputTokensAvailable -= systemMsgTokens;\n  inputTokensAvailable -= lastMessagesTokens;\n  if (knownContextLength !== void 0 && inputTokensAvailable < 0) {\n    throw new Error(\n      `Not enough context available to include the system message, last user message, and tools.\n        There must be at least ${minOutputTokens} tokens remaining for output.\n",
+    "after": "  inputTokensAvailable -= minOutputTokens;\n  inputTokensAvailable -= toolTokens;\n  inputTokensAvailable -= systemMsgTokens;\n  inputTokensAvailable -= lastMessagesTokens;\n  const reservedUserTokens = lastUserMessage && !toolSequence.includes(lastUserMessage) ? countChatMessageTokens(modelName, lastUserMessage) : 0;\n  inputTokensAvailable -= reservedUserTokens;\n  if (knownContextLength !== void 0 && inputTokensAvailable < 0) {\n    throw new Error(\n      `Not enough context available to include the system message, last user message, and tools.\n        There must be at least ${minOutputTokens} tokens remaining for output.\n",
+    "atEnd": false
+  },
+  {
+    "before": "      const message2 = historyWithTokens.shift();\n      currentTotal -= message2.tokens;\n    }\n  }\n  const reassembled = [];\n  if (systemMsg) {\n    reassembled.push(systemMsg);\n  }\n  reassembled.push(...historyWithTokens.map(({ tokens, ...rest }) => rest));\n  reassembled.push(...toolSequence);\n  const inputTokens = currentTotal + systemMsgTokens + toolTokens + lastMessagesTokens;\n  const availableTokens = contextLength - countingSafetyBuffer - minOutputTokens;\n  const contextPercentage = inputTokens / availableTokens;\n  return {\n    compiledChatMessages: reassembled,\n",
+    "after": "      const message2 = historyWithTokens.shift();\n      currentTotal -= message2.tokens;\n    }\n  }\n  const hasUserMessage = historyWithTokens.some((msg) => msg.role === \"user\") || toolSequence.some((msg) => msg.role === \"user\");\n  const recoveredUserMessage = !hasUserMessage ? lastUserMessage : void 0;\n  const reassembled = [];\n  if (systemMsg) {\n    reassembled.push(systemMsg);\n  }\n  if (recoveredUserMessage) reassembled.push(recoveredUserMessage);\n  reassembled.push(...historyWithTokens.map(({ tokens, ...rest }) => rest));\n  reassembled.push(...toolSequence);\n  const inputTokens = currentTotal + systemMsgTokens + toolTokens + lastMessagesTokens + (recoveredUserMessage ? reservedUserTokens : 0);\n  const availableTokens = contextLength - countingSafetyBuffer - minOutputTokens;\n  const contextPercentage = inputTokens / availableTokens;\n  return {\n    compiledChatMessages: reassembled,\n",
+    "atEnd": false
+  },
+  {
+    "before": "  const continueConfig = {\n    ...config3,\n    contextProviders,\n    tools: getBaseToolDefinitions(),\n    mcpServerStatuses: [],\n    slashCommands: [],\n    modelsByRole: {\n      chat: models,\n",
+    "after": "  const continueConfig = {\n    ...config3,\n    contextProviders,\n    tools: getBaseToolDefinitions(),\n    // User tool policies from YAML will be merged below\n    mcpServerStatuses: [],\n    slashCommands: [],\n    modelsByRole: {\n      chat: models,\n",
+    "atEnd": false
+  },
+  {
+    "before": "    docs: unrolledAssistant.docs?.filter((k12) => !!k12),\n    mcpServers: unrolledAssistant.mcpServers?.filter((k12) => !!k12),\n    models: unrolledAssistant.models?.filter((k12) => !!k12),\n    prompts: unrolledAssistant.prompts?.filter((k12) => !!k12),\n    rules: unrolledAssistant.rules?.filter((k12) => !!k12).map((k12) => k12)\n  };\n}\nasync function configYamlToContinueConfig(options) {\n  let { unrolledAssistant, ide, ideInfo, uniqueId, llmLogger } = options;\n",
+    "after": "    docs: unrolledAssistant.docs?.filter((k12) => !!k12),\n    mcpServers: unrolledAssistant.mcpServers?.filter((k12) => !!k12),\n    models: unrolledAssistant.models?.filter((k12) => !!k12),\n    prompts: unrolledAssistant.prompts?.filter((k12) => !!k12),\n    rules: unrolledAssistant.rules?.filter((k12) => !!k12).map((k12) => k12),\n    tools: unrolledAssistant.tools?.filter((k12) => !!k12)\n  };\n}\nasync function configYamlToContinueConfig(options) {\n  let { unrolledAssistant, ide, ideInfo, uniqueId, llmLogger } = options;\n",
+    "atEnd": false
+  },
+  {
+    "before": "    rules: [],\n    requestOptions: { ...unrolledAssistant.requestOptions }\n  };\n  const config3 = nonNullifyConfigYaml(unrolledAssistant);\n  for (const rule of config3.rules ?? []) {\n    const convertedRule = convertYamlRuleToContinueRule(rule);\n    continueConfig.rules.push(convertedRule);\n  }\n",
+    "after": "    rules: [],\n    requestOptions: { ...unrolledAssistant.requestOptions }\n  };\n  const config3 = nonNullifyConfigYaml(unrolledAssistant);\n  // Merge user tool policies from YAML config\n  if (config3.tools && config3.tools.length > 0) {\n    for (const userTool of config3.tools) {\n      const existingIdx = continueConfig.tools.findIndex((t) => t.function?.name === userTool.function?.name);\n      if (existingIdx >= 0) {\n        // Merge: keep base tool definition, override policy and evaluateToolCallPolicy\n        continueConfig.tools[existingIdx] = {\n          ...continueConfig.tools[existingIdx],\n          ...userTool,\n          function: {\n            ...continueConfig.tools[existingIdx].function,\n            ...userTool.function\n          }\n        };\n      } else {\n        continueConfig.tools.push(userTool);\n      }\n    }\n  }\n  for (const rule of config3.rules ?? []) {\n    const convertedRule = convertYamlRuleToContinueRule(rule);\n    continueConfig.rules.push(convertedRule);\n  }\n",
+    "atEnd": false
+  },
+  {
+    "before": "   * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>\n   * Copyright Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors\n   *)\n*/\n",
+    "after": "   * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>\n   * Copyright Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors\n   *)\n*/\n\n\n\n\n",
+    "atEnd": true
+  }
+]

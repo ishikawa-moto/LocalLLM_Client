@@ -1,0 +1,8 @@
+This directory includes adapted source and bundle patches for Continue.
+Original work Copyright 2023–2025 Continue Dev, Inc.
+Distributed under the Apache License, Version 2.0 (see LICENSE).
+Upstream project: https://github.com/continuedev/continue
+
+LocalBrain PC73 modifications cover tool approval, terminal execution, file
+mutation checks, grep output, and the retained chat-trimming and YAML overrides.
+The generated VSIX retains the upstream license and bundled notices.
