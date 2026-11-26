@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using LocalBrain.ClientHost.AgentV2;
@@ -13,12 +14,26 @@ internal static class OcrWorkerProcess
         while((n=await reader.ReadAsync(buffer))>0){if(text.Length+n>limit){overBudget.Cancel();return text.ToString();}text.Append(buffer,0,n);}
         return text.ToString();
     }
+    private static (int Threads,ulong Affinity) WorkerCpuLimits(int requestedThreads){
+        using var host=Process.GetCurrentProcess();
+        var allowed=(ulong)(nuint)host.ProcessorAffinity;
+        var threads=Math.Min(requestedThreads,BitOperations.PopCount(allowed));
+        if(threads==0)throw new OcrException("OCR_CPU_AFFINITY_UNAVAILABLE");
+        ulong affinity=0;
+        for(var index=0;index<threads;index++){
+            var processor=1UL<<BitOperations.TrailingZeroCount(allowed);
+            affinity|=processor;
+            allowed&=~processor;
+        }
+        return (threads,affinity);
+    }
     internal static async Task<Outcome> RunAsync(OcrConfig config,string jobId,string input,string hash,string attempt,string operation,int page,string profile,Func<bool> priority,CancellationToken token){
         var watch=Stopwatch.StartNew();
         bool PreparationPriority(){if(watch.Elapsed>TimeSpan.FromSeconds(Math.Max(60,config.PageTimeoutSeconds)))throw new OcrException("PAGE_PREPARATION_TIMEOUT");return token.IsCancellationRequested||priority();}
         config.Validate();config.VerifyAssets(PreparationPriority);CanonicalStore.GuardPath(attempt);Directory.CreateDirectory(attempt);
         var scratch=Path.Combine(attempt,"scratch");Directory.CreateDirectory(scratch);var request=Path.Combine(attempt,"request.json");var resultPath=Path.Combine(scratch,"result.json");
-        TaskCommandGate.WriteNew(request,new{operation,input_path=input,input_sha256=hash,profile,page,model_root=config.Models,variant="v5",result_path=resultPath});
+        var (threads,affinity)=WorkerCpuLimits(config.Threads);
+        TaskCommandGate.WriteNew(request,new{operation,input_path=input,input_sha256=hash,profile,page,model_root=config.Models,variant="v5",threads,result_path=resultPath});
         using var sandbox=new OcrSandbox(config.AssetRoot,attempt,scratch,jobId,[Path.GetDirectoryName(input)!]);
         if(PreparationPriority())return new("paused","PRIORITY_WORK_ACTIVE",null,watch.ElapsedMilliseconds,0,0,0,null,"","",null);
         // The input snapshot is a separate read-only directory; no normal task/credential paths are granted.
@@ -30,9 +45,9 @@ internal static class OcrWorkerProcess
         start.Environment["ProgramFiles"]=Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);start.Environment["ProgramFiles(x86)"]=Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
         start.Environment["PYTHONDONTWRITEBYTECODE"]="1";start.Environment["DO_NOT_TRACK"]="1";
         using var budget=new CancellationTokenSource();
-        using var child=WindowsChildJob.Start(start,ocrLimits:new(config.WorkerMemoryBytes,3,sandbox.Sid));
+        using var child=WindowsChildJob.Start(start,ocrLimits:new(config.WorkerMemoryBytes,affinity,sandbox.Sid));
         var preparationMs=watch.ElapsedMilliseconds;var execution=Stopwatch.StartNew();
-        TaskCommandGate.WriteNew(Path.Combine(attempt,"process.json"),new{pid=child.Process.Id,birth=child.Process.StartTime.ToUniversalTime().Ticks,owner_pid=Environment.ProcessId,job_id=jobId,network_capabilities=0,profile_sid=sandbox.Sid,memory_limit_bytes=config.WorkerMemoryBytes,affinity=3,priority="BelowNormal"});
+        TaskCommandGate.WriteNew(Path.Combine(attempt,"process.json"),new{pid=child.Process.Id,birth=child.Process.StartTime.ToUniversalTime().Ticks,owner_pid=Environment.ProcessId,job_id=jobId,network_capabilities=0,profile_sid=sandbox.Sid,memory_limit_bytes=config.WorkerMemoryBytes,affinity,threads,priority="BelowNormal"});
         var stdout=ReadBounded(child.Output,32768,budget);var stderr=ReadBounded(child.Error,32768,budget);
         string? reason=null;long peakWorking=0,peakPrivate=0;double cpu=0;var resources=new OcrResources();_=resources.Read();long checkedResource=0;int highCpu=0;
         try{

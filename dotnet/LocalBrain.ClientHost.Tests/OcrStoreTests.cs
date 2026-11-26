@@ -52,6 +52,16 @@ internal static class OcrStoreTests {
         using(var heldInput=new FileStream(store.Input(cm),FileMode.Open,FileAccess.Read,FileShare.Read)){
             Assert(store.Finish(cm).Status=="complete");Assert(File.Exists(store.Input(cm)));Assert(store.Result(cm.JobId).GetProperty("text").GetString()=="PUBLIC");
         }
+        var updatedConfig=c with{Threads=6,MaxMachineCpuPercent=75};
+        updatedConfig.Validate();
+        Assert(OcrResources.Refusal(updatedConfig,new(long.MaxValue,long.MaxValue,75),false) is null);
+        Assert(OcrResources.Refusal(updatedConfig,new(long.MaxValue,long.MaxValue,76),false)=="CPU_ADMISSION");
+        Reject("OCR_CONFIG_INVALID",()=>(updatedConfig with{MaxMachineCpuPercent=76}).Validate());
+        var updated=new OcrJobStore(updatedConfig);
+        Assert(updated.Result(cm.JobId).GetProperty("text").GetString()=="PUBLIC");
+        Reject("JOB_BINDING_MISMATCH",()=>updated.VerifyPages(m,store.GetState(s.JobId)));
+        File.AppendAllText(resultPath," ");
+        Reject("RESULT_EVIDENCE_CHANGED",()=>updated.Result(cm.JobId));
         Assert(store.TryCleanupInput(cm,force:true));Assert(!File.Exists(store.Input(cm))&&File.Exists(input));
         var manifestPath=Path.Combine(store.DirectoryFor(cm.JobId),"manifest.json");
         OcrJobStore.Atomic(manifestPath,cm with{CreatedAt=DateTimeOffset.UtcNow.AddHours(-25)});OcrJobStore.Atomic(manifestPath+".binding",new{sha256=OcrJobStore.HashFile(manifestPath)});

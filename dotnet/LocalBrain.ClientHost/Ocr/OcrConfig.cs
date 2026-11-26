@@ -26,9 +26,9 @@ internal sealed record OcrConfig(bool Enabled,string Root,string AssetRoot,strin
         if(BlockedConsumerImages is {Length:>16})throw new OcrException("OCR_CONFIG_INVALID");
         foreach(var path in BlockedConsumerImages??[]){if(!Path.IsPathFullyQualified(path)||!Path.GetFileName(path).Equals("localbrain.exe",StringComparison.OrdinalIgnoreCase))throw new OcrException("OCR_CONFIG_INVALID");CanonicalStore.GuardPath(path);}
         if(CanonicalStore.Within(AssetRoot,Root)||CanonicalStore.Within(Root,AssetRoot)||!CanonicalStore.Within(AssetRoot,Python)||!CanonicalStore.Within(AssetRoot,Worker)||!CanonicalStore.Within(AssetRoot,Models)||
-            InputRoots.Length is <1 or >16||AssetHashes.Count is <3 or >10000||Threads!=2||
+            InputRoots.Length is <1 or >16||AssetHashes.Count is <3 or >10000||Threads is <1 or >9||
             RamAdmissionBytes<128L*1024*1024||CommitAdmissionBytes<128L*1024*1024||RamAdmissionBytes<WorkerMemoryBytes||CommitAdmissionBytes<WorkerMemoryBytes||WorkerMemoryBytes<128L*1024*1024||WorkerMemoryBytes>4L*1024*1024*1024||
-            !double.IsFinite(MaxMachineCpuPercent)||MaxMachineCpuPercent is <1 or >50||PageTimeoutSeconds is <5 or >300||MaxPages is <1 or >200||
+            !double.IsFinite(MaxMachineCpuPercent)||MaxMachineCpuPercent is <1 or >75||PageTimeoutSeconds is <5 or >300||MaxPages is <1 or >200||
             MaxInputBytes is <1024 or >25*1024*1024||MaxStoredBytes is <64L*1024*1024 or >2L*1024*1024*1024||
             MinFreeDiskBytes is <64L*1024*1024 or >1024L*1024*1024||RetentionHours is <1 or >168||MeasurementEvidenceHash.Length!=64||!MeasurementEvidenceHash.All(Uri.IsHexDigit))throw new OcrException("OCR_CONFIG_INVALID");
         var profiles=new[]{"AUTO","PRINTED_TEXT","HANDWRITING","TABLE_LAYOUT","PDF_DOCUMENT"};
