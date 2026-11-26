@@ -52,7 +52,12 @@ internal static class OcrStoreTests {
         using(var heldInput=new FileStream(store.Input(cm),FileMode.Open,FileAccess.Read,FileShare.Read)){
             Assert(store.Finish(cm).Status=="complete");Assert(File.Exists(store.Input(cm)));Assert(store.Result(cm.JobId).GetProperty("text").GetString()=="PUBLIC");
         }
-        var updated=new OcrJobStore(c with{Threads=6,MaxMachineCpuPercent=75});
+        var updatedConfig=c with{Threads=6,MaxMachineCpuPercent=75};
+        updatedConfig.Validate();
+        Assert(OcrResources.Refusal(updatedConfig,new(long.MaxValue,long.MaxValue,75),false) is null);
+        Assert(OcrResources.Refusal(updatedConfig,new(long.MaxValue,long.MaxValue,76),false)=="CPU_ADMISSION");
+        Reject("OCR_CONFIG_INVALID",()=>(updatedConfig with{MaxMachineCpuPercent=76}).Validate());
+        var updated=new OcrJobStore(updatedConfig);
         Assert(updated.Result(cm.JobId).GetProperty("text").GetString()=="PUBLIC");
         Reject("JOB_BINDING_MISMATCH",()=>updated.VerifyPages(m,store.GetState(s.JobId)));
         File.AppendAllText(resultPath," ");

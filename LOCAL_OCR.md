@@ -12,7 +12,7 @@ flowchart LR
   P[Agent / Pi / Qwen requests / build-test / Laya / Saluki activity] -->|Priority lease: pause OCR| S
   S --> R[RAM / commit / CPU / disk admission]
   R --> W[One disposable CPU worker]
-  W --> A[Windows Job: BelowNormal / two logical CPUs / memory limit]
+  W --> A[Windows Job: BelowNormal / configured logical CPUs / memory limit]
   A --> N[AppContainer: zero network capabilities]
   N --> O[Local RapidOCR + ONNX CPU + PDFium]
   O --> E[Private page text / polygons / table cells / confidence]
@@ -70,7 +70,18 @@ submitは正確な要求ID、SHA256、プロファイル、実験・保持フラ
 
 ## 制限・優先度・保存期間
 
-初期workerは論理CPU2、BelowNormal、同時1ジョブ・1プロセス、ページ実行60秒と別に有限の準備期限（最低60秒、優先処理で中断可能）を使います。入力25MiB、画像20MP・1辺10000px、PDF200ページ・1ページの描画16MP、ページ出力8MiB・ページJSON合計6MiB、非公開保存上限1GiB、別枠のディスク空き128MiBを設定します。保存rootと資産を分離し、入力・ジョブmanifest・ページ確定・最終結果をハッシュで結び付けます。未知の既存証跡は上書きせず保持して拒否します。RAM・commit閾値とworkerメモリ上限は保存済み実測リソース証跡へ結び付け、停止中モデルの空きRAMだけで決めません。
+workerは既定で2論理CPUを使い、BelowNormal、同時1ジョブ・1プロセス、ページ実行60秒と別に有限の準備期限（最低60秒、優先処理で中断可能）を使います。入力25MiB、画像20MP・1辺10000px、PDF200ページ・1ページの描画16MP、ページ出力8MiB・ページJSON合計6MiB、非公開保存上限1GiB、別枠のディスク空き128MiBを設定します。保存rootと資産を分離し、入力・ジョブmanifest・ページ確定・最終結果をハッシュで結び付けます。未知の既存証跡は上書きせず保持して拒否します。RAM・commit閾値とworkerメモリ上限は保存済み実測リソース証跡へ結び付け、停止中モデルの空きRAMだけで決めません。
+
+OCRのHost設定では `threads` を1～9の整数で指定します。利用できる論理CPUの範囲でWindows JobのCPU割り当てとONNX Runtimeのスレッド数に適用されます。`max_machine_cpu_percent` は他のアプリも含むマシン全体のCPU使用率で、1～75%の範囲で受付と一時停止に使います。6論理CPUと75%を使う場合は、既存のOCR設定に次の値を指定します。
+
+```json
+{
+  "threads": 6,
+  "max_machine_cpu_percent": 75
+}
+```
+
+運用中の設定を更新する場合は進行中のOCRジョブが完了してから、対応するHostとworkerを配備し、OCR設定のworkerハッシュを更新してHostを再起動します。Slack連携ではBridgeとSlack Hostの両方を更新します。
 
 Agent/Piのタスク実行期間、ビルド・テスト振分け、Bridgeモデル要求、Laya、TaskMemory予測は、メタデータだけの優先リースを取得します。重要処理をOCR待ちにしません。スケジューラーは準備中とworker実行中50msごとに確認し、所有workerを終了・メモリ解放してページチェックポイントを保持します。要求の合間に直ちに再起動しないよう5秒の無処理期間を設けます。資産のハッシュは優先確認を挟み64KiBずつ読み、Hostヒープへモデル全体を読みません。版付き配備では旧利用元の実行パスを列挙でき、未計測の旧利用元が生存する間はOCRを停止します。RAM・commit圧迫や持続する高CPUでも停止します。未知・未計測の外部負荷はリソース受付で追加保護しますが、無関係な全プロセスをLocalBrainタスクとして分類できるとは主張しません。
 
