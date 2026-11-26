@@ -50,7 +50,7 @@
         "spans": {"type": "array", "maxItems": 2500, "items": {"$ref": "#/$defs/span"}},
         "tables": {"type": "array", "maxItems": 32, "items": {"type": "object", "required": ["rows", "columns", "cells", "csv", "markdown", "csv_formula_escaped", "structure_status"], "properties": {"rows": {"type": "integer", "minimum": 1}, "columns": {"type": "integer", "minimum": 1}, "cells": {"type": "array", "items": {"$ref": "#/$defs/cell"}}, "csv": {"type": "string"}, "markdown": {"type": "string"}, "csv_formula_escaped": {"const": true}, "structure_status": {"enum": ["ruled_grid_detected_verify_before_use", "aligned_text_inferred_verify_before_use"]}}}},
         "text": {"type": "string"}, "needs_review": {"type": "boolean"}, "warnings": {"type": "array", "items": {"type": "string"}},
-        "engine": {"type": "object", "required": ["engine", "version", "model_hashes", "runtime", "runtime_version", "requested_providers", "threads"], "properties": {"engine": {"const": "RapidOCR"}, "runtime": {"const": "onnxruntime"}, "requested_providers": {"const": ["CPUExecutionProvider"]}, "threads": {"const": 2}}}
+        "engine": {"type": "object", "required": ["engine", "version", "model_hashes", "runtime", "runtime_version", "requested_providers", "threads"], "properties": {"engine": {"const": "RapidOCR"}, "runtime": {"const": "onnxruntime"}, "requested_providers": {"const": ["CPUExecutionProvider"]}, "threads": {"type": "integer", "minimum": 1, "maximum": 9}}}
       }
     }
   }

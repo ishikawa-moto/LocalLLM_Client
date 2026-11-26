@@ -157,7 +157,9 @@ class JapaneseDecode:
                  for i, (text, score) in enumerate(lines)]
         return lines, words
 
-def load_engine(model_root,variant):
+def load_engine(model_root,variant,threads=2):
+    if type(threads) is not int or not 1 <= threads <= 9:
+        raise OcrError('CPU_THREADS_INVALID')
     from rapidocr import RapidOCR,OCRVersion,ModelType
     model_root=Path(model_root)
     manifest=json.loads((model_root/'models-manifest.json').read_text(encoding='utf-8'))
@@ -170,7 +172,7 @@ def load_engine(model_root,variant):
         if not item or not (model_root/name).is_file() or digest(model_root/name)!=item['sha256']:raise OcrError('MODEL_HASH_MISMATCH')
     version=OCRVersion.PPOCRV5 if variant=='v5' else OCRVersion.PPOCRV4
     params={'Global.log_level':'critical','Global.text_score':0.0,'Global.max_side_len':1280,'Global.return_word_box':False,
-      'EngineConfig.onnxruntime.intra_op_num_threads':2,'EngineConfig.onnxruntime.inter_op_num_threads':1,
+      'EngineConfig.onnxruntime.intra_op_num_threads':threads,'EngineConfig.onnxruntime.inter_op_num_threads':1,
       'EngineConfig.onnxruntime.use_cuda':False,'EngineConfig.onnxruntime.use_dml':False,
       'Det.model_path':str(model_root/det),'Det.ocr_version':version,'Det.model_type':ModelType.MOBILE,
       'Rec.model_path':str(model_root/rec),'Rec.ocr_version':version,'Rec.model_type':ModelType.MOBILE,'Rec.lang_type':'ch' if variant=='v5' else 'japan',
@@ -179,7 +181,7 @@ def load_engine(model_root,variant):
     engine.text_rec.postprocess_op=JapaneseDecode(engine.text_rec.postprocess_op)
     providers={name:getattr(engine,name).session.session.get_providers() for name in ('text_det','text_rec','text_cls')}
     if any(p!=['CPUExecutionProvider'] for p in providers.values()):raise OcrError('CPU_PROVIDER_REQUIRED')
-    return engine,dict(engine='RapidOCR',version=importlib.metadata.version('rapidocr'),recognition_model=rec,detection_model=det,model_hashes={name:manifest['files'][name]['sha256'] for name in [det,rec,cls]},runtime='onnxruntime',runtime_version=importlib.metadata.version('onnxruntime'),requested_providers=['CPUExecutionProvider'],actual_providers=providers,threads=2,language_policy=LANGUAGE_POLICY)
+    return engine,dict(engine='RapidOCR',version=importlib.metadata.version('rapidocr'),recognition_model=rec,detection_model=det,model_hashes={name:manifest['files'][name]['sha256'] for name in [det,rec,cls]},runtime='onnxruntime',runtime_version=importlib.metadata.version('onnxruntime'),requested_providers=['CPUExecutionProvider'],actual_providers=providers,threads=threads,language_policy=LANGUAGE_POLICY)
 
 # Geometry uses a bounded preview; recognition keeps original pixels in bounded tiles.
 # No page-wide OpenCV masks or ONNX tensors are created for a large photograph.
@@ -299,7 +301,7 @@ def recognition_regions(image):
             right=min(image.width,x+TILE_CORE+TILE_HALO);bottom=min(image.height,y+TILE_CORE+TILE_HALO)
             yield image.crop((left,top,right,bottom)),(left,top),(x,y,min(x+TILE_CORE,image.width),min(y+TILE_CORE,image.height))
 
-def process_page(path,index,profile,models,variant='v5'):
+def process_page(path,index,profile,models,variant='v5',threads=2):
     import cv2,numpy as np
     cv2.setNumThreads(1)
     image,space,transform=load_page(path,index)
@@ -307,7 +309,7 @@ def process_page(path,index,profile,models,variant='v5'):
     if profile in ('TABLE_LAYOUT','AUTO','PDF_DOCUMENT'):
         tables,image=grid_cells(image)
         if profile=='TABLE_LAYOUT' and not tables:warnings_out.append('NO_CONFIDENT_RULED_GRID_UNRULED_LAYOUT_UNQUALIFIED')
-    engine,identity=load_engine(models,variant)
+    engine,identity=load_engine(models,variant,threads)
     spans=[];tiles=0
     if image.width>1280 or image.height>1280:warnings_out.append('TILED_RECOGNITION_VERIFY_SMALL_TEXT_AND_SEAMS')
     for tile,(left,top),core in recognition_regions(image):
@@ -393,7 +395,7 @@ def main():
         if request['operation']=='inspect':result=metadata
         elif request['operation']=='page':
             if request['profile'] not in PROFILES:raise OcrError('PROFILE_INVALID')
-            result=process_page(path,int(request['page']),request['profile'],request['model_root'],request.get('variant','v5'))
+            result=process_page(path,int(request['page']),request['profile'],request['model_root'],request.get('variant','v5'),request.get('threads',2))
         else:raise OcrError('OPERATION_INVALID')
         result.update(status='complete',input_sha256=request['input_sha256'],external_ai='deny',network_attempts=len(NETWORK_ATTEMPTS),elapsed_ms=int((time.monotonic()-started)*1000))
         atomic(request['result_path'],result)
