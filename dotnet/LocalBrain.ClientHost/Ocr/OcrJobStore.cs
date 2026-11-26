@@ -104,8 +104,8 @@ internal sealed class OcrJobStore(OcrConfig config)
         if(!File.Exists(Input(m))||HashFile(Input(m))!=m.InputSha256)throw new OcrException("INPUT_UNAVAILABLE_OR_CHANGED");
         VerifyPages(m,s);s=s with{Status="queued",ErrorCode=null,UpdatedAt=DateTimeOffset.UtcNow};Atomic(Path.Combine(DirectoryFor(id),"state.json"),s);return s;
     }
-    internal void VerifyPages(Manifest manifest,State state){
-        if(manifest.JobId!=state.JobId||manifest.ConfigHash!=ConfigHash(config)||manifest.ExternalAi!="deny"||state.CompletedPages!=state.PageHashes.Count)throw new OcrException("JOB_BINDING_MISMATCH");
+    internal void VerifyPages(Manifest manifest,State state,bool requireCurrentConfig=true){
+        if(manifest.JobId!=state.JobId||(requireCurrentConfig&&manifest.ConfigHash!=ConfigHash(config))||manifest.ExternalAi!="deny"||state.CompletedPages!=state.PageHashes.Count)throw new OcrException("JOB_BINDING_MISMATCH");
         foreach(var pair in state.PageHashes){var p=Path.Combine(DirectoryFor(manifest.JobId),"pages",pair.Key+".json");if(!File.Exists(p)||HashFile(p)!=pair.Value)throw new OcrException("PAGE_EVIDENCE_CHANGED");}
     }
     internal State CommitPage(Manifest m,int page,JsonElement result){
@@ -147,7 +147,9 @@ internal sealed class OcrJobStore(OcrConfig config)
         TryCleanupInput(m);return s;
     }
     internal JsonElement Result(string id){
-        var m=GetManifest(id);var s=GetState(id);VerifyPages(m,s);if(s.Status!="complete")throw new OcrException("RESULT_NOT_READY");
+        var m=GetManifest(id);var s=GetState(id);
+        // A completed result remains bound to its original manifest and page hashes after configuration changes.
+        VerifyPages(m,s,requireCurrentConfig:s.Status!="complete");if(s.Status!="complete")throw new OcrException("RESULT_NOT_READY");
         var p=Path.Combine(DirectoryFor(id),"result.json");var expected=Read<JsonElement>(Path.Combine(DirectoryFor(id),"result-binding.json")).GetProperty("sha256").GetString();
         if(HashFile(p)!=expected)throw new OcrException("RESULT_EVIDENCE_CHANGED");return Read<JsonElement>(p);
     }
