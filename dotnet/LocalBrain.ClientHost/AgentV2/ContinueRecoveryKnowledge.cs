@@ -42,8 +42,8 @@ internal static class ContinueRecoveryKnowledge
             }), usesContent: false);
             // The long-lived MCP decision worker drains the durable outbox once the task releases Canonical ownership.
             await using var automation = new DecisionAutomation(config);
-            var queued = DecisionProtocol.Parse(await automation.EnqueueAsync(proposal, "proposal", startWorker: false, allowReviewOnly: true));
-            return Record(queued.GetProperty("review_only").GetBoolean() ? "queued_for_review_only" : "queued_for_review");
+            await automation.EnqueueAsync(proposal, "proposal", startWorker: false);
+            return Record("queued_for_review");
         }
         catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or
             InvalidOperationException or JsonException or System.ComponentModel.Win32Exception or OperationCanceledException or HttpRequestException or Microsoft.Data.Sqlite.SqliteException)

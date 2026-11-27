@@ -6,7 +6,7 @@
 
 読み取り調査は、MCP能力が有効な場合`localbrain_agent_v2_investigate`で既存Host管理へ渡します。正常に終了した未完了ターンの有限継続、元の目標と証拠の保存、Fresh Critic・Completion Gate、同じMCP呼出しへの最終報告を追加しました。接続切断後にContinueの新しいターンをHostから起動する機能はありません。下表の通常Bridgeの制限は、管理対象外のクライアントと既存の直接ツール履歴に引き続き適用します。
 
-PC73のContinue標準Agentで応答の反復が再試行後も続くか、Bridgeが転送前にツールの反復を止めた場合は、ユーザーが対象ファイルとテストを明示した依頼をAgent v2へ渡せます。Hostで再承認し、既定の外部送信ポリシーと修正の検証を適用します。外部修正の反映と完了を確認し、同じプロジェクトの根拠を指定した解決案をSecondBrainの審査へ送ります。自動採用ポリシーの対象外は`reviewed_only`で止まり、下書きが残ります。手順は[Continue PC73の復旧引き継ぎ](tools/continue-pc73/README.md#handoff-to-managed-recovery)にあります。
+PC73のContinue標準Agentで応答の反復が再試行後も続くか、Bridgeが転送前にツールの反復を止めた場合は、ユーザーが対象ファイルとテストを明示した依頼をAgent v2へ渡せます。Hostで再承認し、既定の外部送信ポリシーと修正の検証を適用します。外部修正の反映と完了を確認し、同じプロジェクトの根拠を指定した解決案をSecondBrainの審査へ送ります。全プロジェクトに共通して2回合格で自動採用し、途中の不合格は指摘と下書きを保存して人間審査へ渡します。手順は[Continue PC73の復旧引き継ぎ](tools/continue-pc73/README.md#handoff-to-managed-recovery)にあります。
 
 | 経路 | 監視と介入 |
 | --- | --- |
