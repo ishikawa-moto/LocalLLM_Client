@@ -1,35 +1,19 @@
 // Modified for LocalBrain PC73; see NOTICE.
 import { assertLocalBrainTerminalBoundary } from "../../../localBrainTerminalBoundary";
-import iconv from "iconv-lite";
 import childProcess from "node:child_process";
 import os from "node:os";
 import { ContinueError, ContinueErrorReason } from "../../util/errors";
+import { createTerminalOutput, windowsPowerShellArguments } from "../../util/terminalOutput";
 
 // Default timeout for terminal commands (2 minutes)
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 
-// Automatically decode the buffer according to the platform to avoid garbled Chinese
-function getDecodedOutput(data: Buffer): string {
-  if (process.platform === "win32") {
-    try {
-      let out = iconv.decode(data, "utf-8");
-      if (/�/.test(out)) {
-        out = iconv.decode(data, "gbk");
-      }
-      return out;
-    } catch {
-      return iconv.decode(data, "gbk");
-    }
-  } else {
-    return data.toString();
-  }
-} // Simple helper function to use login shell on Unix/macOS and PowerShell on Windows
 function getShellCommand(command: string): { shell: string; args: string[] } {
   if (process.platform === "win32") {
     // Windows: Use PowerShell
     return {
       shell: "powershell.exe",
-      args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+      args: windowsPowerShellArguments(command),
     };
   } else {
     // Unix/macOS: Use login shell to source .bashrc/.zshrc etc.
@@ -139,6 +123,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
       try {
 
         return new Promise((resolve, reject) => {
+          const output = createTerminalOutput();
           let terminalOutput = "";
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
           let sigkillTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -187,8 +172,8 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
           if (waitForCompletion) {
             timeoutId = setTimeout(() => {
               if (isRunning()) {
-                terminalOutput +=
-                  "\n[Timeout: process killed after 2 minutes]\n";
+                output.stderr.append("\n[Timeout: process killed after 2 minutes]\n");
+                terminalOutput = output.preview();
 
                 // Update UI with timeout message
                 if (extras.onPartialOutput) {
@@ -222,8 +207,8 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
             // Skip if this process has been backgrounded
             if (isProcessBackgrounded(toolCallId)) return;
 
-            const newOutput = getDecodedOutput(data);
-            terminalOutput += newOutput;
+            if (!output.stdout.write(data)) return;
+            terminalOutput = output.preview();
 
             // Update the tracked output for potential cancellation notifications
             if (toolCallId && waitForCompletion) {
@@ -253,8 +238,8 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
             // Skip if this process has been backgrounded
             if (isProcessBackgrounded(toolCallId)) return;
 
-            const newOutput = getDecodedOutput(data);
-            terminalOutput += newOutput;
+            if (!output.stderr.write(data)) return;
+            terminalOutput = output.preview();
 
             // Update the tracked output for potential cancellation notifications
             if (toolCallId && waitForCompletion) {
@@ -290,6 +275,8 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
           }
 
           childProc.on("close", (code) => {
+            output.end();
+            terminalOutput = output.preview();
             // Clear timeout on normal completion
             if (timeoutId) {
               clearTimeout(timeoutId);
@@ -391,7 +378,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
           // Use spawn approach for consistency with streaming version
           const { shell: nonStreamingShell, args: nonStreamingArgs } =
             getShellCommand(command);
-          const output = await new Promise<{ stdout: string; stderr: string }>(
+          const output = await new Promise<string>(
             (resolve, reject) => {
               let timeoutId: ReturnType<typeof setTimeout> | undefined;
               let sigkillTimeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -410,8 +397,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
                 markProcessAsRunning(toolCallId, childProc, undefined, "");
               }
 
-              let stdout = "";
-              let stderr = "";
+              const captured = createTerminalOutput();
 
               // Check if the child process is still running.
               // `childProc.killed` only indicates that kill() was called,
@@ -422,7 +408,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
               // Set up timeout
               timeoutId = setTimeout(() => {
                 if (isRunning()) {
-                  stderr += "\n[Timeout: process killed after 2 minutes]\n";
+                  captured.stderr.append("\n[Timeout: process killed after 2 minutes]\n");
 
                   // Try graceful termination first
                   childProc.kill("SIGTERM");
@@ -437,14 +423,16 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
               }, DEFAULT_TOOL_TIMEOUT_MS);
 
               childProc.stdout?.on("data", (data) => {
-                stdout += getDecodedOutput(data);
+                captured.stdout.write(data);
               });
 
               childProc.stderr?.on("data", (data) => {
-                stderr += getDecodedOutput(data);
+                captured.stderr.write(data);
               });
 
               childProc.on("close", (code) => {
+                captured.end();
+                const preview = captured.preview();
                 // Clear outer timeout
                 if (timeoutId) {
                   clearTimeout(timeoutId);
@@ -461,13 +449,13 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
                 }
 
                 if (code === 0) {
-                  resolve({ stdout, stderr });
+                  resolve(preview);
                 } else {
                   const error = new ContinueError(
                     ContinueErrorReason.CommandExecutionFailed,
                     `Command failed with exit code ${code}`,
                   );
-                  (error as any).stderr = stderr;
+                  (error as any).stderr = preview;
                   reject(error);
                 }
               });
@@ -497,7 +485,7 @@ export const runTerminalCommandImpl: ToolImpl = async (args, extras) => {
             {
               name: "Terminal",
               description: "Terminal command output",
-              content: output.stdout ?? "",
+              content: output,
               status: status,
             },
           ];
