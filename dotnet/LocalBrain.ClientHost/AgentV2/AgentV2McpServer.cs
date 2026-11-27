@@ -14,14 +14,22 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
         new { name = "localbrain_agent_v2_status",
             description = "Read only the bounded task phase and validation gate from a registered Git root.",
             inputSchema = new { type = "object", properties = new {
-                workspace = new { type = "string", description = "Registered absolute Git root" } },
+                workspace = new { type = "string", description = "Registered absolute Git root" },
+                task_id = new { type = "string", description = "Optional exact task ID returned by managed submission" } },
                 required = new[] { "workspace" }, additionalProperties = false },
             annotations = new { readOnlyHint = true, destructiveHint = false,
                 idempotentHint = true, openWorldHint = false } },
         new{name="localbrain_agent_v2_cancel",description="Cancel the exact managed task and its owned commands; retain all evidence. Never reports a running task as completed.",
             inputSchema=new{type="object",properties=new{workspace=new{type="string"},task_id=new{type="string"}},required=new[]{"workspace","task_id"},additionalProperties=false},
             annotations=new{readOnlyHint=false,destructiveHint=false,idempotentHint=true,openWorldHint=false}},
-        Tool("localbrain_agent_v2_investigate", "Run a LOW read-only repository investigation under the detached Host owner and return the final report. Set read_only=true, no command_execution, required_tests=[{kind:git_diff_check}]. Preserve the exact original requirement and completion criteria. Host retains evidence and continues settled incomplete turns up to six times; no shell/writes or native command grant. Wait for this single call; do not submit duplicates. Infrastructure/unknown outcomes stop without external rescue.",true)
+        Tool("localbrain_agent_v2_investigate", "Run a LOW read-only repository investigation under the detached Host owner and return the final report. Set read_only=true, no command_execution, required_tests=[{kind:git_diff_check}]. Preserve the exact original requirement and completion criteria. Host retains evidence and continues settled incomplete turns up to six times; no shell/writes or native command grant. Wait for this single call; do not submit duplicates. Infrastructure/unknown outcomes stop without external rescue.",true),
+        new { name = "localbrain_agent_v2_recover_continue",
+            description = "Accept the explicitly scoped Continue recovery contract after repeated Qwen output. Host requests its normal native grant. Treat queued as pending, observe via the task status, and do not resubmit or invent a contract.",
+            inputSchema = new { type = "object", properties = new {
+                workspace = new { type = "string" }, recovery_id = new { type = "string" },
+                task = new { type = "object" }, knowledge = new { type = "object" } },
+                required = new[] { "workspace", "recovery_id", "task" }, additionalProperties = false },
+            annotations = new { readOnlyHint = false, destructiveHint = false, idempotentHint = true, openWorldHint = false } }
     ];
 
     private static object Tool(string name, string description, bool readOnly, bool runner = false) => new
@@ -69,6 +77,8 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
 
     public async Task RunAsync()
     {
+        await using var decisions = runner is null && isolatedControlRoot is null && launchManaged ? new DecisionAutomation(config) : null;
+        decisions?.Start();
         var pending=new List<Task>();
         while (await Console.In.ReadLineAsync() is { } line)
         {
@@ -142,10 +152,20 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
         runner?.RequireWorkspace(selected);
         var root = allowlist.Resolve(selected);
         runner?.RequireWorkspace(root);
-        if (name == "localbrain_agent_v2_status")
-            return Content(isolatedControlRoot is null && TaskAgentCoordinator.CurrentDirectory(root) is null
-                ? ReadStatus(root) : await TaskAgentCoordinator.StatusAsync(root,isolatedControlRoot,runner is not null));
+        if (name == "localbrain_agent_v2_status") {
+            var exact = arguments.TryGetProperty("task_id", out var requestedId) ? requestedId.GetString() : null;
+            if (runner is not null && exact is not null) throw new InvalidDataException("Runner status observes only its current task");
+            return Content(exact is null && isolatedControlRoot is null && TaskAgentCoordinator.CurrentDirectory(root) is null
+                ? ReadStatus(root) : await TaskAgentCoordinator.StatusAsync(root,isolatedControlRoot,runner is not null,exact));
+        }
         if(name=="localbrain_agent_v2_cancel")return Content(await TaskAgentCoordinator.CancelAsync(root,arguments.GetProperty("task_id").GetString()??"",isolatedControlRoot,runner is not null));
+        if (name == "localbrain_agent_v2_recover_continue") {
+            if (runner is not null) throw new UnauthorizedAccessException("Continue recovery is not a Runner capability");
+            if (!string.Equals(Path.GetFullPath(selected).TrimEnd('\\', '/'), root.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("Continue recovery requires the exact registered Git root");
+            var scoped = ContinueRecoveryIntent.Read(arguments);
+            return Content(await TaskAgentCoordinator.SubmitAsync(root, scoped, config, control: isolatedControlRoot, launch: launchManaged));
+        }
         if (name is not ("localbrain_agent_v2_run" or "localbrain_agent_v2_resume" or "localbrain_agent_v2_investigate"))
             throw new InvalidDataException("Unknown Agent v2 tool");
         if (runner is not null && name == "localbrain_agent_v2_resume")
@@ -157,6 +177,8 @@ internal sealed class AgentV2McpServer(ProjectAllowlist allowlist, ClientConfig 
             input["read_only"]=true;taskJson=input.ToJsonString();
         }
         var task = AgentTaskRequest.Parse(taskJson);
+        if (task.ContinueRecovery is not null)
+            throw new UnauthorizedAccessException("Use the dedicated Continue recovery route for a recovery intent");
         if(name=="localbrain_agent_v2_investigate" && !task.ReadOnly)
             throw new UnauthorizedAccessException("Investigation requires the read-only Host path");
         if(task.ReadOnly && launchManaged && requestKey is null)throw new InvalidDataException("Investigation delivery requires an MCP request ID");

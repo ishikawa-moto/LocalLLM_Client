@@ -22,6 +22,7 @@ internal sealed class HostTaskJournal : IDisposable
     }
     private readonly string requestJson;
     private readonly bool requiresApproval;
+    private readonly bool continueRecovery;
     private readonly bool readOnly;
     private readonly string workspaceId;
     private readonly string root;
@@ -47,6 +48,7 @@ internal sealed class HostTaskJournal : IDisposable
             Path.GetFullPath(root), "main", ""));
         requestJson = AgentTaskRunner.RequestJson(request);
         requiresApproval=request.EffectiveRisk=="HIGH";
+        continueRecovery=request.ContinueRecovery is not null;
         readOnly=request.ReadOnly;
         store.CreateTask(taskId, workspaceId, CanonicalStore.Hash(Encoding.UTF8.GetBytes(requestJson)), requestJson);
         var saved = store.GetTask(taskId)!;
@@ -120,6 +122,7 @@ internal sealed class HostTaskJournal : IDisposable
     public void RequireMutationApproval()
     {
         if(requiresApproval && !HasApproval)throw new UnauthorizedAccessException("Task approval is unavailable or expired");
+        if(continueRecovery)ProjectAllowlist.RequireRecoveryBranch(root);
     }
     public string Recall(string hash,int offset) {
         Slack.RestrictedExecution.DenyAgentTools();

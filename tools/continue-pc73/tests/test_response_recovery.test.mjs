@@ -9,7 +9,7 @@ const bundle = fs.readFileSync(path.join(stage, "out/extension.js"), "utf8");
 const start = bundle.indexOf("const pc73ResponseRecovery = ");
 const end = bundle.indexOf("async function* llmStreamChat(", start);
 const events = [];
-const { recoverLocalResponse, superviseLocalResponse } = vm.runInNewContext(
+const { recoverLocalResponse, superviseLocalResponse, consumeRecoveryHandoff } = vm.runInNewContext(
   bundle.slice(start, end) + "\npc73ResponseRecovery",
   { require: createRequire(import.meta.url), URL, AbortController, AbortSignal, console: { info: (_, data) => events.push(JSON.parse(data)) } },
 );
@@ -20,7 +20,7 @@ const roots = ["file:///d%3A/synthetic"];
 const text = (content) => ({ role: "assistant", content });
 const tool = (...toolCalls) => ({ role: "assistant", content: "", toolCalls });
 
-async function run(first, second, previousSideEffects = false) {
+async function run(first, second, previousSideEffects = false, selected = options, turn) {
   const request = [];
   const lifecycle = [];
   async function* start(messages, signal, settings) {
@@ -37,7 +37,7 @@ async function run(first, second, previousSideEffects = false) {
     }
   }
   const output = [];
-  for await (const chunk of recoverLocalResponse(start, source, options, new AbortController().signal, roots, previousSideEffects)) output.push(chunk);
+  for await (const chunk of recoverLocalResponse(start, source, selected, new AbortController().signal, roots, previousSideEffects, turn)) output.push(chunk);
   return { output, request, lifecycle };
 }
 
@@ -119,6 +119,42 @@ await test("network failures do not start another inference", async () => {
     throw new Error("Expected the original failure");
   } catch (error) { assertEqual(error === failure, true); }
   assertEqual(attempts, 1);
+});
+
+await test("a second repeated response hands off only one exact user contract to the enabled MCP tool", async () => {
+  const name = "localbrain_agent_v2_recover_continue";
+  const selected = { tools: [read, { function: { name } }] };
+  const task = { requirement: "Synthetic repair", allowed_files: ["synthetic.txt"] };
+  const content = "Synthetic input\n```localbrain-recovery\n" + JSON.stringify({ task }) + "\n```";
+  const turn = { id: "user-1", sessionId: "session-1", content };
+  const repeats = [text("同じ結果を繰り返しています。追加の作業は進んでいません。".repeat(20))];
+  const calls = (result) => result.output.flatMap((chunk) => chunk.toolCalls ?? []);
+  const handoff = await run(repeats, repeats, false, selected, turn);
+  const result = calls(handoff);
+  assertEqual(result.length, 1);
+  assertEqual(result[0].function.name, name);
+  const args = JSON.parse(result[0].function.arguments);
+  assertEqual(args.task, task);
+  assertTrue(/^[a-f0-9]{32}$/.test(args.recovery_id));
+  assertEqual(consumeRecoveryHandoff("model-invented-id", args), false);
+  assertEqual(consumeRecoveryHandoff(result[0].id, { ...args, task: {} }), false);
+  assertEqual(consumeRecoveryHandoff(result[0].id, args), true);
+  assertEqual(consumeRecoveryHandoff(result[0].id, args), false);
+  assertEqual(handoff.request.map((request) => request.settings.tools.map((item) => item.function.name)), [["read_file"], ["read_file"]]);
+  assertEqual(calls(await run(repeats, repeats, false, selected, turn))[0].id, result[0].id);
+  assertEqual(calls(await run(repeats, repeats, false, selected, { ...turn, content: content + "\n" + content })).length, 0);
+  assertEqual(calls(await run(repeats, repeats, true, selected, turn)).length, 0);
+  assertEqual(calls(await run(repeats, repeats, false, options, turn)).length, 0);
+  assertEqual(calls(await run(repeats, [text("Good response")], false, selected, turn)).length, 0);
+  const modelCall = tool({id: "invented", function: {name, arguments: "{}"}});
+  assertEqual(calls(await run([modelCall], [modelCall], false, selected, turn)).length, 0);
+  const pause = Object.assign(new Error("Synthetic Bridge pause"), {
+    status: 422, error: { code: "work_loop_paused", forwarded: false, automatic_retry: false }
+  });
+  const bridge = await run([pause], [], false, selected, turn);
+  assertEqual(bridge.request.length, 1);
+  assertEqual(calls(bridge)[0].id, result[0].id);
+  assertEqual(calls(await run([pause], [], true, selected, turn)).length, 0);
 });
 
 await test("GUI reset removes only the current partial assistant and keeps prior tool receipts", () => {

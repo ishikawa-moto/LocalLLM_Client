@@ -128,7 +128,7 @@ internal sealed partial class CanonicalStore : IDisposable
         }
     }
 
-    public static TaskSnapshot? ReadLatest(string storageRoot, string workspaceId)
+    public static TaskSnapshot? ReadLatest(string storageRoot, string workspaceId, string? taskId = null)
     {
         var path = Path.Combine(Path.GetFullPath(storageRoot), "canonical.db");
         GuardPath(path); GuardPath(path+"-wal"); GuardPath(path+"-shm");
@@ -140,9 +140,10 @@ internal sealed partial class CanonicalStore : IDisposable
         cmd.CommandText="""
             SELECT t.task_id,t.workspace_id,t.request_hash,t.state_json,c.actor_turns,c.tool_calls,c.handoffs,c.external_reviews
             FROM tasks t JOIN task_counters c ON c.task_id=t.task_id
-            WHERE t.workspace_id=$ws ORDER BY t.rowid DESC LIMIT 1;
+            WHERE t.workspace_id=$ws AND ($task IS NULL OR t.task_id=$task) ORDER BY t.rowid DESC LIMIT 1;
             """;
         cmd.Parameters.AddWithValue("$ws",workspaceId);
+        cmd.Parameters.AddWithValue("$task", (object?)taskId ?? DBNull.Value);
         using var r=cmd.ExecuteReader();
         return r.Read()?new(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),
             r.GetInt64(4),r.GetInt64(5),r.GetInt64(6),r.GetInt64(7)):null;

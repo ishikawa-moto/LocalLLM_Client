@@ -21,6 +21,9 @@ internal sealed record AgentTaskRequest(
     [JsonPropertyName("external_ai_disabled")]
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExternalAiDisabled {get;init;}
+    [JsonPropertyName("continue_recovery")]
+    [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
+    public ContinueRecoveryIntent? ContinueRecovery {get;init;}
     private static readonly Regex HighRisk = new(
         @"production\s+deploy|force[ -]?push|drop\s+(table|database)|delete\s+(database|account)|credential|private\s+key|billing|本番|デプロイ|強制プッシュ|削除|認証情報|秘密鍵|課金|DB移行",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -74,6 +77,7 @@ internal sealed record AgentTaskRequest(
             throw new InvalidDataException("Read-only investigations require LOW risk, no command grant, and only git_diff_check");
         if (request.EffectiveRisk == "HIGH" && !request.ApprovedHighRisk)
             throw new UnauthorizedAccessException("High-risk task requires explicit user approval");
+        request.ContinueRecovery?.Validate(request);
         return request;
     }
 }

@@ -25,7 +25,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
     private void Save(Job job){var path=PathFor(job.RequestId);CanonicalStore.GuardPath(path);Directory.CreateDirectory(QueueRoot);var temp=path+".pending";if(File.Exists(temp))throw new IOException("Unknown pending outbox projection; inspect before recovery");File.WriteAllBytes(temp,JsonSerializer.SerializeToUtf8Bytes(job));File.Move(temp,path,true);}
     private Job Read(string id){var path=PathFor(id);CanonicalStore.GuardPath(path);using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read|FileShare.Delete);var j=JsonSerializer.Deserialize<Job>(input)??throw new InvalidDataException("Outbox missing");if(j.RequestId!=id)throw new InvalidDataException("Outbox identity differs");return j;}
     internal void Start(){worker??=Task.Run(LoopAsync);}
-    internal async Task<string> EnqueueAsync(string requestJson,string mode)
+    internal async Task<string> EnqueueAsync(string requestJson,string mode,bool startWorker=true)
     {
         if(Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_REQUIRES_EXPLICIT_HOST_APPROVAL");
         var loaded=AutomaticDecisionPolicy.Load(config,hostRoot)??throw new UnauthorizedAccessException("Automatic adoption policy is disabled");
@@ -40,7 +40,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
             if(File.Exists(path)){var old=Read(id);if(old.InputHash!=inputHash||old.ProposalHash!=proposalHash||old.Mode!=mode||old.PolicyHash!=loaded.Hash||old.Root!=loaded.Policy.workspace)throw new InvalidDataException("Request ID already binds different content/mode/policy");return Summary(old);}
             Directory.CreateDirectory(QueueRoot);var input=Path.Combine(QueueRoot,inputHash+".input");CanonicalStore.GuardPath(input);
             if(File.Exists(input)){if(!File.ReadAllBytes(input).SequenceEqual(inputBytes))throw new InvalidDataException("Outbox input differs");}else File.WriteAllBytes(input,inputBytes);
-            var job=new Job(id,loaded.Policy.workspace,mode,loaded.Hash,inputHash,proposalHash,"queued");Save(job);if(!fixture)Start();return Summary(job);
+            var job=new Job(id,loaded.Policy.workspace,mode,loaded.Hash,inputHash,proposalHash,"queued");Save(job);if(!fixture&&startWorker)Start();return Summary(job);
         }finally{gate.Release();}
     }
     internal async Task<string> StatusAsync(string id){await gate.WaitAsync(stop.Token);try{return Summary(Read(id));}finally{gate.Release();}}

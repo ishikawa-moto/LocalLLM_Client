@@ -25,6 +25,13 @@ internal sealed class ProjectAllowlist(ClientConfig config)
         return root;
     }
     internal static string CurrentHead(string root) => Git(root, "--no-optional-locks", "rev-parse", "HEAD").Trim();
+    internal static void RequireRecoveryBranch(string root)
+    {
+        var branch = Git(root, "symbolic-ref", "--short", "HEAD").Trim();
+        if (string.IsNullOrEmpty(branch) || branch.Equals("main", StringComparison.OrdinalIgnoreCase) ||
+            branch.Equals("master", StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Continue recovery requires a checked-out non-main development branch");
+    }
     private static string Git(string cwd, params string[] args)
     {
         var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
