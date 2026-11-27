@@ -9,6 +9,7 @@ const suites = [
   "test_approval_policy.test.mjs",
   "test_windows_tool_paths.test.mjs",
   "test_tool_context_budget.test.mjs",
+  "test_response_recovery.test.mjs",
   "test_boundary.test.mjs",
 ];
 

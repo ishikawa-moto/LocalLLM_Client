@@ -31,6 +31,8 @@ $js = Join-Path $stage 'extension\out\extension.js'
 if ($LASTEXITCODE -ne 0) { throw 'Bundle patch failed' }
 & node --check $js
 if ($LASTEXITCODE -ne 0) { throw 'Generated JavaScript failed syntax check' }
+& node --check (Join-Path $stage 'extension\gui\assets\index.js')
+if ($LASTEXITCODE -ne 0) { throw 'Generated GUI failed syntax check' }
 & node (Join-Path $PSScriptRoot 'normalize-manifest.cjs') (Join-Path $stage 'extension\package.json')
 if ($LASTEXITCODE -ne 0) { throw 'Manifest normalization failed' }
 if ($RunTests) {
@@ -69,6 +71,6 @@ try {
 } finally { $archive.Dispose() }
 $hash = (Get-FileHash -LiteralPath $target).Hash
 [pscustomobject]@{ Path = $target; Bytes = (Get-Item -LiteralPath $target).Length; SHA256 = $hash } | Format-List
-if ($hash -cne 'B36EBE0ABA206E299E9E908990F9100075ABCF47EB26DF8950EBA08FCA5A96A1') {
+if ($hash -cne '7DD5AD38DAB23D62BEE4FD380CDC2A2F4A67C170F953A2B8BCA2FC0E4852A639') {
     throw 'Payload matched; ZIP encoding differs from the reference build. Use the documented PowerShell/.NET version.'
 }
