@@ -11,6 +11,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
     private readonly Func<GatewayClient> gatewayFactory;
     private readonly Func<string> certificateHash;
     private readonly bool fixture;
+    private const string ReviewOnly = "review_only";
     internal DecisionAutomation(ClientConfig config):this(config,CanonicalStore.DefaultRoot,()=>new GatewayClient(config),()=>{using var cert=config.LoadCertificate();return cert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256).ToLowerInvariant();},false){}
     private DecisionAutomation(ClientConfig config,string hostRoot,Func<GatewayClient> gatewayFactory,Func<string> certificateHash,bool fixture){this.config=config;this.hostRoot=hostRoot;this.gatewayFactory=gatewayFactory;this.certificateHash=certificateHash;this.fixture=fixture;}
     // Test-owned root/HTTP handler; no MCP argument or environment variable selects this path.
@@ -25,13 +26,17 @@ internal sealed class DecisionAutomation:IAsyncDisposable
     private void Save(Job job){var path=PathFor(job.RequestId);CanonicalStore.GuardPath(path);Directory.CreateDirectory(QueueRoot);var temp=path+".pending";if(File.Exists(temp))throw new IOException("Unknown pending outbox projection; inspect before recovery");File.WriteAllBytes(temp,JsonSerializer.SerializeToUtf8Bytes(job));File.Move(temp,path,true);}
     private Job Read(string id){var path=PathFor(id);CanonicalStore.GuardPath(path);using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read|FileShare.Delete);var j=JsonSerializer.Deserialize<Job>(input)??throw new InvalidDataException("Outbox missing");if(j.RequestId!=id)throw new InvalidDataException("Outbox identity differs");return j;}
     internal void Start(){worker??=Task.Run(LoopAsync);}
-    internal async Task<string> EnqueueAsync(string requestJson,string mode,bool startWorker=true)
+    internal async Task<string> EnqueueAsync(string requestJson,string mode,bool startWorker=true,bool allowReviewOnly=false)
     {
         if(Slack.RestrictedExecution.Active)throw new UnauthorizedAccessException("SLACK_REQUIRES_EXPLICIT_HOST_APPROVAL");
         var loaded=AutomaticDecisionPolicy.Load(config,hostRoot)??throw new UnauthorizedAccessException("Automatic adoption policy is disabled");
         if(mode is not ("proposal" or "user_request"))throw new ArgumentException("Unknown request origin");
         var request=DecisionProtocol.Parse(requestJson);var id=DecisionProtocol.Id(request.GetProperty("request_id").GetString()!);
-        if(!loaded.Policy.projects.Contains(request.GetProperty("project").GetString(),StringComparer.Ordinal))throw new UnauthorizedAccessException("Project is outside installed adoption policy");
+        if(!loaded.Policy.projects.Contains(request.GetProperty("project").GetString(),StringComparer.Ordinal)){
+            // Recovery can request a review without granting authority to adopt the draft.
+            if(!allowReviewOnly||mode!="proposal")throw new UnauthorizedAccessException("Project is outside installed adoption policy");
+            mode=ReviewOnly;
+        }
         if(HostEgress.Redact(requestJson).Count!=0)throw new UnauthorizedAccessException("Protected material cannot enter decision automation");
         var proposal=JsonSerializer.SerializeToElement(new{schema=DecisionProtocol.ProposalSchema,proposal_id=id,kind="decision",project=request.GetProperty("project"),title=request.GetProperty("title"),body=request.GetProperty("body"),references=request.GetProperty("references")});
         var inputBytes=DecisionProtocol.Utf8.GetBytes(requestJson);var inputHash=CanonicalStore.Hash(inputBytes);var proposalHash=DecisionProtocol.Digest(proposal);
@@ -70,7 +75,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
             // Only one MCP instance drains this outbox. Status reads never wait on network/model work.
             using var writer=new FileStream(Path.Combine(QueueRoot,"worker.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
             foreach(var path in Directory.EnumerateFiles(QueueRoot,"*.json").Order(StringComparer.Ordinal)){
-            try{var job=Read(Path.GetFileNameWithoutExtension(path));if(job.Phase is not ("applied" or "rejected" or "returned" or "review_unresolved" or "attention_required"))await AdvanceAsync(job);}catch(Exception error) when(error is not OperationCanceledException||!stop.IsCancellationRequested){Console.Error.WriteLine(JsonSerializer.Serialize(new{component="decision_automation",error_type=error.GetType().Name,action="preserve_for_recovery"}));}
+            try{var job=Read(Path.GetFileNameWithoutExtension(path));if(job.Phase is not ("applied" or "rejected" or "returned" or "review_unresolved" or "reviewed_only" or "attention_required"))await AdvanceAsync(job);}catch(Exception error) when(error is not OperationCanceledException||!stop.IsCancellationRequested){Console.Error.WriteLine(JsonSerializer.Serialize(new{component="decision_automation",error_type=error.GetType().Name,action="preserve_for_recovery"}));}
             }
         }}catch(OperationCanceledException) when(stop.IsCancellationRequested){break;}catch(IOException){/* Another live owner or atomic projection; do not steal its lease. */}await Task.Delay(TimeSpan.FromSeconds(30),stop.Token);
     }}
@@ -104,11 +109,16 @@ internal sealed class DecisionAutomation:IAsyncDisposable
     private async Task StepAsync(Job job)
     {
         var loaded=AutomaticDecisionPolicy.Load(config,hostRoot);if(loaded is null||loaded.Value.Hash!=job.PolicyHash)return;
+        var reviewOnly = job.Mode==ReviewOnly;
+        if(job.Mode is not ("proposal" or "user_request" or ReviewOnly)||
+           reviewOnly && job.Phase is ("human_confirmation_pending" or "ready" or "dispatch_pending" or "applied"))
+            throw new UnauthorizedAccessException("Review-only jobs cannot enter adoption");
         var policy=loaded.Value.Policy;if(policy.workspace!=job.Root)throw new UnauthorizedAccessException("Outbox root differs from policy");
         var inputPath=Path.Combine(QueueRoot,job.InputHash+".input");CanonicalStore.GuardPath(inputPath);var bytes=File.ReadAllBytes(inputPath);if(CanonicalStore.Hash(bytes)!=job.InputHash)throw new InvalidDataException("Outbox input changed");
         var request=DecisionProtocol.Parse(DecisionProtocol.Utf8.GetString(bytes));
         var expected=JsonSerializer.SerializeToElement(new{schema=DecisionProtocol.ProposalSchema,proposal_id=job.RequestId,kind="decision",project=request.GetProperty("project"),title=request.GetProperty("title"),body=request.GetProperty("body"),references=request.GetProperty("references")});
-        if(request.GetProperty("request_id").GetString()!=job.RequestId||DecisionProtocol.Digest(expected)!=job.ProposalHash||!policy.projects.Contains(request.GetProperty("project").GetString(),StringComparer.Ordinal))throw new InvalidDataException("Outbox input/content/scope differs");
+        if(request.GetProperty("request_id").GetString()!=job.RequestId||DecisionProtocol.Digest(expected)!=job.ProposalHash||
+           !reviewOnly&&!policy.projects.Contains(request.GetProperty("project").GetString(),StringComparer.Ordinal))throw new InvalidDataException("Outbox input/content/scope differs");
         using var store=new CanonicalStore(hostRoot);
         if(job.TaskId is null){var owner=DecisionAdoptionWorkspace.Open(store,job.Root,job.RequestId,job.ProposalHash,ProjectAllowlist.CurrentHead(job.Root));using var initial=owner.Journal;store.PutEvidence(bytes);store.PutEvidence(loaded.Value.Bytes);job=job with{TaskId=owner.TaskId};Save(job);}
         using var journal=Journal(store,job);var adapter=new DecisionAdoption(store,job.TaskId!);
@@ -127,7 +137,7 @@ internal sealed class DecisionAutomation:IAsyncDisposable
         if(job.Phase is "review_queued" or "human_confirmation_pending"){
             using var gateway=gatewayFactory();using var statusDeadline=CancellationTokenSource.CreateLinkedTokenSource(stop.Token);statusDeadline.CancelAfter(TimeSpan.FromSeconds(20));var response=await gateway.JsonAsync(HttpMethod.Post,"/v1/brain/decision-review-status",JsonSerializer.Serialize(new{proposal_id=job.RequestId}),statusDeadline.Token);
             var element=DecisionProtocol.Parse(response);var review=element.GetProperty("review_receipt");
-            if(review.GetProperty("proposal_hash").GetString()!=job.ProposalHash||review.GetProperty("task_id").GetString()!=job.TaskId||review.GetProperty("host_policy_hash").GetString()!=job.PolicyHash)throw new InvalidDataException("Backend review belongs to another owner/content/policy");
+            if(review.GetProperty("proposal_hash").GetString()!=job.ProposalHash||review.GetProperty("task_id").GetString()!=job.TaskId||review.GetProperty("host_policy_hash").GetString()!=job.PolicyHash||review.GetProperty("request_mode").GetString()!=job.Mode)throw new InvalidDataException("Backend review belongs to another owner/content/policy/mode");
             if(review.GetProperty("client_certificate_sha256").GetString()!=certificateHash())throw new UnauthorizedAccessException("Review belongs to another certificate");
             var eventId=RecordReview(store,journal,job,response);var state=element.GetProperty("state").GetString();job=job with{ReviewEventId=eventId,ReviewJson=response};
             if(job.Phase=="human_confirmation_pending"){
@@ -135,7 +145,13 @@ internal sealed class DecisionAutomation:IAsyncDisposable
                 if(!confirmation.Value.GetProperty("confirmed").GetBoolean()){Save(job with{Phase="returned",Native=null});return;}
                 var h=store.PutEvidence(DecisionProtocol.Utf8.GetBytes(confirmation.Value.GetRawText()));var human=store.Append(new(job.TaskId!,HostTaskJournal.WorkspaceId(job.Root),"windows_host","native_confirmed_"+job.Native.Nonce,"decision_native_reaffirmation_confirmed","human_statement","human_explicit",[h],JsonSerializer.SerializeToElement(new{intent_hash=job.IntentHash,review_receipt_hash=job.Native.ReviewHash})));
                 job=job with{NativeEventId=human.EventId,Phase="ready"};
-            }else if(state=="approved")job=job with{Phase="ready"};else if(state=="returned")job=job with{Phase="returned"};else if(state is "needs_evidence" or "review_unresolved")job=job with{Phase="review_unresolved"};
+            }else if(state=="reviewed_only" && reviewOnly){
+                if(DecisionProtocol.Digest(review)!=element.GetProperty("review_receipt_hash").GetString()||
+                   review.GetProperty("state").GetString()!=state||review.GetProperty("review_passes").GetInt32()!=2||
+                   review.GetProperty("passes").GetArrayLength()!=2||review.GetProperty("issues").GetArrayLength()!=0||
+                   element.GetProperty("apply_state").GetString()!="not_started")throw new InvalidDataException("Invalid review-only receipt");
+                job=job with{Phase="reviewed_only"};
+            }else if(state=="approved" && !reviewOnly)job=job with{Phase="ready"};else if(state=="returned")job=job with{Phase="returned"};else if(state is "needs_evidence" or "review_unresolved")job=job with{Phase="review_unresolved"};
             Save(job);
             if(job.Phase=="review_queued"&&state=="deferred"&&DateTimeOffset.UtcNow.ToUnixTimeSeconds()>=job.ReviewRetryAfterUtc){
                 // Only a known model-free preflight deferral is eligible. Register is
@@ -176,6 +192,27 @@ internal sealed class DecisionAutomation:IAsyncDisposable
         }
     }
     private static string RecordReview(CanonicalStore store,HostTaskJournal journal,Job job,string response){var hash=store.PutEvidence(DecisionProtocol.Utf8.GetBytes(response));return store.Append(new(journal.TaskId,HostTaskJournal.WorkspaceId(job.Root),"windows_host","decision_review_"+hash,"decision_review_receipt_received","server_review_receipt","authenticated_server_response",[hash],JsonSerializer.SerializeToElement(new{review_response_hash=hash,policy_hash=job.PolicyHash}))).EventId;}
-    private static string Summary(Job job){JsonElement? issues=null;string? reviewState=null;if(job.ReviewJson is not null){var r=DecisionProtocol.Parse(job.ReviewJson);reviewState=r.GetProperty("state").GetString();issues=r.GetProperty("review_receipt").GetProperty("issues").Clone();}return JsonSerializer.Serialize(new{status=job.Phase,request_id=job.RequestId,applied=job.Phase=="applied",issues,review_state=reviewState,next_review_recheck_at=reviewState=="deferred"?(long?)job.ReviewRetryAfterUtc:null,result=job.ResultJson is null?(JsonElement?)null:DecisionProtocol.Parse(job.ResultJson),next_step=job.Phase=="review_queued"&&reviewState=="deferred"?"Known model-free preflight deferral. The Host automatically rechecks acceptance at most once per60seconds and signals the existing coalesced reviewer only when idle. Do not resubmit this request.":job.Phase=="queued"?"Accepted in the Host outbox; the background worker has not yet registered review. Check status after30seconds; do not resubmit.":job.Phase=="attention_required"?"Automatic retry stopped. Inspect the preserved backend denial and existing owned receipts before recovery; do not infer saved or replay an unknown apply.":job.Phase=="returned"?"Reviewer returned this exact explicit request once. If the human repeats the save request after seeing these issues, call brain_reaffirm_decision; the Host native dialog records the human reaffirmation. Never self-reaffirm.":job.Phase=="human_confirmation_pending"?"Await the existing native Windows confirmation. If no window exists after interruption, preserve this intent for Host recovery; no automatic repeated launch.":null});}
+    private static string Summary(Job job)
+    {
+        JsonElement? issues=null;
+        string? reviewState=null;
+        if(job.ReviewJson is not null){
+            var receipt=DecisionProtocol.Parse(job.ReviewJson);
+            reviewState=receipt.GetProperty("state").GetString();
+            issues=receipt.GetProperty("review_receipt").GetProperty("issues").Clone();
+        }
+        var nextStep=job.Phase switch {
+            "review_queued" when reviewState=="deferred"=>"Known model-free preflight deferral. The Host automatically rechecks acceptance at most once per60seconds and signals the existing coalesced reviewer only when idle. Do not resubmit this request.",
+            "queued"=>"Accepted in the Host outbox; the background worker has not yet registered review. Check status after30seconds; do not resubmit.",
+            "reviewed_only"=>"Review completed. The proposal remains a draft and requires separate adoption authorization.",
+            "attention_required"=>"Automatic retry stopped. Inspect the preserved backend denial and existing owned receipts before recovery; do not infer saved or replay an unknown apply.",
+            "returned"=>"Reviewer returned this exact explicit request once. If the human repeats the save request after seeing these issues, call brain_reaffirm_decision; the Host native dialog records the human reaffirmation. Never self-reaffirm.",
+            "human_confirmation_pending"=>"Await the existing native Windows confirmation. If no window exists after interruption, preserve this intent for Host recovery; no automatic repeated launch.",
+            _=>null
+        };
+        return JsonSerializer.Serialize(new{status=job.Phase,request_id=job.RequestId,applied=job.Phase=="applied",review_only=job.Mode==ReviewOnly,
+            issues,review_state=reviewState,next_review_recheck_at=reviewState=="deferred"?(long?)job.ReviewRetryAfterUtc:null,
+            result=job.ResultJson is null?(JsonElement?)null:DecisionProtocol.Parse(job.ResultJson),next_step=nextStep});
+    }
     public async ValueTask DisposeAsync(){stop.Cancel();if(worker is not null)try{await worker;}catch(OperationCanceledException){}stop.Dispose();gate.Dispose();}
 }

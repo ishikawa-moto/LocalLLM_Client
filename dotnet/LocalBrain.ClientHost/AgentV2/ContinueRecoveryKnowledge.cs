@@ -22,9 +22,8 @@ internal static class ContinueRecoveryKnowledge
                 journal.Record("continue_recovery_knowledge", new { request_id = intent.DecisionId, phase, candidate_hash = candidate }, "host_verified");
                 return phase;
             }
-            var policy = AutomaticDecisionPolicy.Load(config, store.Root);
-            if (policy is null || !policy.Value.Policy.projects.Contains(scope.Project, StringComparer.Ordinal))
-                return Record("project_not_authorized");
+            if (AutomaticDecisionPolicy.Load(config, store.Root) is null)
+                return Record("review_policy_unavailable");
 
             var promotion = store.EventIds(journal.TaskId).Select(id => store.ReadTaskEvent(journal.TaskId, id))
                 .LastOrDefault(row => row.Input is { EventType: "codex_rescue_promoted", Producer: "windows_host", VerificationStatus: "host_verified" });
@@ -43,8 +42,8 @@ internal static class ContinueRecoveryKnowledge
             }), usesContent: false);
             // The long-lived MCP decision worker drains the durable outbox once the task releases Canonical ownership.
             await using var automation = new DecisionAutomation(config);
-            await automation.EnqueueAsync(proposal, "proposal", startWorker: false);
-            return Record("queued_for_review");
+            var queued = DecisionProtocol.Parse(await automation.EnqueueAsync(proposal, "proposal", startWorker: false, allowReviewOnly: true));
+            return Record(queued.GetProperty("review_only").GetBoolean() ? "queued_for_review_only" : "queued_for_review");
         }
         catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or
             InvalidOperationException or JsonException or System.ComponentModel.Win32Exception or OperationCanceledException or HttpRequestException or Microsoft.Data.Sqlite.SqliteException)

@@ -56,7 +56,8 @@ internal static class DecisionAutomationWorkerTests
             return new(HttpStatusCode.OK){Content=new StringContent(response.GetRawText(),Encoding.UTF8,"application/json")};
         }
         private JsonElement Review(string id){
-            var reg=Registrations[id];var record=JsonSerializer.SerializeToElement(new{schema="localbrain.decision-review.v1",policy=AutomaticDecisionPolicy.Name,model="fixture_only",proposal_id=id,proposal_hash=DecisionProtocol.Digest(Proposals[id]),request_mode=reg.GetProperty("request_mode"),host_policy_hash=PolicyHash,task_id=reg.GetProperty("task_id"),workspace_id=reg.GetProperty("workspace_id"),client_certificate_sha256=new string('d',64),state=ReviewState,review_passes=ReviewState=="approved"?2:0,passes=ReviewState=="approved"?new[]{new[]{new{id=1,source_path="raw/fixture.md",source_quote="Synthetic fixture"}},new[]{new{id=1,source_path="raw/fixture.md",source_quote="Synthetic fixture"}}}:[],issues=ReviewState=="returned"?new[]{new{code="insufficient",message="Fixture evidence missing"}}:[],return_count=ReviewState=="returned"?1:0});
+            var passed=ReviewState is "approved" or "reviewed_only";
+            var reg=Registrations[id];var record=JsonSerializer.SerializeToElement(new{schema="localbrain.decision-review.v1",policy=AutomaticDecisionPolicy.Name,model="fixture_only",proposal_id=id,proposal_hash=DecisionProtocol.Digest(Proposals[id]),request_mode=reg.GetProperty("request_mode"),host_policy_hash=PolicyHash,task_id=reg.GetProperty("task_id"),workspace_id=reg.GetProperty("workspace_id"),client_certificate_sha256=new string('d',64),state=ReviewState,review_passes=passed?2:0,passes=passed?new[]{new[]{new{id=1,source_path="raw/fixture.md",source_quote="Synthetic fixture"}},new[]{new{id=1,source_path="raw/fixture.md",source_quote="Synthetic fixture"}}}:[],issues=ReviewState=="returned"?new[]{new{code="insufficient",message="Fixture evidence missing"}}:[],return_count=ReviewState=="returned"?1:0});
             return JsonSerializer.SerializeToElement(new{schema="localbrain.decision-review.v1",proposal_id=id,proposal_hash=DecisionProtocol.Digest(Proposals[id]),state=ReviewState,review_receipt=record,review_receipt_hash=DecisionProtocol.Digest(record),apply_state=Results.ContainsKey(id)?"terminal":"not_started",apply_result=Results.TryGetValue(id,out var r)?(JsonElement?)JsonSerializer.SerializeToElement(new{http=200,result=r}):null});
         }
     }
@@ -69,7 +70,7 @@ internal static class DecisionAutomationWorkerTests
         var policy=JsonSerializer.SerializeToUtf8Bytes(new{version=1,enabled=true,policy=AutomaticDecisionPolicy.Name,workspace=repo,projects=new[]{"demo"},authorization_source="DISPOSABLE_SYNTHETIC_FIXTURE_ONLY"});
         File.WriteAllBytes(Path.Combine(host,"automatic-decision-policy.json"),policy);var peer=new Peer{PolicyHash=CanonicalStore.Hash(policy)};
         DecisionAutomation Worker()=>DecisionAutomation.ForFixture(config,host,()=>new GatewayClient(new Uri("https://fixture.invalid"),peer),new string('d',64));
-        string Request(string id,string title="公開fixture")=>JsonSerializer.Serialize(new{request_id=id,project="demo",title,body="合成の根拠 😀\n非本番",references=new[]{new{path="raw/fixture.md",expected_hash=new string('a',64),expected_metadata_hash=new string('b',64),relevant_location="L1"}}});
+        string Request(string id,string title="公開fixture",string project="demo")=>JsonSerializer.Serialize(new{request_id=id,project,title,body="合成の根拠 😀\n非本番",references=new[]{new{path="raw/fixture.md",expected_hash=new string('a',64),expected_metadata_hash=new string('b',64),relevant_location="L1"}}});
         await using(var first=Worker()){
             var watch=Stopwatch.StartNew();var queued=DecisionProtocol.Parse(await first.EnqueueAsync(Request("worker_good"),"proposal"));Check(queued.GetProperty("status").GetString()=="queued"&&watch.ElapsedMilliseconds<5000,"Queue did not return promptly");
             await first.StepFixtureAsync("worker_good");Check(DecisionProtocol.Parse(await first.StatusAsync("worker_good")).GetProperty("applied").GetBoolean(),"Worker did not complete normal PASS adoption");
@@ -142,6 +143,23 @@ internal static class DecisionAutomationWorkerTests
             Check(DecisionProtocol.Parse(await loop.StatusAsync("timeout_job_001")).GetProperty("status").GetString()=="review_queued","Timed-out job was discarded rather than preserved");
         }
         await using(var recovery=DecisionAutomation.ForFixture(config,loopHost,()=>new GatewayClient(new Uri("https://fixture.invalid"),loopPeer),new string('d',64))){await recovery.StepFixtureAsync("timeout_job_001");Check(loopPeer.ProposalCalls==2&&loopPeer.RegisterCalls==2&&DecisionProtocol.Parse(await recovery.StatusAsync("timeout_job_001")).GetProperty("applied").GetBoolean(),"Deadline recovery repeated proposal/registration");}
+        var reviewHost=Path.Combine(root,"review-only-host");Directory.CreateDirectory(reviewHost);
+        File.WriteAllBytes(Path.Combine(reviewHost,"automatic-decision-policy.json"),policy);
+        var reviewPeer=new Peer{PolicyHash=peer.PolicyHash,ReviewState="reviewed_only"};
+        await using(var review=DecisionAutomation.ForFixture(config,reviewHost,()=>new GatewayClient(new Uri("https://fixture.invalid"),reviewPeer),new string('d',64))){
+            const string id="worker_review_only";
+            var request=Request(id,project:"outside-policy");
+            try{await review.EnqueueAsync(request,"proposal");throw new Exception("Automatic adoption accepted an unlisted project");}catch(UnauthorizedAccessException){}
+            var queued=DecisionProtocol.Parse(await review.EnqueueAsync(request,"proposal",allowReviewOnly:true));
+            Check(queued.GetProperty("review_only").GetBoolean(),"Unlisted recovery was not admitted as review-only");
+            await review.StepFixtureAsync(id);
+            var result=DecisionProtocol.Parse(await review.StatusAsync(id));
+            Check(result.GetProperty("status").GetString()=="reviewed_only"&&!result.GetProperty("applied").GetBoolean(),"Review-only receipt was not a separate terminal result");
+            await review.EnqueueAsync(request,"proposal",allowReviewOnly:true);
+            await review.StepFixtureAsync(id);
+            Check(reviewPeer.RegisterCalls==1&&reviewPeer.ApplyCalls==0&&reviewPeer.Registrations[id].GetProperty("request_mode").GetString()=="review_only",
+                "Review-only completion registered twice or sent apply");
+        }
         using(var store=new CanonicalStore(host)){Check(!store.EventIds(store.LatestTask(HostTaskJournal.WorkspaceId(repo))!.TaskId).Select(id=>store.ReadTaskEvent(store.LatestTask(HostTaskJournal.WorkspaceId(repo))!.TaskId,id)).Any(e=>e.Input.Producer=="actor"),"Unexpected Actor");}
         Check(!Directory.GetFiles(repo).Any()&&!Directory.Exists(Path.Combine(repo,".localbrain")),"Repository mutated by administration");
         Console.WriteLine("PASS_DISPOSABLE_WORKER_FLOW: prompt queue, dedicated bound route, owned register/apply, two-pass adoption, once-returned stop, immutable repeat, known business denial no retry, committed-reply-loss restart without second apply, responsive status, pending/confirmed native orphan no second launch; real model/native user/production0.");
