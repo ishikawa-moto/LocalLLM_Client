@@ -74,6 +74,26 @@ code = replace(code, utilStart, "var init_grepSearch2 = ",
   utilStart + "const { formatGrepSearchResults, limitGrepSearchResults, getGrepFileHeadings } = " +
   compile("core/util/grepSearch.ts") + ";\n");
 
+const resolverStart = "// ../../core/util/pathResolver.ts\n";
+const resolverEnd = "// ../../core/tools/policies/fileAccess.ts\n";
+const resolver = between(code, resolverStart, resolverEnd);
+const workspaceCheck = "  const { foundInDir } = findUriInDirs(uri, workspaceDirs);";
+const relativeResult = "      isAbsolute: false,\n      isWithinWorkspace: true";
+const windowsFile = 'process.platform === "win32" && ';
+if (resolver.split(workspaceCheck).length !== 2 || resolver.split(relativeResult).length !== 2) {
+  throw new Error("Unexpected workspace path resolver anchors");
+}
+code = replace(code, resolverStart, resolverEnd, resolver
+  .replace(resolverStart, resolverStart + "const { isWindowsWorkspaceFile } = " +
+    compile("core/util/windowsWorkspaceFile.ts") + ";\n")
+  .replace(workspaceCheck, `  if (${windowsFile}uri.startsWith("file:")) {\n` +
+    "    return await isWindowsWorkspaceFile(uri, workspaceDirs) && await ide.fileExists(uri);\n" +
+    "  }\n" + workspaceCheck)
+  .replace(relativeResult, "      isAbsolute: false,\n" +
+    `      isWithinWorkspace: ${windowsFile}workspaceUri.startsWith("file:")\n` +
+    "        ? await isUriWithinWorkspace(ide, workspaceUri)\n" +
+    "        : true"));
+
 const grepStart = "// ../../core/tools/implementations/grepSearch.ts\n";
 const grepEnd = "// ../../core/tools/implementations/lsTool.ts\n";
 code = replace(code, grepStart, grepEnd,

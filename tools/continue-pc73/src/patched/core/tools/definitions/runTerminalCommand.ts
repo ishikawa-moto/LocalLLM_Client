@@ -25,13 +25,16 @@ function getPreferredShell(): string {
 }
 
 const PLATFORM_INFO = `Choose terminal commands and scripts optimized for ${os.platform()} and ${os.arch()} and shell ${getPreferredShell()}.`;
+const WINDOWS_ENCODING_NOTE = os.platform() === "win32"
+  ? " This tool already runs Windows PowerShell. For known UTF-8 files, use Get-Content -LiteralPath <path> -Encoding UTF8 so files without a BOM are read correctly."
+  : "";
 
 const RUN_COMMAND_NOTES = `The shell is not stateful and will not remember any previous commands.\
       When a command is run in the background ALWAYS suggest using shell commands to stop it; NEVER suggest using Ctrl+C.\
       When suggesting subsequent shell commands ALWAYS format them in shell command blocks.\
       Use a development branch for changes. Merges into main require a human. Keep commits, pushes and branch switches in separate calls.\
       IMPORTANT: To edit files, use Edit/MultiEdit tools instead of bash commands (sed, awk, etc).\
-      ${PLATFORM_INFO}`;
+      ${PLATFORM_INFO}${WINDOWS_ENCODING_NOTE}`;
 
 export const runTerminalCommandTool: Tool = {
   type: "function",
