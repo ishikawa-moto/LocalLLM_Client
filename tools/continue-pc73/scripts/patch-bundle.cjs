@@ -8,6 +8,7 @@ const src = (file) => fs.readFileSync(path.join(root, "src", "patched", file), "
 const stage = path.join(process.argv[2], "extension");
 const input = path.join(stage, "out", "extension.js");
 const output = process.argv[3];
+const guiFile = path.join(stage, "gui", "assets", "index.js");
 
 function slice(text, start, end) {
   const a = text.indexOf(start);
@@ -84,7 +85,7 @@ if (resolver.split(workspaceCheck).length !== 2 || resolver.split(relativeResult
   throw new Error("Unexpected workspace path resolver anchors");
 }
 code = replace(code, resolverStart, resolverEnd, resolver
-  .replace(resolverStart, resolverStart + "const { isWindowsWorkspaceFile } = " +
+  .replace(resolverStart, resolverStart + "const { isWindowsWorkspaceFile, resolveLocalFileUri } = " +
     compile("core/util/windowsWorkspaceFile.ts") + ";\n")
   .replace(workspaceCheck, `  if (${windowsFile}uri.startsWith("file:")) {\n` +
     "    return await isWindowsWorkspaceFile(uri, workspaceDirs) && await ide.fileExists(uri);\n" +
@@ -235,6 +236,46 @@ handleTool = replaceOnce(handleTool, "        return result2;", `        return 
         };`);
 code = replace(code, handleToolStart, handleToolEnd, handleTool);
 
+const pathApproval = `function evaluateFileAccessPolicy(basePolicy, isWithinWorkspace) {
+  if (basePolicy === "disabled") {
+    return "disabled";
+  }
+  if (isWithinWorkspace) {
+    return basePolicy;
+  }
+  return "allowedWithPermission";
+}`;
+code = replaceOnce(code, pathApproval, `function evaluateFileAccessPolicy(basePolicy) {
+  return basePolicy;
+}
+function isPc73FileAccessDenied(error) {
+  return error?.code === "NoPermissions" || error?.code === "EACCES" || error?.code === "EPERM";
+}`);
+
+const rangeDefinition = "// ../../core/tools/definitions/readFileRange.ts\n";
+const nextDefinition = "// ../../core/config/markdown/loadMarkdownSkills.ts\n";
+code = replace(code, rangeDefinition, nextDefinition, replaceOnce(between(code, rangeDefinition, nextDefinition),
+  "The path of the file to read, relative to the root of the workspace (NOT uri or absolute path)",
+  "The path of the file to read. Supports a workspace-relative path, an absolute path, or a file:// URI."));
+
+// Preserve real access-denied errors so they cannot be mistaken for a readable
+// empty file. The tool has the current process's permissions and cannot elevate.
+const ideReadStart = "      async readFile(fileUri) {";
+const ideReadEnd = "      async openUrl(url6) {";
+const ideRead = between(code, ideReadStart, ideReadEnd);
+code = replace(code, ideReadStart, ideReadEnd, replaceOnce(ideRead,
+  '        } catch (e14) {\n          return "";',
+  '        } catch (e14) {\n          if (isPc73FileAccessDenied(e14)) throw e14;\n          return "";'));
+
+const callToolStart = "async function callTool(tool2, toolCall, extras) {";
+const callToolEnd = "var init_callTool = __esm({";
+const callToolSource = between(code, callToolStart, callToolEnd);
+code = replace(code, callToolStart, callToolEnd, replaceOnce(callToolSource, "      contextItems: [],\n      errorMessage,",
+  `      contextItems: [],
+      errorMessage: process.platform === "win32" && isPc73FileAccessDenied(e14)
+        ? "Windows denied access with the current permissions. If this operation requires an administrator, obtain authorization through Windows before retrying."
+        : errorMessage,`));
+
 const readFileStart = "// ../../core/tools/implementations/readFile.ts\n";
 const readFileEnd = "// ../../core/tools/implementations/readFileRange.ts\n";
 let readFile = between(code, readFileStart, readFileEnd);
@@ -254,5 +295,62 @@ readFile = replaceOnce(readFile, `      await throwIfFileExceedsHalfOfContext(
 `, "");
 code = replace(code, readFileStart, readFileEnd, readFile);
 
+// Preserve the existing sensitive-file check for aliases pointing outside the
+// workspace too. Check both the supplied path and its resolved local target.
+const afterReadRange = "// ../../core/tools/implementations/readSkill.ts\n";
+let readImplementations = between(code, readFileStart, afterReadRange);
+const securityCheck = "      throwIfFileIsSecurityConcern(resolvedPath3.displayPath);";
+if (readImplementations.split(securityCheck).length !== 3) throw new Error("Unexpected file read guard anchors");
+readImplementations = readImplementations.replaceAll(securityCheck, securityCheck + `
+      const canonicalPath = await resolveLocalFileUri(resolvedPath3.uri);
+      if (canonicalPath) throwIfFileIsSecurityConcern(canonicalPath);`);
+code = replace(code, readFileStart, afterReadRange, readImplementations);
+
+const adapterStart = "      async *openAIAdapterStream(body4, signal, onCitations) {";
+const adapterEnd = "      async *openAIAdapterNonStream(body4, signal) {";
+const adapter = between(code, adapterStart, adapterEnd);
+code = replace(code, adapterStart, adapterEnd, replaceOnce(adapter,
+  "          const chatChunk2 = fromChatCompletionChunk(chunk);",
+  `          const supervised = pc73ResponseRecovery.superviseLocalResponse(body4.model, this.apiBase);
+          const chatChunk2 = fromChatCompletionChunk(chunk, supervised);
+          if (supervised && chunk.choices?.[0]?.finish_reason === "tool_calls") {
+            yield { role: "assistant", content: "", pc73ToolFinish: true };
+          }`));
+
+const convertStart = "function fromChatCompletionChunk(chunk) {";
+const convertEnd = "function handleTextDeltaEvent(";
+let convert = between(code, convertStart, convertEnd);
+convert = replaceOnce(convert, convertStart, "function fromChatCompletionChunk(chunk, supervised = false) {");
+convert = replaceOnce(convert, "if (delta?.content) {", "if (delta?.content && !(supervised && delta.tool_calls?.length)) {");
+convert = replaceOnce(convert, "      id: tool_call.id,", "      id: tool_call.id,\n      ...(supervised ? { index: tool_call.index } : {}),");
+convert = replaceOnce(convert, '        content: "",\n        toolCalls', '        content: supervised ? delta.content ?? "" : "",\n        toolCalls');
+code = replace(code, convertStart, convertEnd, convert);
+
+const streamStart = "// ../../core/llm/streamChat.ts\n";
+const streamEnd = "var init_streamChat = __esm({";
+let stream = between(code, streamStart, streamEnd);
+stream = replaceOnce(stream, streamStart, streamStart + "const pc73ResponseRecovery = " + compile("core/llm/pc73ResponseRecovery.ts") + ";\n");
+stream = replaceOnce(stream, "    } else {\n      const gen = model.streamChat(", `    } else if (messageOptions?.pc73Agent && completionOptions?.tools?.length &&
+      pc73ResponseRecovery.superviseLocalResponse(model.model, model.apiBase)) {
+      const result = yield* pc73ResponseRecovery.recoverLocalResponse(
+        (input, signal, settings) => model.streamChat(input, signal, settings, messageOptions),
+        messages, completionOptions, abortController.signal,
+        await ide.getWorkspaceDirs(), messageOptions.pc73PreviousSideEffects !== false
+      );
+      if (config3.experimental?.readResponseTTS && result?.completion) void TTS.read(result.completion);
+      return result;
+    } else {
+      const gen = model.streamChat(`);
+code = replace(code, streamStart, streamEnd, stream);
+
+let gui = fs.readFileSync(guiFile, "utf8");
+const guiOptions = 'messages:w,legacySlashCommandData:e,messageOptions:{precompiled:!0}';
+gui = replaceOnce(gui, guiOptions, `messages:w,legacySlashCommandData:e,messageOptions:{precompiled:!0,pc73Agent:a.session.mode==="agent",pc73PreviousSideEffects:a.session.history.slice(a.session.history.findLastIndex(item=>item.message.role==="user")+1).some(item=>item.toolCallStates?.some(s=>["done","errored","calling"].includes(s.status)&&!["read_file","read_file_range","ls","grep_search","file_glob_search","read_currently_open_file","view_diff","view_subdirectory","view_repo_map"].includes(s.toolCall?.function?.name)))}`);
+const guiStreamStart = 'streamUpdate:(e,t)=>{var n,r,i,a;if(e.history.length)for(const o of t.payload){';
+gui = replaceOnce(gui, guiStreamStart, guiStreamStart + `if(o.pc73Recovery){if(o.pc73Recovery==="begin"){let start=e.history.length;const last=e.history[start-1];if(last?.message.role==="assistant"&&g8e(last.message)&&!last.toolCallStates?.length&&!last.reasoning)start--;e.pc73RecoveryAnchor={start,id:e.history[start-1]?.message.id};}else if(o.pc73Recovery==="reset"){const anchor=e.pc73RecoveryAnchor;if(anchor&&e.isStreaming&&e.history[anchor.start-1]?.message.id===anchor.id){e.history.splice(anchor.start);e.history.push({message:{role:"assistant",content:"",id:ro()},contextItems:[]});}}else if(o.pc73Recovery==="end"){delete e.pc73RecoveryAnchor;}continue;}`);
+const guiSummary = "if(A){a=A,o=e.slice(O+1);break}";
+gui = replaceOnce(gui, guiSummary, `if(A){a=A,o=e.slice(O+1);if(!o.some(item=>item.message.role==="user")){const original=e.slice(0,O+1).findLast(item=>item.message.role==="user");if(original)o=[{...original,contextItems:[]},...o]}break}`);
+
 fs.writeFileSync(output, code);
+fs.writeFileSync(guiFile, gui);
 console.log(output);

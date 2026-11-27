@@ -14,9 +14,9 @@ if (process.platform === "win32" && stage) {
   const resolverEnd = bundle.indexOf("var import_node_url3, path11;", start);
   const policyStart = bundle.indexOf("function evaluateFileAccessPolicy(", resolverEnd);
   const policyEnd = bundle.indexOf("var init_fileAccess", policyStart);
-  const { resolveInputPath, evaluateFileAccessPolicy } = vm.runInNewContext(
+  const { resolveInputPath, resolveLocalFileUri, evaluateFileAccessPolicy, isPc73FileAccessDenied } = vm.runInNewContext(
     bundle.slice(start, resolverEnd) + bundle.slice(policyStart, policyEnd) +
-      "\n({ resolveInputPath, evaluateFileAccessPolicy })",
+      "\n({ resolveInputPath, resolveLocalFileUri, evaluateFileAccessPolicy, isPc73FileAccessDenied })",
     {
       process,
       URL,
@@ -64,12 +64,23 @@ if (process.platform === "win32" && stage) {
       }
     });
 
-    await test("Windows neighboring paths, junction targets and unavailable paths still require approval", async () => {
+    await test("Windows paths do not change the selected approval policy", async () => {
       for (const input of [outsideFile, path.join(link, "test.txt"), "link/test.txt", path.join(workspace, "missing")]) {
         const resolved = await resolveInputPath(ide, input);
         assertEqual(resolved.isWithinWorkspace, false);
-        assertEqual(evaluateFileAccessPolicy(automatic, resolved.isWithinWorkspace), askFirst);
+        assertEqual(evaluateFileAccessPolicy(automatic, resolved.isWithinWorkspace), automatic);
+        assertEqual(evaluateFileAccessPolicy(askFirst, resolved.isWithinWorkspace), askFirst);
+        assertEqual(evaluateFileAccessPolicy("disabled", resolved.isWithinWorkspace), "disabled");
       }
+    });
+
+    await test("a junction resolves to the actual target and real access denials stay distinct", async () => {
+      const aliased = await resolveLocalFileUri(url.pathToFileURL(path.join(link, "test.txt")).href);
+      assertEqual(aliased, await resolveLocalFileUri(url.pathToFileURL(outsideFile).href));
+      for (const code of ["NoPermissions", "EACCES", "EPERM"]) {
+        assertEqual(isPc73FileAccessDenied({ code }), true);
+      }
+      assertEqual(isPc73FileAccessDenied({ code: "FileNotFound" }), false);
     });
   } finally {
     fs.rmSync(fixture, { recursive: true });
