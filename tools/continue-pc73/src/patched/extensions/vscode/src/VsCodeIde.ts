@@ -1,6 +1,7 @@
 // Modified for LocalBrain PC73; see NOTICE.
 import * as child_process from "node:child_process";
 import { exec } from "node:child_process";
+import { stat } from "node:fs/promises";
 
 import { Range } from "core";
 import { EXTENSION_NAME } from "core/util/constants";
@@ -297,6 +298,26 @@ class VsCodeIde implements IDE {
     return this.ideUtils.getWorkspaceDirectories().map((uri) => uri.toString());
   }
 
+
+  async getToolReadVersion(fileUri: string) {
+    if (vscode.env.remoteName) return undefined;
+    const uri = vscode.Uri.parse(fileUri);
+    if (uri.scheme !== "file" || uri.authority || /\.ipynb$/i.test(uri.path)) return undefined;
+    const document = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === uri.toString());
+    if (document) return { source: document, revision: String(document.version) };
+    // An open document may use a different casing or URI spelling. Do not use
+    // a disk version for a file that may instead be served by an editor buffer.
+    if (vscode.workspace.textDocuments.some((doc) => doc.uri.fsPath.toLowerCase() === uri.fsPath.toLowerCase())) {
+      return undefined;
+    }
+    try {
+      const file = await stat(uri.fsPath, { bigint: true });
+      if (!file.isFile()) return undefined;
+      return { source: null, revision: `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}` };
+    } catch {
+      return undefined;
+    }
+  }
 
   assertLocalBrainEditableFile(fileUri: string): void {
     assertLocalBrainWritePathBoundary(

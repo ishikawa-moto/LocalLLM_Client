@@ -69,6 +69,6 @@ try {
 } finally { $archive.Dispose() }
 $hash = (Get-FileHash -LiteralPath $target).Hash
 [pscustomobject]@{ Path = $target; Bytes = (Get-Item -LiteralPath $target).Length; SHA256 = $hash } | Format-List
-if ($hash -cne '8AA87ADF716FF70AA36153F45DE24BF66413C9E24E6E515E791B6DE2F87BAE1C') {
+if ($hash -cne 'B36EBE0ABA206E299E9E908990F9100075ABCF47EB26DF8950EBA08FCA5A96A1') {
     throw 'Payload matched; ZIP encoding differs from the reference build. Use the documented PowerShell/.NET version.'
 }

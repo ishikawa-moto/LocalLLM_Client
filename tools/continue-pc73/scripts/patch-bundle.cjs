@@ -117,7 +117,9 @@ code = replace(code, terminalStart, terminalEnd,
   "runTerminalCommandImpl = " + compile("core/tools/implementations/runTerminalCommand.ts", undefined, {
     "../parseArgs": "{ getBooleanArg, getStringArg }",
     "../../../localBrainTerminalBoundary": "{ assertLocalBrainTerminalBoundary }",
-    "iconv-lite": "require_lib5()",
+    "../../util/terminalOutput": compile("core/util/terminalOutput.ts", undefined, {
+      "./toolContextBudget": "pc73ToolBudget",
+    }),
     "../../util/errors": '{ ContinueError, ContinueErrorReason: { CommandExecutionFailed: "command_execution_failed" } }',
     "../../util/processTerminalStates": "{ isProcessBackgrounded, markProcessAsRunning, removeBackgroundedProcess, removeRunningProcess, updateProcessOutput }",
   }) + ".runTerminalCommandImpl;\n}});\n" +
@@ -126,12 +128,13 @@ code = replace(code, terminalStart, terminalEnd,
   "  assertLocalBrainWritePathBoundary(uri.toString(), vscode.env.remoteName ? [] : (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.toString()));\n}\n\n");
 
 const ide = src("extensions/vscode/src/VsCodeIde.ts");
-const methods = between(ide, "  assertLocalBrainEditableFile(", "  async showVirtualFile(") +
+const methods = between(ide, "  async getToolReadVersion(", "  async showVirtualFile(") +
   between(ide, "  async getSearchResults(", "  async getProblems(");
-const ideSource = "import vscode from 'vscode';\nexport class Pc73IdeMethods {\n" + methods + "\n}";
+const ideSource = "import vscode from 'vscode';\nimport { stat } from 'node:fs/promises';\nexport class Pc73IdeMethods {\n" + methods + "\n}";
 const ideStart = "// src/VsCodeIde.ts\n";
 code = code.replace(ideStart, ideStart + "const pc73Ide = " + compile("Pc73IdeMethods.ts", ideSource) + ".Pc73IdeMethods.prototype;\n");
 code = replace(code, "      async writeFile(fileUri, contents2) {", "      async showVirtualFile(",
+  "      async getToolReadVersion(fileUri) { return pc73Ide.getToolReadVersion.call(this, fileUri); }\n" +
   "      assertLocalBrainEditableFile(fileUri) { return pc73Ide.assertLocalBrainEditableFile.call(this, fileUri); }\n" +
   "      async writeFile(fileUri, contents2) { return pc73Ide.writeFile.call(this, fileUri, contents2); }\n" +
   "      async removeFile(fileUri) { return pc73Ide.removeFile.call(this, fileUri); }\n");
@@ -168,5 +171,88 @@ if (insert.split(insertion).length !== 2) throw new Error("Unexpected cursor ins
 code = replace(code, insertStart, insertEnd, insert.replace(insertion,
   "          requirePc73EditableFile(vscode39, editor.document.uri);\n" + insertion));
 
-fs.writeFileSync(output, require("./apply-baseline.cjs")(code));
+code = require("./apply-baseline.cjs")(code);
+
+const chatCompilerStart = "function compileChatMessages({\n";
+const chatCompilerEnd = "var LlamaEncoding, NonWorkerAsyncEncoder, ";
+let chatCompiler = between(code, chatCompilerStart, chatCompilerEnd);
+function replaceOnce(text, anchor, replacement) {
+  if (text.split(anchor).length !== 2) throw new Error("Missing or ambiguous anchor: " + anchor);
+  return text.replace(anchor, replacement);
+}
+const sequenceCount = "  let lastMessagesTokens = 0;\n  for (const msg of toolSequence) {\n    lastMessagesTokens += countChatMessageTokens(modelName, msg);\n  }\n";
+chatCompiler = replaceOnce(chatCompiler, sequenceCount, "");
+const userReserve = "  const reservedUserTokens = lastUserMessage && !toolSequence.includes(lastUserMessage) ? countChatMessageTokens(modelName, lastUserMessage) : 0;";
+chatCompiler = replaceOnce(chatCompiler, "  inputTokensAvailable -= lastMessagesTokens;\n" + userReserve,
+  userReserve + `
+  const latestFrames = toolSequence.reduce((total, msg) => total +
+    countChatMessageTokens(modelName, msg.role === "tool" ? { ...msg, content: "" } : msg), 0);
+  const hasToolResults = toolSequence.some((msg) => msg.role === "tool") || msgsCopy.some((msg) => msg.role === "tool");
+  const maxToolTokens = pc73ToolBudget.getToolOutputTokenBudget(contextLength, maxTokens);
+  // PC73's local-qwen38 actor has a measured 32K physical window, while the
+  // Continue client can be configured with a larger logical context.
+  const planningContext = modelName === "local-qwen38" ? Math.min(contextLength, 32_768) : contextLength;
+  const latestAllowance = Math.max(0, inputTokensAvailable - (contextLength - planningContext) -
+    latestFrames - reservedUserTokens - Math.max(0, maxTokens - minOutputTokens));
+  const toolStats = pc73ToolBudget.prepareToolMessages(msgsCopy, toolSequence, latestAllowance, maxToolTokens,
+    (text) => countTokens(text, modelName));
+  const lastMessagesTokens = toolSequence.reduce((total, msg) => total + countChatMessageTokens(modelName, msg), 0);
+  inputTokensAvailable -= lastMessagesTokens;`);
+const historyLoop = "  while (historyWithTokens.length > 0 && currentTotal > inputTokensAvailable) {";
+chatCompiler = replaceOnce(chatCompiler, historyLoop, `  const historyTokensBefore = currentTotal;
+  const historyLimit = hasToolResults ? Math.min(inputTokensAvailable, Math.max(0,
+    Math.floor((planningContext - countingSafetyBuffer - maxTokens) * 0.75) -
+    toolTokens - systemMsgTokens - lastMessagesTokens - reservedUserTokens)) : inputTokensAvailable;
+  while (historyWithTokens.length > 0 && currentTotal > historyLimit) {`);
+const historyMetrics = "  const contextPercentage = inputTokens / availableTokens;";
+chatCompiler = replaceOnce(chatCompiler, historyMetrics, historyMetrics + `
+  if (hasToolResults && (didPrune || toolStats.shortened || toolStats.duplicateReads)) {
+    console.info("[LocalBrain Continue] context budget", JSON.stringify({
+      contextLength, planningContext, historyTokensBefore, historyTokensAfter: currentTotal, inputTokens,
+      toolResultsShortened: toolStats.shortened, duplicateReads: toolStats.duplicateReads
+    }));
+  }`);
+code = replace(code, chatCompilerStart, chatCompilerEnd,
+  "const pc73ToolBudget = " + compile("core/util/toolContextBudget.ts") + ";\n" + chatCompiler);
+
+const handleToolStart = "      async handleToolCall(toolCall) {";
+const handleToolEnd = "      async isItemTooBig(item) {";
+let handleTool = between(code, handleToolStart, handleToolEnd);
+handleTool = replaceOnce(handleTool, '        const onPartialOutput = (params) => {\n          this.messenger.send("toolCallPartialOutput", params);\n        };', `        const llm = config3.selectedModelByRole.chat;
+        const count = (text) => countTokens(text, llm.model);
+        const budget = pc73ToolBudget.getToolOutputTokenBudget(llm.contextLength, llm.completionOptions.maxTokens);
+        const onPartialOutput = (params) => {
+          this.messenger.send("toolCallPartialOutput", {
+            ...params, contextItems: pc73ToolBudget.limitToolItems(params.contextItems, budget, count)
+          });
+        };`);
+handleTool = replaceOnce(handleTool, "        return result2;", `        return {
+          ...result2,
+          contextItems: pc73ToolBudget.limitToolItems(result2.contextItems, budget, count),
+          errorMessage: typeof result2.errorMessage === "string"
+            ? pc73ToolBudget.limitToolText(result2.errorMessage, budget, count)
+            : result2.errorMessage
+        };`);
+code = replace(code, handleToolStart, handleToolEnd, handleTool);
+
+const readFileStart = "// ../../core/tools/implementations/readFile.ts\n";
+const readFileEnd = "// ../../core/tools/implementations/readFileRange.ts\n";
+let readFile = between(code, readFileStart, readFileEnd);
+readFile = replaceOnce(readFile, readFileStart, readFileStart + "const { readUnchangedText } = " +
+  compile("core/util/repeatedFileRead.ts") + ";\n");
+readFile = replaceOnce(readFile, "      const content = await extras.ide.readFile(resolvedPath3.uri);",
+  "      const content = resolvedPath3.isWithinWorkspace\n" +
+  "        ? await readUnchangedText(extras.ide, resolvedPath3.uri)\n" +
+  "        : await extras.ide.readFile(resolvedPath3.uri);");
+// The shared result limiter handles files above the previous admission limit
+// without tokenizing a whole large file before producing its preview.
+readFile = replaceOnce(readFile, `      await throwIfFileExceedsHalfOfContext(
+        resolvedPath3.displayPath,
+        content,
+        extras.config.selectedModelByRole.chat
+      );
+`, "");
+code = replace(code, readFileStart, readFileEnd, readFile);
+
+fs.writeFileSync(output, code);
 console.log(output);
