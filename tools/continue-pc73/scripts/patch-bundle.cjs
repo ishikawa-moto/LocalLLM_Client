@@ -270,7 +270,13 @@ code = replace(code, ideReadStart, ideReadEnd, replaceOnce(ideRead,
 const callToolStart = "async function callTool(tool2, toolCall, extras) {";
 const callToolEnd = "var init_callTool = __esm({";
 const callToolSource = between(code, callToolStart, callToolEnd);
-code = replace(code, callToolStart, callToolEnd, replaceOnce(callToolSource, "      contextItems: [],\n      errorMessage,",
+const guardedCallTool = replaceOnce(callToolSource, "    const args2 = safeParseToolCallArgs(toolCall);", `    const args2 = safeParseToolCallArgs(toolCall);
+    if (tool2.function.name === "localbrain_agent_v2_recover_continue" &&
+        (tool2.originalFunctionName !== "localbrain_agent_v2_recover_continue" || tool2.group !== "LocalBrain Agent v2" ||
+         !pc73ResponseRecovery.consumeRecoveryHandoff(toolCall.id, args2))) {
+      throw new Error("LocalBrain recovery requires the current verified Continue handoff. Observe the existing managed task before making a new request.");
+    }`);
+code = replace(code, callToolStart, callToolEnd, replaceOnce(guardedCallTool, "      contextItems: [],\n      errorMessage,",
   `      contextItems: [],
       errorMessage: process.platform === "win32" && isPc73FileAccessDenied(e14)
         ? "Windows denied access with the current permissions. If this operation requires an administrator, obtain authorization through Windows before retrying."
@@ -335,17 +341,22 @@ stream = replaceOnce(stream, "    } else {\n      const gen = model.streamChat("
       const result = yield* pc73ResponseRecovery.recoverLocalResponse(
         (input, signal, settings) => model.streamChat(input, signal, settings, messageOptions),
         messages, completionOptions, abortController.signal,
-        await ide.getWorkspaceDirs(), messageOptions.pc73PreviousSideEffects !== false
+        await ide.getWorkspaceDirs(), messageOptions.pc73PreviousSideEffects !== false, messageOptions.pc73RecoveryTurn
       );
       if (config3.experimental?.readResponseTTS && result?.completion) void TTS.read(result.completion);
       return result;
     } else {
       const gen = model.streamChat(`);
+stream = replaceOnce(stream, "        completionOptions,\n        messageOptions\n      );", `        completionOptions?.tools?.some(tool => tool.function.name === "localbrain_agent_v2_recover_continue")
+          ? { ...completionOptions, tools: completionOptions.tools.filter(tool => tool.function.name !== "localbrain_agent_v2_recover_continue") }
+          : completionOptions,
+        messageOptions
+      );`);
 code = replace(code, streamStart, streamEnd, stream);
 
 let gui = fs.readFileSync(guiFile, "utf8");
 const guiOptions = 'messages:w,legacySlashCommandData:e,messageOptions:{precompiled:!0}';
-gui = replaceOnce(gui, guiOptions, `messages:w,legacySlashCommandData:e,messageOptions:{precompiled:!0,pc73Agent:a.session.mode==="agent",pc73PreviousSideEffects:a.session.history.slice(a.session.history.findLastIndex(item=>item.message.role==="user")+1).some(item=>item.toolCallStates?.some(s=>["done","errored","calling"].includes(s.status)&&!["read_file","read_file_range","ls","grep_search","file_glob_search","read_currently_open_file","view_diff","view_subdirectory","view_repo_map"].includes(s.toolCall?.function?.name)))}`);
+gui = replaceOnce(gui, guiOptions, `messages:w,legacySlashCommandData:e,messageOptions:{precompiled:!0,pc73Agent:a.session.mode==="agent",pc73RecoveryTurn:(()=>{const message=a.session.history.findLast(item=>item.message.role==="user")?.message;if(message)return{id:message.id,sessionId:a.session.id,content:message.content}})(),pc73PreviousSideEffects:a.session.history.slice(a.session.history.findLastIndex(item=>item.message.role==="user")+1).some(item=>item.toolCallStates?.some(s=>["done","errored","calling"].includes(s.status)&&!["read_file","read_file_range","ls","grep_search","file_glob_search","read_currently_open_file","view_diff","view_subdirectory","view_repo_map"].includes(s.toolCall?.function?.name)))}`);
 const guiStreamStart = 'streamUpdate:(e,t)=>{var n,r,i,a;if(e.history.length)for(const o of t.payload){';
 gui = replaceOnce(gui, guiStreamStart, guiStreamStart + `if(o.pc73Recovery){if(o.pc73Recovery==="begin"){let start=e.history.length;const last=e.history[start-1];if(last?.message.role==="assistant"&&g8e(last.message)&&!last.toolCallStates?.length&&!last.reasoning)start--;e.pc73RecoveryAnchor={start,id:e.history[start-1]?.message.id};}else if(o.pc73Recovery==="reset"){const anchor=e.pc73RecoveryAnchor;if(anchor&&e.isStreaming&&e.history[anchor.start-1]?.message.id===anchor.id){e.history.splice(anchor.start);e.history.push({message:{role:"assistant",content:"",id:ro()},contextItems:[]});}}else if(o.pc73Recovery==="end"){delete e.pc73RecoveryAnchor;}continue;}`);
 const guiSummary = "if(A){a=A,o=e.slice(O+1);break}";

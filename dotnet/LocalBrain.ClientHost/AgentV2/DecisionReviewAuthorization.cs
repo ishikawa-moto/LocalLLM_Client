@@ -6,6 +6,28 @@ internal static class DecisionReviewAuthorization
 {
     internal static JsonElement Validate(DecisionAdoption.Intent intent,string taskId,string policyHash,JsonElement response,string? nativeReaffirmationHash)
     {
+        if(nativeReaffirmationHash is not null){
+            DecisionProtocol.HashText(nativeReaffirmationHash);
+            return ValidateReturned(intent,taskId,policyHash,response);
+        }
+        var record=ReadReview(intent,taskId,policyHash,response);
+        if(record.GetProperty("state").GetString()!="approved"||record.GetProperty("review_passes").GetInt32()!=2||record.GetProperty("passes").GetArrayLength()!=2||record.GetProperty("issues").GetArrayLength()!=0)throw new UnauthorizedAccessException("Reviewer has not passed twice");
+        return record;
+    }
+
+    internal static JsonElement ValidateReturned(DecisionAdoption.Intent intent,string taskId,string policyHash,JsonElement response)
+    {
+        var record=ReadReview(intent,taskId,policyHash,response);
+        var passes=record.GetProperty("review_passes").GetInt32();
+        var storedPasses=record.TryGetProperty("passes",out var evidence)?evidence.GetArrayLength():0;
+        if(record.GetProperty("state").GetString()!="returned"||record.GetProperty("return_count").GetInt32()!=1||
+           record.GetProperty("issues").GetArrayLength()==0||passes is <0 or >1||storedPasses!=passes)
+            throw new UnauthorizedAccessException("Only an exact once-returned review can be confirmed by a human");
+        return record;
+    }
+
+    private static JsonElement ReadReview(DecisionAdoption.Intent intent,string taskId,string policyHash,JsonElement response)
+    {
         DecisionProtocol.HashText(policyHash);
         if(response.GetProperty("schema").GetString()!="localbrain.decision-review.v1")throw new InvalidDataException("Unknown decision review schema");
         var record=response.GetProperty("review_receipt");
@@ -15,12 +37,6 @@ internal static class DecisionReviewAuthorization
             record.GetProperty("proposal_id").GetString()!=proposalId||record.GetProperty("proposal_hash").GetString()!=proposalHash||response.GetProperty("proposal_id").GetString()!=proposalId||response.GetProperty("proposal_hash").GetString()!=proposalHash||
             response.GetProperty("state").GetString()!=record.GetProperty("state").GetString())throw new UnauthorizedAccessException("Review content/owner/policy binding differs");
         var mode=record.GetProperty("request_mode").GetString();if(mode is not ("proposal" or "user_request"))throw new InvalidDataException("Unknown request origin");
-        if(nativeReaffirmationHash is null){
-            if(record.GetProperty("state").GetString()!="approved"||record.GetProperty("review_passes").GetInt32()!=2||record.GetProperty("passes").GetArrayLength()!=2||record.GetProperty("issues").GetArrayLength()!=0)throw new UnauthorizedAccessException("Reviewer has not passed twice");
-        }else{
-            DecisionProtocol.HashText(nativeReaffirmationHash);
-            if(mode!="user_request"||record.GetProperty("state").GetString()!="returned"||record.GetProperty("return_count").GetInt32()!=1||record.GetProperty("issues").GetArrayLength()==0)throw new UnauthorizedAccessException("Only an exact once-returned explicit save request can be reaffirmed");
-        }
         return record;
     }
 }

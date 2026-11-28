@@ -28,6 +28,7 @@ internal static class TaskCommandAuthorization
         var value=new{source="windows_task_command_grant_request",nonce,task_id=taskId,root=Path.GetFullPath(root),request_hash=hash,git_head=head,
             requirement=request.Requirement,acceptance_criteria=request.AcceptanceCriteria,allowed_files=request.AllowedFiles,risk=request.EffectiveRisk,
             contract=request.CommandExecution,output_path=output,trust="trusted personal project code; working-directory scope is not a hostile-code filesystem/network sandbox",
+            continue_recovery=request.ContinueRecovery is not {} recovery?null:new{knowledge_project=recovery.Knowledge?.Project},
             lifetime="This exact task and its verified resumptions until completion/cancellation; bounded active execution budget. No individual command confirmations within this scope."};
         var bytes=JsonSerializer.SerializeToUtf8Bytes(value,ClientConfig.JsonOptions);File.WriteAllBytes(input,bytes);
         return new(input,output,CanonicalStore.Hash(bytes),nonce,taskId,Path.GetFullPath(root),hash,head);

@@ -15,6 +15,11 @@ $label.Text="この依頼と同じタスクの再開について、下記範囲�
 $text=New-Object Windows.Forms.TextBox;$text.Location=New-Object Drawing.Point(16,112);$text.Size=New-Object Drawing.Size(870,540)
 $text.Multiline=$true;$text.ReadOnly=$true;$text.ScrollBars='Both';$text.WordWrap=$false
 $text.Text="対象: $($data.root)`r`nTask: $($data.task_id)`r`nGit HEAD: $($data.git_head)`r`nRequest hash: $($data.request_hash)`r`n`r`n依頼:`r`n$($data.requirement)`r`n`r`n完了条件:`r`n$($data.acceptance_criteria -join "`r`n")`r`n`r`n編集対象:`r`n$($data.allowed_files -join "`r`n")`r`n`r`nコマンド範囲・予算:`r`n$($data.contract|ConvertTo-Json -Depth 8)"
+if($null -ne $data.continue_recovery){
+    $destination=$data.continue_recovery.knowledge_project
+    $knowledge=if($destination){"解決案の提出先: SecondBrain / $destination (別途審査)"}else{'SecondBrainへの提出なし'}
+    $text.Text="Continueの反復停止からの復旧`r`nHostの送信ポリシーが許可した場合、既存の外部AI救済を利用します。`r`n$knowledge`r`n`r`n" + $text.Text
+}
 $yes=New-Object Windows.Forms.Button;$yes.Location=New-Object Drawing.Point(16,672);$yes.Size=New-Object Drawing.Size(540,45);$yes.Text='この依頼の範囲で、完了までの実行を一括許可';$yes.DialogResult='Yes'
 $no=New-Object Windows.Forms.Button;$no.Location=New-Object Drawing.Point(650,672);$no.Size=New-Object Drawing.Size(236,45);$no.Text='許可しない';$no.DialogResult='Cancel'
 $form.Controls.AddRange(@($label,$text,$yes,$no));$form.AcceptButton=$no;$form.CancelButton=$no

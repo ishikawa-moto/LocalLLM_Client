@@ -1,9 +1,21 @@
 // Modified for LocalBrain PC73; see NOTICE.
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 type Call = { id?: string; index?: number; type?: string; function?: { name?: string; arguments?: string } };
 type Message = { role: string; content?: unknown; toolCalls?: Call[]; pc73ToolFinish?: boolean; pc73Recovery?: string };
 type AdvertisedTool = { function: { name: string; parameters?: { required?: string[]; properties?: Record<string, { type?: string | string[] }> } } };
 type Options = { tools?: AdvertisedTool[] };
-type Reason = "repeated_generation" | "invalid_tool_call";
+type Reason = "repeated_generation" | "invalid_tool_call" | "work_loop_paused";
+type RecoveryTurn = { id?: string; sessionId?: string; content?: unknown };
+const recoveryTool = "localbrain_agent_v2_recover_continue";
+const pendingHandoffs = new Map<string, { arguments: string; expires: number }>();
+
+export function consumeRecoveryHandoff(id: string, args: unknown): boolean {
+  const pending = pendingHandoffs.get(id);
+  if (!pending || pending.expires < Date.now() || JSON.stringify(args) !== pending.arguments) return false;
+  pendingHandoffs.delete(id);
+  return true;
+}
 
 const checkedModels = new Set(["local-qwen38"]);
 const toolMarkup = /<\/?tool_call\b[^>\r\n]*>|<\/?function=(?:[^>\r\n]+)>/i;
@@ -125,6 +137,30 @@ function addSystemGuidance(messages: Message[], text: string): Message[] {
     ? { ...message, content: `${message.content}\n\n${text}` } : message);
 }
 
+export function prepareRecoveryHandoff(tools: AdvertisedTool[], roots: string[], turn?: RecoveryTurn): Call | undefined {
+  if (!tools.some((tool) => tool.function.name === recoveryTool) || roots.length !== 1 ||
+      !turn?.id || !turn.sessionId || !/^[\w-]{1,80}$/.test(turn.id) || !/^[\w-]{1,80}$/.test(turn.sessionId)) return;
+  const content = typeof turn.content === "string" ? turn.content : Array.isArray(turn.content)
+    ? turn.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : "";
+  if (content.length > 32_768) return;
+  const blocks = [...content.matchAll(/^```localbrain-recovery[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm)];
+  if (blocks.length !== 1) return;
+  try {
+    const data = JSON.parse(blocks[0][1]);
+    if (!data || typeof data !== "object" || !data.task || typeof data.task !== "object") return;
+    const workspace = fileURLToPath(roots[0]);
+    const id = createHash("sha256").update(JSON.stringify([turn.sessionId, turn.id, roots[0]])).digest("hex").slice(0, 32);
+    return { id: `call_lb_${id}`, type: "function", function: { name: recoveryTool,
+      arguments: JSON.stringify({ workspace, recovery_id: id, task: data.task, ...(data.knowledge ? { knowledge: data.knowledge } : {}) }) } };
+  } catch { return undefined; }
+}
+
+function bridgePaused(error: unknown): boolean {
+  const response = error as { status?: number; error?: { code?: string; forwarded?: boolean; automatic_retry?: boolean } } | null;
+  return response?.status === 422 && response.error?.code === "work_loop_paused" &&
+    response.error.forwarded === false && response.error.automatic_retry === false;
+}
+
 export async function* recoverLocalResponse<Log>(
   start: (messages: Message[], signal: AbortSignal, options: Options) => AsyncGenerator<Message, Log, void>,
   messages: Message[],
@@ -132,11 +168,13 @@ export async function* recoverLocalResponse<Log>(
   signal: AbortSignal,
   workspaceDirs: string[],
   previousSideEffects: boolean,
+  turn?: RecoveryTurn,
 ): AsyncGenerator<Message, Log | undefined, void> {
   const scope = workspaceDirs.length ? `\nThe open workspace roots are ${JSON.stringify(workspaceDirs)}. Keep the user's stated path and scope. Avoid broad searches above those roots unless the user explicitly requested one.` : "";
   const original = scope ? addSystemGuidance(messages, scope) : messages;
   let request = original;
-  let settings = options;
+  const standardOptions = { ...options, tools: options.tools?.filter(tool => tool.function.name !== recoveryTool) };
+  let settings = standardOptions;
   let prevReason: Reason | undefined;
   yield { role: "assistant", pc73Recovery: "begin" };
 
@@ -151,6 +189,7 @@ export async function* recoverLocalResponse<Log>(
     let lastIndex = 0;
     let expectTool = false;
     let held = false;
+    let receivedOutput = false;
     let invalid: Reason | undefined;
     let completed: Log | undefined;
 
@@ -158,6 +197,7 @@ export async function* recoverLocalResponse<Log>(
       while (!signal.aborted) {
         const next = await iterator.next();
         if (next.done) { completed = next.value; break; }
+        receivedOutput = true;
         const chunk = next.value;
         if (chunk.pc73ToolFinish) { expectTool = true; continue; }
         if (chunk.toolCalls?.length) {
@@ -196,6 +236,9 @@ export async function* recoverLocalResponse<Log>(
           if (!chunk.toolCalls?.length || chunk.content) pending.push({ ...chunk, toolCalls: undefined });
         } else yield chunk;
       }
+    } catch (error) {
+      if (receivedOutput || !bridgePaused(error)) throw error;
+      invalid = "work_loop_paused";
     } finally {
       controller.abort();
       await iterator.return(undefined as Log);
@@ -211,15 +254,26 @@ export async function* recoverLocalResponse<Log>(
       return completed;
     }
 
-    console.info("[LocalBrain Continue] response recovery", JSON.stringify({ reason: invalid, attempt: attempt + 1, retry: attempt === 0 }));
+    const retry = attempt === 0 && invalid !== "work_loop_paused";
+    console.info("[LocalBrain Continue] response recovery", JSON.stringify({ reason: invalid, attempt: attempt + 1, retry }));
     yield { role: "assistant", pc73Recovery: "reset" };
-    if (attempt === 1) {
-      yield { role: "assistant", content: "LocalBrain stopped after two abnormal responses. The earlier conversation and tool results are still available." };
+    if (!retry) {
+      const handoff = invalid !== "invalid_tool_call" && !previousSideEffects
+        ? prepareRecoveryHandoff(options.tools ?? [], workspaceDirs, turn) : undefined;
+      if (handoff) {
+        if (pendingHandoffs.size >= 32) pendingHandoffs.delete(pendingHandoffs.keys().next().value!);
+        pendingHandoffs.set(handoff.id!, { arguments: handoff.function!.arguments!, expires: Date.now() + 20 * 60 * 1000 });
+        yield { role: "assistant", content: "LocalBrain stopped the repeated work. The explicitly scoped task is ready for managed recovery and its normal approvals.", toolCalls: [handoff] };
+      } else if (invalid === "work_loop_paused") {
+        yield { role: "assistant", content: "LocalBrain Bridge paused repeated tool results before forwarding. No request was replayed. Review the existing results and start a new plan, or use a scoped recovery for a clean development checkout." };
+      } else {
+        yield { role: "assistant", content: "LocalBrain stopped after two abnormal responses. The earlier conversation and tool results are still available. Managed recovery needs an explicit localbrain-recovery contract and no uncertain tool effects." };
+      }
       yield { role: "assistant", pc73Recovery: "end" };
       return;
     }
     prevReason = invalid;
-    if (previousSideEffects) settings = { ...options, tools: [] };
+    if (previousSideEffects) settings = { ...standardOptions, tools: [] };
     request = addSystemGuidance(original, "LocalBrain discarded the previous generated response. Follow the existing user request and verified tool results. Do not repeat the same sentence or emit tool syntax as plain text. Use only advertised native tools with valid arguments. Never repeat a completed operation." +
       (previousSideEffects ? " This recovery can only report current progress. State any remaining step without executing tools." : ""));
   }

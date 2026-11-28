@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace LocalBrain.ClientHost.AgentV2;
 
-internal sealed record AutomaticDecisionPolicy(int version,bool enabled,string policy,string workspace,string[] projects,string authorization_source)
+internal sealed record AutomaticDecisionPolicy(int version,bool enabled,string policy,string workspace,string authorization_source)
 {
     internal const string Name="decision-review-and-reaffirm-v1";
     internal static string FilePath=>Path.Combine(CanonicalStore.DefaultRoot,"automatic-decision-policy.json");
@@ -12,7 +12,8 @@ internal sealed record AutomaticDecisionPolicy(int version,bool enabled,string p
         if(!File.Exists(path))return null;CanonicalStore.GuardPath(path);
         var bytes=File.ReadAllBytes(path);if(bytes.Length>16000)throw new InvalidDataException("Decision policy exceeds budget");
         var policy=JsonSerializer.Deserialize<AutomaticDecisionPolicy>(bytes)??throw new InvalidDataException("Decision policy missing");
-        if(policy.version!=1||policy.policy!=Name||string.IsNullOrWhiteSpace(policy.authorization_source)||policy.projects is null or {Length:0 or >30})throw new InvalidDataException("Unknown automatic decision policy");
+        // Legacy projects fields remain part of the exact policy bytes bound to PC70.
+        if(policy.version!=1||policy.policy!=Name||string.IsNullOrWhiteSpace(policy.authorization_source))throw new InvalidDataException("Unknown automatic decision policy");
         if(!policy.enabled)return null;
         var root=new ProjectAllowlist(config).Resolve(policy.workspace);
         if(!string.Equals(root,Path.GetFullPath(policy.workspace),StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Policy workspace is not an exact registered Git root");

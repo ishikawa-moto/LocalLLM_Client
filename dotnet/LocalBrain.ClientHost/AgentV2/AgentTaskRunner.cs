@@ -789,6 +789,8 @@ internal static partial class AgentTaskRunner
             node["command_execution"]=JsonSerializer.SerializeToNode(request.CommandExecution,ClientConfig.JsonOptions);
         if(request.ExternalAiDisabled)node["external_ai_disabled"]=true;
         if(request.ReadOnly)node["read_only"]=true;
+        if(request.ContinueRecovery is not null)
+            node["continue_recovery"]=JsonSerializer.SerializeToNode(request.ContinueRecovery,ClientConfig.JsonOptions);
         return node.ToJsonString();
     }
 

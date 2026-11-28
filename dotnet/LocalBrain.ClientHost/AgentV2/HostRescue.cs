@@ -670,6 +670,7 @@ internal sealed class HostRescue(HostTaskJournal journal,Action<string>? fault=n
         return hash;
     }
     internal async Task PromoteAsync(string ticketHash,string validationHash,CancellationToken token=default) {
+        if (Request.ContinueRecovery is not null) ProjectAllowlist.RequireRecoveryBranch(journal.WindowsRoot);
         var ticket=Load(ticketHash);var validation=JsonSerializer.Deserialize<Validation>(Store.ReadEvidence(validationHash))!;
         if(validation.TicketHash!=ticketHash || validation.CriticVerdict!="PASS" ||
             (!validation.ExternalPassed && !validation.HostCompletionVerified) ||

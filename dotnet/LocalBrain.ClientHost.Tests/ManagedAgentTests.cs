@@ -55,7 +55,7 @@ internal static class ManagedAgentTests
         finally{Console.SetIn(originalIn);Console.SetOut(originalOut);}
         var replies=capture.ToString().Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(s=>JsonDocument.Parse(s).RootElement.Clone()).ToArray();
         Check(watch.Elapsed<TimeSpan.FromSeconds(5)&&replies.Length==3&&replies.All(r=>!r.TryGetProperty("error",out _)),"MCP handles submission then status promptly on the same connection");
-        var tools=replies[0].GetProperty("result").GetProperty("tools");Check(tools.GetArrayLength()==5&&tools.EnumerateArray().Any(t=>t.GetProperty("name").GetString()=="localbrain_agent_v2_cancel"),"Installed MCP contract exposes exact cancellation and managed investigation");
+        var tools=replies[0].GetProperty("result").GetProperty("tools");Check(tools.GetArrayLength()==6&&tools.EnumerateArray().Any(t=>t.GetProperty("name").GetString()=="localbrain_agent_v2_recover_continue"),"Installed MCP contract exposes managed Continue recovery");
         Check(!JsonDocument.Parse(replies[2].GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!).RootElement.GetProperty("eligible_for_completion").GetBoolean(),"MCP queued status cannot falsely claim completion");
         var tracker=new ProgressTracker((id,hash)=>id=="public"&&hash=="genuine");
         void Progress(string id,object details){tracker.Observe(Json(new{type="tool_execution_start",toolCallId=id,toolName="host_command_status",args=new{}}));tracker.Observe(Json(new{type="tool_execution_end",toolCallId=id,isError=false,result=new{details}}));}
@@ -69,7 +69,65 @@ internal static class ManagedAgentTests
         permit=ManagedRelayPermit.Issue(CanonicalStore.Hash(publicBody),task);refused=false;try{ManagedRelayPermit.Consume(permit,new byte[]{1});}catch(UnauthorizedAccessException){refused=true;}Check(refused,"Capability is bound to the exact admitted provider payload");
         await PositiveCompletionAsync(dir,repo,request,config);
         await InvestigationTests.RunAsync(dir,repo,config);
+        await ContinueRecoveryAsync(dir,repo,config,Git);
         Console.WriteLine("Managed Agent admission PASS: bounded submission, exact request/hash compatibility, task ownership, duplicate observation, exact cancel, canonical completion gate, prefix scope and Host-only progress. Public isolated proof; no native approval/model/production changes.");
+    }
+
+    private static async Task ContinueRecoveryAsync(string directory,string repo,ClientConfig config,Func<string[],Task> git)
+    {
+        var control=Path.Combine(directory,"continue-recovery-control");
+        var id=Guid.NewGuid().ToString("N");
+        var task=JsonSerializer.SerializeToElement(new {
+            requirement="Repair the synthetic fixture", acceptance_criteria=new[]{"Fixture assertions pass"},
+            risk="NORMAL", approved_high_risk=false, allowed_files=new[]{"README.txt"},
+            required_tests=new[]{new{kind="npm_test"}},
+            command_execution=new{environments=new[]{"windows"},working_directories=new[]{"."},output_directories=Array.Empty<string>(),
+                max_commands=0,max_actor_turns=6,max_task_minutes=10}
+        });
+        var knowledge=new { project="Synthetic",references=new[]{new {path="public.md",expected_hash=new string('a',64),
+            expected_metadata_hash=new string('b',64),relevant_location="L1-L2"}}};
+        var input=JsonSerializer.SerializeToElement(new{workspace=repo,recovery_id=id,task,knowledge});
+        var request=ContinueRecoveryIntent.Read(input);
+        var saved=AgentTaskRequest.Parse(AgentTaskRunner.RequestJson(request));
+        Check(saved.ContinueRecovery?.DecisionId=="continue-recovery-"+id && saved.ContinueRecovery.Knowledge?.Project=="Synthetic",
+            "Scoped project/references bind the managed request hash");
+        try{ContinueRecoveryIntent.Read(JsonSerializer.SerializeToElement(new{workspace=repo,recovery_id="../other",task}));throw new Exception("Invalid recovery ID accepted");}
+        catch(InvalidDataException){}
+        try{request.ContinueRecovery!.Validate(request with{AllowedFiles=["src/**"]});throw new Exception("Wildcard recovery scope accepted");}
+        catch(InvalidDataException){}
+
+        await git(["switch","-c","fixture-recovery"]);
+        string Call(string tool,object arguments,int number)=>JsonSerializer.Serialize(new{jsonrpc="2.0",id=number,method="tools/call",@params=new{name=tool,arguments}});
+        var messages=new[]{Call("localbrain_agent_v2_recover_continue",input,1),
+            Call("localbrain_agent_v2_status",new{workspace=repo,task_id=id},2),
+            Call("localbrain_agent_v2_run",new{workspace=repo,task=JsonDocument.Parse(AgentTaskRunner.RequestJson(request)).RootElement},3)};
+        var originalIn=Console.In;var originalOut=Console.Out;using var capture=new StringWriter();
+        try{Console.SetIn(new StringReader(string.Join("\n",messages)));Console.SetOut(capture);await new AgentV2McpServer(new ProjectAllowlist(config),config,control,false).RunAsync();}
+        finally{Console.SetIn(originalIn);Console.SetOut(originalOut);}
+        var replies=capture.ToString().Split('\n',StringSplitOptions.RemoveEmptyEntries).Select(s=>JsonDocument.Parse(s).RootElement.Clone()).ToArray();
+        Check(replies.Length==3,"Expected three recovery MCP replies");
+        foreach(var reply in replies.Take(2)){
+            if(reply.TryGetProperty("error",out var error))throw new InvalidOperationException(error.GetProperty("message").GetString());
+            using var body=JsonDocument.Parse(reply.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!);
+            Check(body.RootElement.GetProperty("task_id").GetString()==id && body.RootElement.GetProperty("phase").GetString()=="queued" &&
+                !body.RootElement.GetProperty("eligible_for_completion").GetBoolean(),"Recovery MCP submission/status bind one queued task");
+        }
+        Check(replies[2].TryGetProperty("error",out _),"Generic task submission cannot inject the recovery marker");
+        var recoveryDir=Path.Combine(TaskAgentCoordinator.WorkspaceDirectory(repo,control),id);
+        Check(File.Exists(Path.Combine(recoveryDir,"authorization-input.json")) && !File.Exists(Path.Combine(recoveryDir,"worker-launch-intent.json")),
+            "Recovery prepares native approval without launching a worker in this fixture");
+        TaskCommandGate.WriteReplace(Path.Combine(recoveryDir,"report.json"),new TaskAgentCoordinator.Report(id,"blocked",false,0,null,DateTimeOffset.UtcNow));
+        var next=request with{ContinueRecovery=request.ContinueRecovery! with{Id=Guid.NewGuid().ToString("N")}};
+        await TaskAgentCoordinator.SubmitAsync(repo,next,config,control:control,launch:false);
+        var repeated=Json(await TaskAgentCoordinator.SubmitAsync(repo,request,config,control:control,launch:false));
+        Check(repeated.GetProperty("task_id").GetString()==id&&repeated.GetProperty("phase").GetString()=="blocked",
+            "Replaying the same recovery observes the original task after the current pointer has advanced");
+        try{await TaskAgentCoordinator.SubmitAsync(repo,request with{Requirement="Different public task"},config,control:control,launch:false);throw new Exception("Recovery ID rebound");}
+        catch(InvalidDataException){}
+        await git(["switch","-C","main"]); // disposable fixture only
+        try{await TaskAgentCoordinator.SubmitAsync(repo,next with{ContinueRecovery=next.ContinueRecovery! with{Id=Guid.NewGuid().ToString("N")}},config,control:control,launch:false);throw new Exception("Recovery accepted on fixture main");}
+        catch(UnauthorizedAccessException){}
+        Console.WriteLine("Continue recovery MCP PASS: exact scope, native grant intent, duplicate observation, protected branch, no production dispatch.");
     }
     private static async Task PositiveCompletionAsync(string directory,string repo,AgentTaskRequest request,ClientConfig config)
     {

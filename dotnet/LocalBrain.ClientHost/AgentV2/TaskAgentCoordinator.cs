@@ -10,7 +10,7 @@ internal static class TaskAgentCoordinator
     internal sealed record Job(string TaskId,string Root,string RequestJson,string RequestHash,string Head,
         string ControlRoot,string ConfigHash,string RuntimeDll,string RuntimeHash,TaskCommandAuthorization.Pending? Authorization);
     internal sealed record Report(string TaskId,string State,bool EligibleForCompletion,int ActorTurns,
-        string? Reason,DateTimeOffset UpdatedAt,DateTimeOffset? ActiveSince=null);
+        string? Reason,DateTimeOffset UpdatedAt,DateTimeOffset? ActiveSince=null,string? KnowledgePhase=null);
     internal sealed record AdviceResumeRuntime(string TaskId,string OriginalRuntimeHash,string RuntimeDll,
         string RuntimeHash,string AdviceHash,DateTimeOffset FaultReportedAt);
     internal static string WorkspaceDirectory(string root,string? control=null)=>Path.Combine(control??CanonicalStore.DefaultRoot,"agent-jobs",HostTaskJournal.WorkspaceId(root));
@@ -46,9 +46,27 @@ internal static class TaskAgentCoordinator
     {
         if(request.CommandExecution is null && !request.ReadOnly)throw new InvalidDataException("Managed tasks require an explicit command_execution scope");
         if(request.ReadOnly)request=AgentTaskRequest.Parse(AgentTaskRunner.RequestJson(request));
+        var recovery = request.ContinueRecovery;
+        if (recovery is not null)
+        {
+            recovery.Validate(request);
+            if (resume || runnerSummary) throw new UnauthorizedAccessException("Continue recovery cannot authorize another launch");
+        }
         var parent=WorkspaceDirectory(root,control);CanonicalStore.GuardPath(parent);Directory.CreateDirectory(parent);
         using var submission=new FileStream(Path.Combine(parent,"submission.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
         var current=CurrentDirectory(root,control);var hash=AgentTaskRunner.RequestHash(request);
+        if (recovery is not null)
+        {
+            var existing = Path.Combine(parent, recovery.Id);
+            CanonicalStore.GuardPath(existing);
+            if (Directory.Exists(existing) || File.Exists(existing))
+            {
+                var owner = Read<Job>(Path.Combine(existing, "job.json"));
+                if (owner.RequestHash != hash) throw new InvalidDataException("Recovery ID already binds a different request");
+                return await StatusAsync(root, control, exactTaskId: recovery.Id);
+            }
+            ProjectAllowlist.RequireRecoveryBranch(root);
+        }
         if(current is not null){
             var prior=Read<Job>(Path.Combine(current,"job.json"));
             var report=File.Exists(Path.Combine(current,"report.json"))?Read<Report>(Path.Combine(current,"report.json")):null;
@@ -78,8 +96,8 @@ internal static class TaskAgentCoordinator
         if(resume)throw new InvalidOperationException("No matching managed task exists; do not fabricate a new resume");
         var snapshot=await GitEvidence.CaptureAsync(root,request.AllowedFiles);
         if(snapshot.ChangedFiles.Length!=0)throw new InvalidOperationException("A new managed task requires a clean Git working tree; preserve existing work");
-        var taskId=Guid.NewGuid().ToString("N");var dir=Path.Combine(parent,taskId);
-        if (runnerSummary) TaskCommandAuthorization.RequireNativeReceiptPath(dir);
+        var taskId=recovery?.Id??Guid.NewGuid().ToString("N");var dir=Path.Combine(parent,taskId);
+        if (runnerSummary || recovery is not null) TaskCommandAuthorization.RequireNativeReceiptPath(dir);
         Directory.CreateDirectory(dir);
         var configBytes=JsonSerializer.SerializeToUtf8Bytes(config,ClientConfig.JsonOptions);File.WriteAllBytes(Path.Combine(dir,"worker-config.json"),configBytes);
         var auth=request.ReadOnly?null:TaskCommandAuthorization.Prepare(dir,root,taskId,request,snapshot.Head);
@@ -89,7 +107,7 @@ internal static class TaskAgentCoordinator
         Save(dir,new(taskId,"queued",false,0,null,DateTimeOffset.UtcNow));
         TaskCommandGate.WriteReplace(Path.Combine(parent,"current-job.json"),new{task_id=taskId});
         if(launch)Launch(dir,job,control,detachProtocol:runnerSummary);
-        return await StatusAsync(root,control,runnerSummary);
+        return await StatusAsync(root,control,runnerSummary,recovery?.Id);
     }
     private static void Launch(string dir,Job job,string? control,bool resuming=false,bool detachProtocol=false)
     {
@@ -107,13 +125,18 @@ internal static class TaskAgentCoordinator
         if(detachProtocol){p.StandardOutput.Close();p.StandardError.Close();}
         // Worker writes the authoritative identity itself while holding its exclusive owner lock.
     }
-    internal static async Task<object> StatusAsync(string root,string? control=null,bool runnerSummary=false)
+    internal static async Task<object> StatusAsync(string root,string? control=null,bool runnerSummary=false,string? exactTaskId=null)
     {
-        var dir=CurrentDirectory(root,control);if(dir is null)return new{phase="managed_not_started",eligible_for_completion=false};
+        if (exactTaskId is not null && (!Guid.TryParseExact(exactTaskId, "N", out var parsed) || exactTaskId != parsed.ToString("N")))
+            throw new InvalidDataException("Invalid managed task identity");
+        var dir=exactTaskId is null ? CurrentDirectory(root,control) : Path.Combine(WorkspaceDirectory(root,control), exactTaskId);
+        if(dir is null || !Directory.Exists(dir))return new{phase="managed_not_started",eligible_for_completion=false};
         var job=Read<Job>(Path.Combine(dir,"job.json"));var r=Read<Report>(Path.Combine(dir,"report.json"));var alive=OwnerAlive(dir);
+        if (exactTaskId is not null && (job.TaskId != exactTaskId || r.TaskId != exactTaskId ||
+            !string.Equals(job.Root, root, StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException("Managed task ownership differs");
         var phase=r.State;
         if(!alive&&phase is ("running" or "awaiting_authorization" or "waiting_for_writer"))phase="owner_absent_inspect_before_resume";
-        var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root));
+        var canonical=CanonicalStore.ReadLatest(control??CanonicalStore.DefaultRoot,HostTaskJournal.WorkspaceId(root),exactTaskId);
         var canonicalPhase="not_started";var canonicalComplete=false;var candidateDiscarded=false;string? candidateHash=null;string? gatewayRequestId=null;
         if(canonical?.TaskId==job.TaskId){using var d=JsonDocument.Parse(canonical.StateJson);var s=d.RootElement;
             canonicalPhase=s.TryGetProperty("phase",out var p)?p.GetString()??"unknown":"unknown";
@@ -164,7 +187,9 @@ internal static class TaskAgentCoordinator
                 finalReport=System.Text.Encoding.UTF8.GetString(bytes);
             }
         }
+        var recovery = exactTaskId is null ? null : AgentTaskRequest.Parse(job.RequestJson).ContinueRecovery;
         return new{task_id=job.TaskId,phase,canonical_phase=canonicalPhase,activity,active_tools=activeTools,eligible_for_completion=complete,worker_alive=alive,
+            knowledge_request_id=recovery?.Knowledge is null?null:recovery.DecisionId, knowledge_phase=r.KnowledgePhase,
             actor_turns=Math.Max(r.ActorTurns,canonical?.TaskId==job.TaskId?(int)canonical.ActorTurns:0),command_count=commandDirs.Length,
             unsettled_command_intents=commandDirs.Count(d=>!File.Exists(Path.Combine(d,"receipt.json"))),cancellation_requested=File.Exists(Path.Combine(dir,"cancel.json")),
             reason=candidateDiscarded?"candidate_discarded_evidence_retained":r.Reason,final_report=finalReport,candidate_hash=candidateHash,gateway_status=gatewayNotice is null?null:new{state=gatewayNotice.State,notice=gatewayNotice.Text},updated_at=r.UpdatedAt,active_since=r.ActiveSince,automatic_continuation=alive,individual_command_confirmations=false};
@@ -305,7 +330,7 @@ internal static class TaskAgentCoordinator
         var request=AgentTaskRequest.Parse(job.RequestJson);var contract=request.CommandExecution!;DateTimeOffset? activeSince=previousReport.ActiveSince;var turns=previousReport.ActorTurns;
         using var stop=new CancellationTokenSource();
         var cancellation=Task.Run(async()=>{while(!stop.IsCancellationRequested){if(File.Exists(Path.Combine(dir,"cancel.json"))){stop.Cancel();break;}try{await Task.Delay(300,stop.Token);}catch(OperationCanceledException){break;}}});
-        void Report(string state,string? reason=null,bool complete=false)=>Save(dir,new(job.TaskId,state,complete,turns,reason,DateTimeOffset.UtcNow,activeSince));
+        void Report(string state,string? reason=null,bool complete=false,string? knowledgePhase=null)=>Save(dir,new(job.TaskId,state,complete,turns,reason,DateTimeOffset.UtcNow,activeSince,knowledgePhase));
         var v3Attempt=false;
         try{
             if (adviceRuntime is not null && (adviceRuntime != Read<AdviceResumeRuntime>(Path.Combine(dir,"worker-advice-runtime-intent.json")) ||
@@ -356,6 +381,7 @@ internal static class TaskAgentCoordinator
             while(true){stop.Token.ThrowIfCancellationRequested();try{using var lease=new FileStream(Path.Combine(job.ControlRoot,"writer.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);break;}
                 catch(IOException){Report("waiting_for_writer");await Task.Delay(2000,stop.Token);}}
             var priorTask=CanonicalStore.ReadLatest(job.ControlRoot,HostTaskJournal.WorkspaceId(job.Root));
+            if (request.ContinueRecovery is not null) ProjectAllowlist.RequireRecoveryBranch(job.Root);
             if(config.V3Development?.Enabled==true && request.EffectiveRisk=="LOW"){
                 if(priorTask?.TaskId==job.TaskId)throw new InvalidOperationException("Prior v3 attempt requires reconciliation; no automatic replay");
                 v3Attempt=true;Report("running");
@@ -366,7 +392,12 @@ internal static class TaskAgentCoordinator
             var resume=priorTask?.TaskId==job.TaskId;var reviewRetries=0;
             while(true){
                 Report("running");var result=await AgentTaskRunner.RunAsync(job.Root,wsl,request,config,resume:resume,token:stop.Token,controlPlaneRoot:job.ControlRoot);turns=result.ActorTurns;
-                if(result.EligibleForCompletion){Report("complete",complete:true);break;}
+                if(result.EligibleForCompletion){
+                    Report("complete",complete:true);
+                    var knowledgePhase = await ContinueRecoveryKnowledge.PrepareAsync(job,request,config,stop.Token);
+                    if (knowledgePhase is not null) Report("complete",complete:true,knowledgePhase:knowledgePhase);
+                    break;
+                }
                 if(result.NoProgress||result.FalseVerified||result.TestMutatedWorktree||turns>=contract.MaxActorTurns){Report("blocked",result.FalseVerified?"false_completion_claim":result.NoProgress?"no_progress":"task_turn_budget_or_worktree_gate");break;}
                 if(result.Phase=="awaiting_external_review"){
                     if(++reviewRetries>3){Report("blocked","external_review_unavailable");break;}await Task.Delay(TimeSpan.FromSeconds(30),stop.Token);
